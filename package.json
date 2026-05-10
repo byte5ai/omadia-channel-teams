@@ -1,0 +1,38 @@
+{
+  "name": "@omadia/channel-teams",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@omadia/channel-sdk": "*",
+    "@omadia/diagrams": "*",
+    "@omadia/integration-microsoft365": "*",
+    "@omadia/orchestrator": "*",
+    "@omadia/plugin-api": "*",
+    "botbuilder": "^4.23.3",
+    "express": "^5.0.0",
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "description": "Microsoft Teams channel plugin for the byte5 Harness. Implements @omadia/channel-sdk's ChannelPlugin contract: Bot-Framework adapter, Adaptive-Card rendering, roster + mention resolution, attachment persistence with signed-URL proxy, and HTTP routes for /api/messages + /attachments. Depends on @omadia/integration-microsoft365 for shared Graph client and App-registration credentials.",
+  "license": "MIT"
+}

@@ -1,0 +1,102 @@
+schema_version: "1"
+
+identity:
+  id: "de.byte5.channel.teams"
+  name: "Microsoft Teams Channel"
+  version: "0.1.0"
+  kind: "channel"
+  domain: "channel.teams"
+  description: "Microsoft Teams als First-Class-Channel für den byte5 Harness. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `de.byte5.integration.microsoft365` für Attachment-Downloads + Roster-Lookups."
+  authors:
+    - name: "byte5 GmbH"
+      email: "dev@byte5.de"
+      url: "https://byte5.de"
+  license: "Proprietary"
+  categories:
+    - "channel"
+    - "communication"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# Implicit prerequisite: the Microsoft 365 integration owns the Bot-Framework
+# App registration (app_id / tenant_id / app_password). The plugin resolves
+# those via ctx dependency-chain from that integration's registry entry;
+# Teams-specific knobs live in this plugin's own entry.
+depends_on:
+  - "de.byte5.integration.microsoft365"
+
+setup:
+  fields:
+    - key: "teams_sso_connection_name"
+      type: "string"
+      label: "Bot Framework OAuth Connection Name"
+      help: "Name der im Azure Bot Service konfigurierten OAuth-Connection (v4). Wenn gesetzt, versucht der Bot pro Turn ein UserTokenClient.getUserToken() — das resultierende JWT wird als ssoAssertion an die Kalender-Tools weitergereicht (OBO-Flow für delegierte Graph-Scopes). Leer lassen → Kalender-Tools surface 'sso_unavailable'."
+      required: false
+    - key: "teams_attachment_key_prefix"
+      type: "string"
+      label: "Tigris-Key-Präfix für Attachments"
+      help: "Namespace-Präfix für persistierte Teams-Attachments im gemeinsamen Tigris-Bucket. Erlaubt Co-Existenz mit den Diagram-Renderings (`diagrams/`). Default 'teams-attachments'."
+      required: false
+      default: "teams-attachments"
+
+playbook:
+  when_to_use: |
+    Der Teams-Channel wird aktiviert, sobald die Microsoft-365-Integration
+    (app_id + tenant_id + app_password) konfiguriert ist. Endanwender
+    interagieren mit dem Bot über Microsoft Teams; der Channel ownt die
+    Bot-Framework-Runtime unter /api/messages sowie den signierten
+    Attachment-Proxy unter /attachments/<key>. Der Bot delegiert jeden
+    User-Turn an den zentralen Orchestrator; Adaptive-Card-Rendering +
+    Roster-Resolution bleiben Channel-intern.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    # Teams-specific outbound; MS-Graph is covered by the
+    # microsoft365 integration's own permissions.
+    outbound:
+      - "smba.trafficmanager.net"
+      - "*.botframework.com"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "bot_framework"
+    kind: "http"
+    target: "Microsoft Bot Framework (CloudAdapter inbound + reply)"
+    auth_from: "microsoft_app_password"
+    docs: "https://learn.microsoft.com/azure/bot-service/"
+
+# Capabilities this plugin contributes to the kernel.
+#
+# Naming follows `docs/harness-platform/conventions/service-capabilities.md`.
+# The Teams channel is today a pure CONSUMER (it doesn't publish services
+# into the ServiceRegistry — the channel framework owns channel-handle
+# registration separately via `DefaultChannelRegistry`).
+#
+# Hard-required (capability-resolver enforces these before activate()):
+#   - `chatAgent@^1` — the orchestrator-published ChatAgentBundle. Channel
+#     late-resolves it via `ctx.services.get<ChatAgentBundle>('chatAgent')`
+#     and feeds `bundle.agent` into the TeamsBot. Without it the channel
+#     has nothing to delegate user turns to, so we hard-block (S+10-4b).
+#
+# Deferred to S+11+ (currently structural, enforced at instantiation site):
+#   - `microsoft365.graph@^1` — consumed via `ctx.services.get<Microsoft365Accessor>`
+#     for Graph-backed attachment downloads. The microsoft365 integration
+#     publishes it conditionally (only when app credentials are configured),
+#     so promoting it to `requires:` would block channel activation in dev
+#     environments without MS365 setup. Stays optional/soft-degrade until
+#     S+11 reworks the dev-default story.
+requires:
+  - "chatAgent@^1"
+provides: []
