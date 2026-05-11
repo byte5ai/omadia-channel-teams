@@ -1,8 +1,10 @@
 // ---------------------------------------------------------------------------
 // Channel plugin entry point
 // ---------------------------------------------------------------------------
-export { TeamsChannelPlugin } from './plugin.js';
-export type { TeamsChannelPluginDeps } from './plugin.js';
+// Phase 5B: standalone activate() shape replaces the legacy class. The
+// dynamic-channel-resolver picks `activate` off the module export
+// (`mod.activate ?? mod.default?.activate ?? mod.default`).
+export { activate } from './plugin.js';
 
 // ---------------------------------------------------------------------------
 // Bot runtime + adapters (re-exported for the kernel bootstrap call-site
