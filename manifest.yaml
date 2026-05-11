@@ -1,12 +1,12 @@
 schema_version: "1"
 
 identity:
-  id: "de.byte5.channel.teams"
+  id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
   version: "0.1.0"
   kind: "channel"
   domain: "channel.teams"
-  description: "Microsoft Teams als First-Class-Channel für den byte5 Harness. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `de.byte5.integration.microsoft365` für Attachment-Downloads + Roster-Lookups."
+  description: "Microsoft Teams als First-Class-Channel für den byte5 Harness. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
   authors:
     - name: "byte5 GmbH"
       email: "dev@byte5.de"
@@ -28,7 +28,7 @@ lifecycle:
 # those via ctx dependency-chain from that integration's registry entry;
 # Teams-specific knobs live in this plugin's own entry.
 depends_on:
-  - "de.byte5.integration.microsoft365"
+  - "@omadia/integration-microsoft365"
 
 setup:
   fields:
