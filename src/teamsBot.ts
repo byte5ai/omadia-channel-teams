@@ -6,7 +6,9 @@ import {
   TurnContext,
   type SigninStateVerificationQuery,
 } from 'botbuilder';
+import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
+  CaptureDisclosure,
   ChatAgent,
   ConversationHistoryStore,
   FollowUpOption,
@@ -880,6 +882,8 @@ export class TeamsBot extends TeamsActivityHandler {
           result.followUps,
           pendingSlots,
           result.oauthConsentPending ? this.ssoConnectionName : undefined,
+          result.captureDisclosure,
+          result.privacyReceipt,
         );
 
         // Routine-list smart card (sidecar). Rendered AFTER the agent's
@@ -988,6 +992,8 @@ async function sendAnswer(
   followUpOptions: FollowUpOption[] | undefined,
   pendingSlotCard: OutgoingSlotPicker | undefined,
   consentConnectionName: string | undefined,
+  captureDisclosure: CaptureDisclosure | undefined,
+  privacyReceipt: PrivacyReceipt | undefined,
 ): Promise<void> {
   // Blocking clarification — render a standalone Choice-Card instead of
   // an answer. The follow-up / fresh-check actions aren't meaningful here
@@ -1045,6 +1051,8 @@ async function sendAnswer(
       ...(followUpOptions && followUpOptions.length > 0
         ? { followUpOptions }
         : {}),
+      ...(captureDisclosure ? { captureDisclosure } : {}),
+      ...(privacyReceipt ? { privacyReceipt } : {}),
     });
     const activity = MessageFactory.attachment(card);
     // Activity-level entities: AI label + mention entities for Teams'

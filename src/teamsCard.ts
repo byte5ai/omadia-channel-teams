@@ -1,6 +1,11 @@
 import type { Attachment } from 'botbuilder';
 import { CardFactory } from 'botbuilder';
 import type {
+  PrivacyDetection,
+  PrivacyDetectorRun,
+  PrivacyReceipt,
+} from '@omadia/plugin-api';
+import type {
   CaptureDisclosure,
   OutgoingAttachment,
   RunTracePayload,
@@ -87,6 +92,16 @@ export interface BuildAnswerCardInput {
    * channel-agnostic `SemanticAnswer.captureDisclosure` field.
    */
   captureDisclosure?: CaptureDisclosure;
+  /**
+   * Privacy-Proxy receipt (Slice 6): summary of what the `privacy.redact@1`
+   * provider did to the outbound LLM payload — detections, actions,
+   * routing decision. Rendered as a collapsed `Container` +
+   * `Action.ToggleVisibility` button parallel to Tool-Trace and
+   * Memory-Auswirkung. Receipt is PII-free by contract (see
+   * `@omadia/plugin-api/privacyReceipt`) so we render fields directly
+   * without masking. Omitted (no button shown) when undefined.
+   */
+  privacyReceipt?: PrivacyReceipt;
 }
 
 /** Adaptive-Card Submit payload for the fresh-check button. */
@@ -374,8 +389,15 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
   const originalMessage = input.originalUserMessage;
   const followUps = (input.followUpOptions ?? []).slice(0, FOLLOW_UP_MAX_OPTIONS);
   const disclosure = input.captureDisclosure;
+  const privacy = input.privacyReceipt;
 
-  // Tier 1: full answer + full trace + disclosure (if small enough).
+  // Drop-order in size pressure: trace-detail → trace → disclosure → privacy
+  // → truncate answer. Privacy survives longer than disclosure because it's
+  // a per-turn trust signal the operator may need to refer back to ("which
+  // detector ran, what did it do") — disclosure can be re-derived from the
+  // memory store, privacy receipt cannot.
+
+  // Tier 1: full answer + full trace + disclosure + privacy.
   const full = assemble(
     input.answer,
     input.runTrace,
@@ -385,10 +407,11 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     originalMessage,
     followUps,
     disclosure,
+    privacy,
   );
   if (bytes(full) <= CARD_BUDGET_BYTES) return full;
 
-  // Tier 2: full answer + compact trace + disclosure (agent rows only).
+  // Tier 2: full answer + compact trace + disclosure + privacy.
   if (input.runTrace) {
     const compact = assemble(
       input.answer,
@@ -399,11 +422,12 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
       originalMessage,
       followUps,
       disclosure,
+      privacy,
     );
     if (bytes(compact) <= CARD_BUDGET_BYTES) return compact;
   }
 
-  // Tier 3: full answer + disclosure, no trace.
+  // Tier 3: full answer + disclosure + privacy, no trace.
   const noTrace = assemble(
     input.answer,
     undefined,
@@ -413,11 +437,11 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     originalMessage,
     followUps,
     disclosure,
+    privacy,
   );
   if (bytes(noTrace) <= CARD_BUDGET_BYTES) return noTrace;
 
-  // Tier 4: drop disclosure. Trace already gone — answer alone may still be
-  // over budget on degenerate inputs, the truncation step handles that.
+  // Tier 4: drop disclosure but keep privacy.
   const noDisclosure = assemble(
     input.answer,
     undefined,
@@ -427,10 +451,25 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     originalMessage,
     followUps,
     undefined,
+    privacy,
   );
   if (bytes(noDisclosure) <= CARD_BUDGET_BYTES) return noDisclosure;
 
-  // Tier 5: truncate the answer but still keep the images — they carry the
+  // Tier 5: drop privacy too — last collapsed section to go.
+  const noPrivacy = assemble(
+    input.answer,
+    undefined,
+    'full',
+    attachments,
+    input.verifier,
+    originalMessage,
+    followUps,
+    undefined,
+    undefined,
+  );
+  if (bytes(noPrivacy) <= CARD_BUDGET_BYTES) return noPrivacy;
+
+  // Tier 6: truncate the answer but still keep the images — they carry the
   // actual payload the user asked for.
   const truncatedAnswer = `${input.answer.slice(0, ANSWER_MAX_BYTES_WHEN_TRACED - 1)}…`;
   return assemble(
@@ -441,6 +480,7 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     input.verifier,
     originalMessage,
     followUps,
+    undefined,
     undefined,
   );
 }
@@ -458,6 +498,7 @@ function assemble(
   originalMessage?: string,
   followUps: ReadonlyArray<{ label: string; prompt: string }> = [],
   disclosure?: CaptureDisclosure,
+  privacy?: PrivacyReceipt,
 ): CardBody {
   const chipItems: unknown[] = [
     {
@@ -551,6 +592,25 @@ function assemble(
       type: 'Action.ToggleVisibility',
       title: `🧠 Memory-Auswirkung (${captureDisclosureSummary(disclosure)})`,
       targetElements: ['capture-disclosure-container'],
+    });
+  }
+
+  if (privacy) {
+    // Per-turn audit row mirroring web-ui's <PrivacyReceiptCard>. Same
+    // ToggleVisibility pattern as Tool-Trace + Memory-Auswirkung — local
+    // to the viewer, doesn't broadcast on expand.
+    body.push({
+      type: 'Container',
+      id: 'privacy-receipt-container',
+      isVisible: false,
+      spacing: 'Medium',
+      separator: true,
+      items: buildPrivacyReceiptItems(privacy),
+    });
+    actions.push({
+      type: 'Action.ToggleVisibility',
+      title: `🛡 Privacy Guard (${privacyReceiptSummary(privacy)})`,
+      targetElements: ['privacy-receipt-container'],
     });
   }
 
@@ -805,6 +865,159 @@ function buildCaptureDisclosureItems(d: CaptureDisclosure): unknown[] {
   }
 
   return items;
+}
+
+/**
+ * Header summary for the Privacy-Guard toggle button.
+ * Examples: "0 Erkennungen · public-llm", "3 Erkennungen · public-llm",
+ * "blocked: customer_data", "DEBUG · 2 Erkennungen".
+ */
+function privacyReceiptSummary(r: PrivacyReceipt): string {
+  const totalHits = r.detections.reduce((n, d) => n + d.count, 0);
+  const debugPrefix = r.debug ? 'DEBUG · ' : '';
+  const routing =
+    r.routing === 'blocked'
+      ? `blockiert${r.routingReason ? ': ' + r.routingReason : ''}`
+      : r.routing;
+  const hits = `${String(totalHits)} Erkennung${totalHits === 1 ? '' : 'en'}`;
+  return `${debugPrefix}${hits} · ${routing}`;
+}
+
+function buildPrivacyReceiptItems(r: PrivacyReceipt): unknown[] {
+  const items: unknown[] = [];
+
+  items.push({
+    type: 'TextBlock',
+    text: '**🛡 Privacy-Guard · was wurde vor dem LLM-Call gefiltert?**',
+    weight: 'Bolder',
+    size: 'Small',
+    wrap: true,
+  });
+
+  if (r.debug) {
+    items.push({
+      type: 'TextBlock',
+      text: '⚠ DEBUG-MODUS aktiv — Receipt enthält PII-Werte (operator-toggle, niemals in Prod).',
+      color: 'Warning',
+      weight: 'Bolder',
+      size: 'Small',
+      wrap: true,
+      spacing: 'Small',
+    });
+  }
+
+  const facts: Array<{ title: string; value: string }> = [
+    { title: 'Modus', value: renderPolicyMode(r.policyMode) },
+    { title: 'Routing', value: renderRouting(r.routing) },
+  ];
+  if (r.routingReason) {
+    facts.push({ title: 'Grund', value: r.routingReason });
+  }
+  facts.push({ title: 'Latenz', value: `${String(r.latencyMs)} ms` });
+  facts.push({
+    title: 'Audit-ID',
+    value: `${r.receiptId} (${r.auditHash.slice(0, 8)}…)`,
+  });
+  items.push({ type: 'FactSet', facts });
+
+  if (r.detections.length === 0) {
+    items.push({
+      type: 'TextBlock',
+      text: '_Keine Erkennungen._',
+      size: 'Small',
+      isSubtle: true,
+      wrap: true,
+      spacing: 'Medium',
+    });
+  } else {
+    items.push({
+      type: 'TextBlock',
+      text: '**Erkennungen**',
+      weight: 'Bolder',
+      size: 'Small',
+      spacing: 'Medium',
+      wrap: true,
+    });
+    for (const d of r.detections) {
+      items.push(privacyDetectionRow(d));
+    }
+  }
+
+  // Detector run statuses surface fail-open cases (skipped/timeout/error)
+  // that would otherwise look identical to "0 Erkennungen" — mirrors web-ui.
+  const nonOk = r.detectorRuns.filter((run) => run.status !== 'ok');
+  if (nonOk.length > 0) {
+    items.push({
+      type: 'TextBlock',
+      text: '**Detector-Status**',
+      weight: 'Bolder',
+      size: 'Small',
+      spacing: 'Medium',
+      wrap: true,
+    });
+    for (const run of nonOk) {
+      items.push(privacyDetectorRunRow(run));
+    }
+  }
+
+  return items;
+}
+
+function renderPolicyMode(m: PrivacyReceipt['policyMode']): string {
+  return m === 'data-residency' ? 'Data-Residency' : 'PII-Shield';
+}
+
+function renderRouting(r: PrivacyReceipt['routing']): string {
+  switch (r) {
+    case 'public-llm':
+      return 'Public LLM';
+    case 'local-llm':
+      return 'Local LLM (Ollama)';
+    case 'blocked':
+      return 'Blockiert';
+  }
+}
+
+function renderDetectionAction(a: PrivacyDetection['action']): string {
+  switch (a) {
+    case 'redacted':
+      return 'redigiert';
+    case 'tokenized':
+      return 'tokenisiert';
+    case 'blocked':
+      return 'blockiert';
+    case 'passed':
+      return 'durchgelassen';
+  }
+}
+
+function privacyDetectionRow(d: PrivacyDetection): unknown {
+  const confidence = `${(d.confidenceMin * 100).toFixed(0)}%`;
+  const valuesPart =
+    d.values && d.values.length > 0
+      ? ` · Werte: ${d.values.slice(0, 3).join(', ')}${d.values.length > 3 ? '…' : ''}`
+      : '';
+  return {
+    type: 'TextBlock',
+    text: `• **${d.type}** × ${String(d.count)} → ${renderDetectionAction(d.action)} · ${d.detector} · min. Confidence ${confidence}${valuesPart}`,
+    size: 'Small',
+    wrap: true,
+    spacing: 'Small',
+  };
+}
+
+function privacyDetectorRunRow(run: PrivacyDetectorRun): unknown {
+  const icon =
+    run.status === 'timeout' ? '⏱' : run.status === 'error' ? '✗' : '⊘';
+  const reason = run.reason ? ` · ${run.reason}` : '';
+  return {
+    type: 'TextBlock',
+    text: `${icon} **${run.detector}** · ${run.status}${reason} · ${String(run.latencyMs)} ms`,
+    size: 'Small',
+    wrap: true,
+    spacing: 'Small',
+    color: run.status === 'error' ? 'Attention' : 'Warning',
+  };
 }
 
 function toolRow(
