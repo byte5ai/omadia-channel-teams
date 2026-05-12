@@ -8,6 +8,8 @@ import {
 } from '@omadia/plugin-api';
 import {
   InMemoryConversationHistoryStore,
+  isNoReply,
+  logNoReplyDrop,
   type ChannelHandle,
   type CoreApi,
 } from '@omadia/channel-sdk';
@@ -253,6 +255,19 @@ export async function activate(
     routinesIntegration.publishProactiveSend(
       'teams',
       async (conversationRef, message, routine) => {
+        // Routines fire on a cron without an active user question — the
+        // sentinel is the agent's way to signal "nothing to report this
+        // run". Drop the delivery; the routine's run-history still
+        // records the turn for audit, but the user's Teams chat stays
+        // quiet.
+        if (isNoReply(message)) {
+          logNoReplyDrop('teams', {
+            trigger: 'routine',
+            ...(routine?.id ? { routineId: routine.id } : {}),
+            ...(routine?.name ? { routineName: routine.name } : {}),
+          });
+          return;
+        }
         await sendProactive(
           conversationRef as Parameters<typeof sendProactive>[0],
           async (turnContext) => {

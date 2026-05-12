@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.1.2"
+  version: "0.1.3"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für den byte5 Harness. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
