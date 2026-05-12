@@ -6,6 +6,7 @@ import {
   TurnContext,
   type SigninStateVerificationQuery,
 } from 'botbuilder';
+import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   CaptureDisclosure,
@@ -870,6 +871,14 @@ export class TeamsBot extends TeamsActivityHandler {
           result.interactive?.kind === 'routine_list'
             ? result.interactive
             : undefined;
+        if (isNoReply(result)) {
+          logNoReplyDrop('teams', {
+            userId: input.userId,
+            sessionScope: input.sessionScope,
+            conversationId: input.conversationId,
+          });
+          return;
+        }
         await sendAnswer(
           context,
           result.text,
