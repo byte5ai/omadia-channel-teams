@@ -388,6 +388,18 @@ function discoverUiRoutesStub(): DiscoveredUiRoute[] {
       path: '/dashboard',
       title: 'Reference Agent — Dashboard',
     },
+    {
+      pluginId: 'agent-odoo-hr',
+      routeId: 'birthdays',
+      path: '/birthdays',
+      title: 'HR — Geburtstage',
+    },
+    {
+      pluginId: 'agent-odoo-hr',
+      routeId: 'absences',
+      path: '/absences',
+      title: 'HR — Abwesenheiten',
+    },
   ];
 }
 

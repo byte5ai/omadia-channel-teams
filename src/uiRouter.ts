@@ -68,7 +68,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                 class="mt-1 text-[10px] uppercase tracking-wider text-slate-400"
                 data-testid="hub-build"
               >
-                channel-teams build 0.3.2
+                channel-teams build 0.3.3
               </p>
             </header>
 
