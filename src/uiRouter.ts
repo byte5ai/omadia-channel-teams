@@ -68,7 +68,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                 class="mt-1 text-[10px] uppercase tracking-wider text-slate-400"
                 data-testid="hub-build"
               >
-                channel-teams build 0.3.1
+                channel-teams build 0.3.2
               </p>
             </header>
 
@@ -125,43 +125,70 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
       const teamsBootstrapJs = `
         (function () {
           if (typeof window === 'undefined') return;
+          var log = function (m) { try { console.log('[tab-config]', m); } catch (e) {} };
           var sdkPromise = new Promise(function (resolve, reject) {
             var s = document.createElement('script');
             s.src = 'https://res.cdn.office.net/teams-js/2.34.0/js/MicrosoftTeams.min.js';
-            s.onload = function () { resolve(window.microsoftTeams); };
+            s.onload = function () { log('teams-js loaded'); resolve(window.microsoftTeams); };
             s.onerror = function () { reject(new Error('teams-js failed to load')); };
             document.head.appendChild(s);
           });
-          document.addEventListener('DOMContentLoaded', function () {
-            var form = document.getElementById('tab-config-form');
+          var ready = function () {
             var select = document.getElementById('tab-config-select');
-            sdkPromise.then(function (t) {
-              t.app.initialize();
-              t.pages.config.registerOnSaveHandler(function (saveEvent) {
-                var raw = select.value || '';
-                var parts = raw.split('::');
-                var pluginId = parts[0];
-                var routePath = parts[1] || '/';
-                var origin = ${JSON.stringify(origin || '')};
-                var contentUrl =
-                  (origin || window.location.origin) +
-                  '/p/' + pluginId + routePath;
-                t.pages.config.setConfig({
-                  contentUrl: contentUrl,
-                  entityId: pluginId + ':' + routePath,
-                  suggestedDisplayName:
-                    select.options[select.selectedIndex].text,
-                }).then(function () {
-                  saveEvent.notifySuccess();
+            return sdkPromise.then(function (t) {
+              log('initialize…');
+              // app.initialize() returns a Promise — MUST await before any
+              // pages.config call, otherwise setValidityState/setConfig
+              // silently no-op and the Save button stays disabled.
+              return t.app.initialize().then(function () {
+                log('initialized; registering save handler');
+                t.pages.config.registerOnSaveHandler(function (saveEvent) {
+                  var raw = select.value || '';
+                  var parts = raw.split('::');
+                  var pluginId = parts[0];
+                  var routePath = parts[1] || '/';
+                  var origin = ${JSON.stringify(origin || '')};
+                  var contentUrl =
+                    (origin || window.location.origin) +
+                    '/p/' + pluginId + routePath;
+                  log('save → ' + contentUrl);
+                  t.pages.config.setConfig({
+                    contentUrl: contentUrl,
+                    entityId: pluginId + ':' + routePath,
+                    suggestedDisplayName:
+                      select.options[select.selectedIndex].text,
+                  }).then(function () {
+                    saveEvent.notifySuccess();
+                  }).catch(function (err) {
+                    log('setConfig error: ' + (err && err.message));
+                    saveEvent.notifyFailure(err && err.message);
+                  });
                 });
+                // Validity state goes true once the form has a default
+                // selection (the first <option> is selected by browsers
+                // automatically, so this is correct on first render).
+                t.pages.config.setValidityState(true);
+                log('validity=true');
+                // Re-confirm validity whenever the user changes the
+                // dropdown — defensive against future renders where the
+                // initial value might be empty.
+                if (select) {
+                  select.addEventListener('change', function () {
+                    t.pages.config.setValidityState(Boolean(select.value));
+                    log('validity (on change) = ' + Boolean(select.value));
+                  });
+                }
               });
-              t.pages.config.setValidityState(true);
             }).catch(function (err) {
-              // Outside of Teams (e.g. PoC smoke), the SDK won't load; the
-              // form is still usable as a preview but Save is inert.
+              log('init failed: ' + (err && err.message));
               console.warn('teams-js unavailable:', err && err.message);
             });
-          });
+          };
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', ready);
+          } else {
+            ready();
+          }
         })();
       `;
 
