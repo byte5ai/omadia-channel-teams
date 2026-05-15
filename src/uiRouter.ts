@@ -53,6 +53,9 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
       const routes = await opts.discover();
       return htmlDoc({
         title: 'Omadia — Plugin Hub',
+        // Self-filling: refresh every minute so newly-installed plugin
+        // uiRoutes appear in the hub without a manual reload.
+        refreshSeconds: 60,
         body: html`
           <main class="max-w-3xl mx-auto p-6 space-y-6">
             <header>
@@ -65,7 +68,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                 class="mt-1 text-[10px] uppercase tracking-wider text-slate-400"
                 data-testid="hub-build"
               >
-                channel-teams build 0.3.0
+                channel-teams build 0.3.1
               </p>
             </header>
 
