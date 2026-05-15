@@ -373,25 +373,90 @@ export async function activate(
   core.log('info', 'teams bridge uiRoutes mounted at /p/channel-teams/{hub,tab-config}');
 
   // --- Notification handler ------------------------------------------
-  // Slice 1: log-only handler so plugin authors can wire ctx.notify(...)
-  // and see the payload land in middleware logs. Slice 2 swaps the body
-  // for an actual Graph `sendActivityNotification` call once the App
-  // Manifest declares the `pluginEvent` activity type and the tenant
-  // admin has consented to the new `TeamsActivity.Send` permission.
+  // Slice 2: real Graph `sendActivityNotification` Bell-Icon push when
+  // a target team-id is configured. Falls back to log-only when not
+  // (lets the plugin run in dev without poking Teams). The Activity-
+  // Type `pluginEvent` MUST be declared in the App-Manifest's
+  // `activities.activityTypes[]`; the TeamsActivity.Send.Group
+  // permission was consented when the bot was first deployed.
+  const notifyTargetTeamId = ctx.config.get<string>(
+    'teams_notify_team_id',
+  );
+  const notifyTopicWebUrl =
+    ctx.config.get<string>('teams_notify_topic_url') ??
+    'https://odoo-bot-harness.fly.dev/p/channel-teams/hub';
+  // Re-resolve the microsoft365 accessor here — the earlier read inside
+  // the attachment-store branch is scoped to that `if`-block. Reading
+  // again is cheap (single ServiceRegistry lookup) and keeps the
+  // notification path independent of the attachment-store config.
+  const notifyMs365 = ctx.services.get<Microsoft365Accessor>(
+    'microsoft365.graph',
+  );
   const disposeTeamsNotify = ctx.notifications.registerChannel(
     'teams',
     async (payload) => {
-      const recipients =
+      const recipientsLabel =
         payload.recipients === 'broadcast'
           ? 'broadcast'
           : `[${payload.recipients.length} recipient(s)]`;
+      const previewBody =
+        payload.body.length > 140
+          ? `${payload.body.slice(0, 140)}…`
+          : payload.body;
       core.log(
         'info',
-        `[notify] teams ← plugin=${payload.pluginId} title=${JSON.stringify(payload.title)} body=${JSON.stringify(payload.body.length > 80 ? `${payload.body.slice(0, 80)}…` : payload.body)} deepLink=${JSON.stringify(payload.deepLink ?? '')} recipients=${recipients}`,
+        `[notify] teams ← plugin=${payload.pluginId} title=${JSON.stringify(payload.title)} body=${JSON.stringify(previewBody)} deepLink=${JSON.stringify(payload.deepLink ?? '')} recipients=${recipientsLabel}`,
       );
+
+      if (!notifyTargetTeamId) {
+        core.log(
+          'info',
+          '[notify] teams_notify_team_id not configured — skipping Graph sendActivityNotification (log-only fallback)',
+        );
+        return;
+      }
+      if (!notifyMs365) {
+        core.log(
+          'info',
+          '[notify] microsoft365.graph service unavailable — skipping Graph sendActivityNotification',
+        );
+        return;
+      }
+      const webUrl = payload.deepLink
+        ? `${notifyTopicWebUrl.replace(/\/p\/channel-teams\/hub\/?$/, '')}${payload.deepLink}`
+        : notifyTopicWebUrl;
+      try {
+        await notifyMs365.app.sendActivityNotification({
+          scope: `/teams/${encodeURIComponent(notifyTargetTeamId)}`,
+          activityType: 'pluginEvent',
+          previewText: previewBody,
+          templateParameters: [
+            { name: 'pluginId', value: payload.pluginId },
+            { name: 'title', value: payload.title },
+          ],
+          topic: {
+            source: 'text',
+            value: payload.title,
+            webUrl,
+          },
+        });
+        core.log(
+          'info',
+          `[notify] graph sendActivityNotification ok team=${notifyTargetTeamId.slice(0, 20)} type=pluginEvent`,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        core.log(
+          'info',
+          `[notify] graph sendActivityNotification FAILED: ${message}`,
+        );
+      }
     },
   );
-  core.log('info', 'notification handler registered for channel "teams" (log-only — slice 1)');
+  core.log(
+    'info',
+    `notification handler registered for channel "teams" (mode=${notifyTargetTeamId ? 'graph→team:' + notifyTargetTeamId.slice(0, 12) : 'log-only'})`,
+  );
 
   // --- Handle ----------------------------------------------------------
   return {
