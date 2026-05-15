@@ -28,10 +28,22 @@ import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import { createTeamsRouter } from './messagesRouter.js';
-import {
-  createTeamsUiRouter,
-  type DiscoveredUiRoute,
-} from './uiRouter.js';
+import { createTeamsUiRouter } from './uiRouter.js';
+
+/**
+ * Minimal shape of the kernel's UiRouteCatalog service. Declared here
+ * so the plugin doesn't need a hard dep on @omadia/plugin-api's
+ * UiRouteDescriptor type — keeps the plugin compilable in isolation
+ * even if the host's plugin-api version skews ahead.
+ */
+interface UiRouteCatalogShim {
+  list(): readonly {
+    readonly pluginId: string;
+    readonly routeId: string;
+    readonly path: string;
+    readonly title: string;
+  }[];
+}
 
 /**
  * Microsoft Teams as a first-class ChannelPlugin. The Bot Framework App
@@ -326,12 +338,33 @@ export async function activate(
   // App-Manifest's staticTabs[] points at /p/channel-teams/hub and
   // configurableTabs[].configurationUrl at /p/channel-teams/tab-config.
   //
-  // Discovery is a static stub for the PoC — the live registry surface
-  // will land alongside the Notification API. Inject via opts so the
-  // smoke harness can substitute fixtures.
+  // Discovery is live — the kernel publishes a UiRouteCatalog as the
+  // `uiRouteCatalog` service. Every Hub + Tab-Config request pulls the
+  // current set from it, so plugins that come and go via upload/uninstall
+  // surface automatically without a channel-teams code change.
+  const uiRouteCatalog = ctx.services.get<UiRouteCatalogShim>(
+    'uiRouteCatalog',
+  );
+  if (!uiRouteCatalog) {
+    throw new Error(
+      "channel-teams: required service 'uiRouteCatalog' not published — kernel must publish it before plugins activate (see middleware/src/index.ts).",
+    );
+  }
   const teamsUiRouter = createTeamsUiRouter({
     webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',
-    discover: () => discoverUiRoutesStub(),
+    discover: () =>
+      uiRouteCatalog
+        .list()
+        // Don't list channel-teams' OWN surfaces in the Hub/Tab-Config —
+        // the operator pins those via the App-Manifest's staticTabs[]
+        // entry, not as targets-of-itself.
+        .filter((r) => r.pluginId !== '@omadia/channel-teams')
+        .map((r) => ({
+          pluginId: r.pluginId,
+          routeId: r.routeId,
+          path: r.path,
+          title: r.title,
+        })),
   });
   const disposeTeamsUi = ctx.routes.register(
     '/p/channel-teams',
@@ -372,35 +405,6 @@ export async function activate(
       core.log('info', 'Teams channel closed (routes now 503)');
     },
   };
-}
-
-/**
- * PoC discovery stub — returns the reference-plugin's dashboard route so
- * the Hub has something to list and Tab-Config has a target to pick.
- * Replace with a live PluginRouteRegistry query once the Notification API
- * lands and surfaces a discovery service.
- */
-function discoverUiRoutesStub(): DiscoveredUiRoute[] {
-  return [
-    {
-      pluginId: 'agent-reference-maximum',
-      routeId: 'dashboard',
-      path: '/dashboard',
-      title: 'Reference Agent — Dashboard',
-    },
-    {
-      pluginId: 'agent-odoo-hr',
-      routeId: 'birthdays',
-      path: '/birthdays',
-      title: 'HR — Geburtstage',
-    },
-    {
-      pluginId: 'agent-odoo-hr',
-      routeId: 'absences',
-      path: '/absences',
-      title: 'HR — Abwesenheiten',
-    },
-  ];
 }
 
 // ---------------------------------------------------------------------------
