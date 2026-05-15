@@ -61,6 +61,12 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                 Pin any of these surfaces as a Teams Tab, or open them
                 directly here.
               </p>
+              <p
+                class="mt-1 text-[10px] uppercase tracking-wider text-slate-400"
+                data-testid="hub-build"
+              >
+                channel-teams build 0.2.1
+              </p>
             </header>
 
             ${routes.length === 0
