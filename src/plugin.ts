@@ -339,6 +339,27 @@ export async function activate(
   );
   core.log('info', 'teams bridge uiRoutes mounted at /p/channel-teams/{hub,tab-config}');
 
+  // --- Notification handler ------------------------------------------
+  // Slice 1: log-only handler so plugin authors can wire ctx.notify(...)
+  // and see the payload land in middleware logs. Slice 2 swaps the body
+  // for an actual Graph `sendActivityNotification` call once the App
+  // Manifest declares the `pluginEvent` activity type and the tenant
+  // admin has consented to the new `TeamsActivity.Send` permission.
+  const disposeTeamsNotify = ctx.notifications.registerChannel(
+    'teams',
+    async (payload) => {
+      const recipients =
+        payload.recipients === 'broadcast'
+          ? 'broadcast'
+          : `[${payload.recipients.length} recipient(s)]`;
+      core.log(
+        'info',
+        `[notify] teams ← plugin=${payload.pluginId} title=${JSON.stringify(payload.title)} body=${JSON.stringify(payload.body.length > 80 ? `${payload.body.slice(0, 80)}…` : payload.body)} deepLink=${JSON.stringify(payload.deepLink ?? '')} recipients=${recipients}`,
+      );
+    },
+  );
+  core.log('info', 'notification handler registered for channel "teams" (log-only — slice 1)');
+
   // --- Handle ----------------------------------------------------------
   return {
     close: async () => {
@@ -347,6 +368,7 @@ export async function activate(
       // sockets we need to close explicitly; attachment store / graph
       // client rely on HTTP pools that shut down with the process.
       disposeTeamsUi();
+      disposeTeamsNotify();
       core.log('info', 'Teams channel closed (routes now 503)');
     },
   };
