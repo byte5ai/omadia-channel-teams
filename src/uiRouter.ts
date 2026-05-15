@@ -77,7 +77,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                 class="mt-1 text-[10px] uppercase tracking-wider text-slate-400"
                 data-testid="hub-build"
               >
-                channel-teams build 0.4.1
+                channel-teams build 0.4.2
               </p>
             </header>
 
@@ -125,9 +125,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
       const routes = await opts.discover();
       const optionsHtml = routes.map(
         (r) => html`
-          <option value="${r.pluginId}::${r.path}">
-            ${r.pluginId} — ${r.title}
-          </option>
+          <option value="${r.pluginId}::${r.path}">${r.title}</option>
         `,
       );
 
