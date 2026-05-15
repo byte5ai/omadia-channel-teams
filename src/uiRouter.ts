@@ -47,6 +47,15 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
   const router = Router();
   const origin = opts.webUiOrigin ?? '';
 
+  /**
+   * pluginId in the catalog is the full agentId (e.g. `@omadia/foo`),
+   * but plugins mount their routers under `/p/<name-without-namespace>`
+   * (e.g. `/p/foo`). Strip the leading `@<scope>/` so the rendered URL
+   * matches the actual HTTP mount.
+   */
+  const mountSlug = (pluginId: string): string =>
+    pluginId.replace(/^@[^/]+\//, '');
+
   router.get(
     '/hub',
     renderRoute(async () => {
@@ -68,7 +77,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                 class="mt-1 text-[10px] uppercase tracking-wider text-slate-400"
                 data-testid="hub-build"
               >
-                channel-teams build 0.4.0
+                channel-teams build 0.4.1
               </p>
             </header>
 
@@ -82,7 +91,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                       (r) => html`
                         <li>
                           <a
-                            href="${origin}/p/${r.pluginId}${r.path}"
+                            href="${origin}/p/${mountSlug(r.pluginId)}${r.path}"
                             target="_blank"
                             rel="noopener"
                             class="block bg-white border border-slate-200 rounded-lg p-4 hover:border-slate-400 hover:shadow-sm transition"
@@ -96,7 +105,7 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                             <div
                               class="text-xs font-mono text-slate-400 mt-2 truncate"
                             >
-                              ${r.path}
+                              /p/${mountSlug(r.pluginId)}${r.path}
                             </div>
                           </a>
                         </li>
@@ -148,9 +157,13 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
                   var pluginId = parts[0];
                   var routePath = parts[1] || '/';
                   var origin = ${JSON.stringify(origin || '')};
+                  // Strip @<scope>/ from pluginId — descriptors carry
+                  // the full agentId but plugins mount under the bare
+                  // name (e.g. agentId '@omadia/foo' → route /p/foo).
+                  var slug = pluginId.replace(/^@[^/]+\\//, '');
                   var contentUrl =
                     (origin || window.location.origin) +
-                    '/p/' + pluginId + routePath;
+                    '/p/' + slug + routePath;
                   log('save → ' + contentUrl);
                   t.pages.config.setConfig({
                     contentUrl: contentUrl,
