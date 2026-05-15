@@ -28,6 +28,10 @@ import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import { createTeamsRouter } from './messagesRouter.js';
+import {
+  createTeamsUiRouter,
+  type DiscoveredUiRoute,
+} from './uiRouter.js';
 
 /**
  * Microsoft Teams as a first-class ChannelPlugin. The Bot Framework App
@@ -316,6 +320,25 @@ export async function activate(
     );
   }
 
+  // --- Teams bridge uiRoutes (Hub + Tab-Config) -----------------------
+  // Mount at /p/channel-teams via ctx.routes.register so the URLs are
+  // browser-reachable through web-ui's /p/:path* rewrite. The Teams
+  // App-Manifest's staticTabs[] points at /p/channel-teams/hub and
+  // configurableTabs[].configurationUrl at /p/channel-teams/tab-config.
+  //
+  // Discovery is a static stub for the PoC — the live registry surface
+  // will land alongside the Notification API. Inject via opts so the
+  // smoke harness can substitute fixtures.
+  const teamsUiRouter = createTeamsUiRouter({
+    webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',
+    discover: () => discoverUiRoutesStub(),
+  });
+  const disposeTeamsUi = ctx.routes.register(
+    '/p/channel-teams',
+    teamsUiRouter,
+  );
+  core.log('info', 'teams bridge uiRoutes mounted at /p/channel-teams/{hub,tab-config}');
+
   // --- Handle ----------------------------------------------------------
   return {
     close: async () => {
@@ -323,9 +346,27 @@ export async function activate(
       // incoming requests return 503. The TeamsBot holds no timers or
       // sockets we need to close explicitly; attachment store / graph
       // client rely on HTTP pools that shut down with the process.
+      disposeTeamsUi();
       core.log('info', 'Teams channel closed (routes now 503)');
     },
   };
+}
+
+/**
+ * PoC discovery stub — returns the reference-plugin's dashboard route so
+ * the Hub has something to list and Tab-Config has a target to pick.
+ * Replace with a live PluginRouteRegistry query once the Notification API
+ * lands and surfaces a discovery service.
+ */
+function discoverUiRoutesStub(): DiscoveredUiRoute[] {
+  return [
+    {
+      pluginId: 'agent-reference-maximum',
+      routeId: 'dashboard',
+      path: '/dashboard',
+      title: 'Reference Agent — Dashboard',
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------

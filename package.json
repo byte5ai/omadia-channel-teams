@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-teams",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -26,6 +26,7 @@
     "@omadia/integration-microsoft365": "*",
     "@omadia/orchestrator": "*",
     "@omadia/plugin-api": "*",
+    "@omadia/plugin-ui-helpers": "*",
     "botbuilder": "^4.23.3",
     "express": "^5.0.0",
     "pg": "^8.13.0"
