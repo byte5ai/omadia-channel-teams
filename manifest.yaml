@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.1.3"
+  version: "0.5.0"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für den byte5 Harness. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -43,6 +43,17 @@ setup:
       help: "Namespace-Präfix für persistierte Teams-Attachments im gemeinsamen Tigris-Bucket. Erlaubt Co-Existenz mit den Diagram-Renderings (`diagrams/`). Default 'teams-attachments'."
       required: false
       default: "teams-attachments"
+    - key: "teams_notify_team_id"
+      type: "string"
+      label: "Teams-Team-ID für Bell-Notifications"
+      help: "Group-ID des Microsoft Teams Teams (AAD groupId), in dem plugin-emittierte Notifications als Activity-Feed-Bell erscheinen sollen. Holst du via Teams → Team-Settings → Get link to team → groupId-Query-Param ODER via Graph Explorer (/teams). Leer lassen → Fallback auf log-only."
+      required: false
+    - key: "teams_notify_topic_url"
+      type: "string"
+      label: "Topic-URL für Activity-Notification"
+      help: "Browser-Url die Teams öffnet, wenn der User auf die Bell-Notification klickt. Default: harness-Hub. Plugin-spezifische Deep-Links überschreiben das pro Notification."
+      required: false
+      default: "https://odoo-bot-harness.fly.dev/p/channel-teams/hub"
 
 playbook:
   when_to_use: |

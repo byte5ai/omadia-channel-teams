@@ -28,6 +28,22 @@ import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import { createTeamsRouter } from './messagesRouter.js';
+import { createTeamsUiRouter } from './uiRouter.js';
+
+/**
+ * Minimal shape of the kernel's UiRouteCatalog service. Declared here
+ * so the plugin doesn't need a hard dep on @omadia/plugin-api's
+ * UiRouteDescriptor type — keeps the plugin compilable in isolation
+ * even if the host's plugin-api version skews ahead.
+ */
+interface UiRouteCatalogShim {
+  list(): readonly {
+    readonly pluginId: string;
+    readonly routeId: string;
+    readonly path: string;
+    readonly title: string;
+  }[];
+}
 
 /**
  * Microsoft Teams as a first-class ChannelPlugin. The Bot Framework App
@@ -316,6 +332,132 @@ export async function activate(
     );
   }
 
+  // --- Teams bridge uiRoutes (Hub + Tab-Config) -----------------------
+  // Mount at /p/channel-teams via ctx.routes.register so the URLs are
+  // browser-reachable through web-ui's /p/:path* rewrite. The Teams
+  // App-Manifest's staticTabs[] points at /p/channel-teams/hub and
+  // configurableTabs[].configurationUrl at /p/channel-teams/tab-config.
+  //
+  // Discovery is live — the kernel publishes a UiRouteCatalog as the
+  // `uiRouteCatalog` service. Every Hub + Tab-Config request pulls the
+  // current set from it, so plugins that come and go via upload/uninstall
+  // surface automatically without a channel-teams code change.
+  const uiRouteCatalog = ctx.services.get<UiRouteCatalogShim>(
+    'uiRouteCatalog',
+  );
+  if (!uiRouteCatalog) {
+    throw new Error(
+      "channel-teams: required service 'uiRouteCatalog' not published — kernel must publish it before plugins activate (see middleware/src/index.ts).",
+    );
+  }
+  const teamsUiRouter = createTeamsUiRouter({
+    webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',
+    discover: () =>
+      uiRouteCatalog
+        .list()
+        // Don't list channel-teams' OWN surfaces in the Hub/Tab-Config —
+        // the operator pins those via the App-Manifest's staticTabs[]
+        // entry, not as targets-of-itself.
+        .filter((r) => r.pluginId !== '@omadia/channel-teams')
+        .map((r) => ({
+          pluginId: r.pluginId,
+          routeId: r.routeId,
+          path: r.path,
+          title: r.title,
+        })),
+  });
+  const disposeTeamsUi = ctx.routes.register(
+    '/p/channel-teams',
+    teamsUiRouter,
+  );
+  core.log('info', 'teams bridge uiRoutes mounted at /p/channel-teams/{hub,tab-config}');
+
+  // --- Notification handler ------------------------------------------
+  // Slice 2: real Graph `sendActivityNotification` Bell-Icon push when
+  // a target team-id is configured. Falls back to log-only when not
+  // (lets the plugin run in dev without poking Teams). The Activity-
+  // Type `pluginEvent` MUST be declared in the App-Manifest's
+  // `activities.activityTypes[]`; the TeamsActivity.Send.Group
+  // permission was consented when the bot was first deployed.
+  const notifyTargetTeamId = ctx.config.get<string>(
+    'teams_notify_team_id',
+  );
+  const notifyTopicWebUrl =
+    ctx.config.get<string>('teams_notify_topic_url') ??
+    'https://odoo-bot-harness.fly.dev/p/channel-teams/hub';
+  // Re-resolve the microsoft365 accessor here — the earlier read inside
+  // the attachment-store branch is scoped to that `if`-block. Reading
+  // again is cheap (single ServiceRegistry lookup) and keeps the
+  // notification path independent of the attachment-store config.
+  const notifyMs365 = ctx.services.get<Microsoft365Accessor>(
+    'microsoft365.graph',
+  );
+  const disposeTeamsNotify = ctx.notifications.registerChannel(
+    'teams',
+    async (payload) => {
+      const recipientsLabel =
+        payload.recipients === 'broadcast'
+          ? 'broadcast'
+          : `[${payload.recipients.length} recipient(s)]`;
+      const previewBody =
+        payload.body.length > 140
+          ? `${payload.body.slice(0, 140)}…`
+          : payload.body;
+      core.log(
+        'info',
+        `[notify] teams ← plugin=${payload.pluginId} title=${JSON.stringify(payload.title)} body=${JSON.stringify(previewBody)} deepLink=${JSON.stringify(payload.deepLink ?? '')} recipients=${recipientsLabel}`,
+      );
+
+      if (!notifyTargetTeamId) {
+        core.log(
+          'info',
+          '[notify] teams_notify_team_id not configured — skipping Graph sendActivityNotification (log-only fallback)',
+        );
+        return;
+      }
+      if (!notifyMs365) {
+        core.log(
+          'info',
+          '[notify] microsoft365.graph service unavailable — skipping Graph sendActivityNotification',
+        );
+        return;
+      }
+      const webUrl = payload.deepLink
+        ? `${notifyTopicWebUrl.replace(/\/p\/channel-teams\/hub\/?$/, '')}${payload.deepLink}`
+        : notifyTopicWebUrl;
+      try {
+        await notifyMs365.app.sendActivityNotification({
+          scope: `/teams/${encodeURIComponent(notifyTargetTeamId)}`,
+          activityType: 'pluginEvent',
+          previewText: previewBody,
+          templateParameters: [
+            { name: 'pluginId', value: payload.pluginId },
+            { name: 'title', value: payload.title },
+          ],
+          topic: {
+            source: 'text',
+            value: payload.title,
+            webUrl,
+          },
+        });
+        core.log(
+          'info',
+          `[notify] graph sendActivityNotification ok team=${notifyTargetTeamId.slice(0, 20)} type=pluginEvent`,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        core.log(
+          'info',
+          `[notify] graph sendActivityNotification FAILED: ${message}`,
+        );
+      }
+    },
+  );
+  core.log(
+    'info',
+    `notification handler registered for channel "teams" (mode=${notifyTargetTeamId ? 'graph→team:' + notifyTargetTeamId.slice(0, 12) : 'log-only'})`,
+  );
+
   // --- Handle ----------------------------------------------------------
   return {
     close: async () => {
@@ -323,6 +465,8 @@ export async function activate(
       // incoming requests return 503. The TeamsBot holds no timers or
       // sockets we need to close explicitly; attachment store / graph
       // client rely on HTTP pools that shut down with the process.
+      disposeTeamsUi();
+      disposeTeamsNotify();
       core.log('info', 'Teams channel closed (routes now 503)');
     },
   };
