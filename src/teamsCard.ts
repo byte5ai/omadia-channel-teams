@@ -1056,7 +1056,12 @@ function privacyReceiptSummary(r: PrivacyReceipt): string {
           r.fieldsMasked === 1 ? '' : 'er'
         } maskiert`
       : '';
-  return `${datasets}${masked}`;
+  const onWire = r.identityValuesOnWire ?? 0;
+  const named =
+    onWire > 0
+      ? ` · ⚠ ${String(onWire)} Name${onWire === 1 ? '' : 'n'} ans Modell`
+      : '';
+  return `${datasets}${masked}${named}`;
 }
 
 function buildPrivacyReceiptItems(r: PrivacyReceipt): unknown[] {
@@ -1073,6 +1078,14 @@ function buildPrivacyReceiptItems(r: PrivacyReceipt): unknown[] {
       value: r.pseudonymProjectionUsed ? 'verwendet' : 'nicht verwendet',
     },
   ];
+  // Transparency notice — identity values the requester named themselves.
+  // Shown only when it actually happened.
+  if ((r.identityValuesOnWire ?? 0) > 0) {
+    facts.push({
+      title: 'Namen ans Modell (selbst genannt)',
+      value: String(r.identityValuesOnWire),
+    });
+  }
   return [
     {
       type: 'TextBlock',
