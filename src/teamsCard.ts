@@ -1,10 +1,6 @@
 import type { Attachment } from 'botbuilder';
 import { CardFactory } from 'botbuilder';
-import type {
-  PrivacyDetection,
-  PrivacyDetectorRun,
-  PrivacyReceipt,
-} from '@omadia/plugin-api';
+import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   CaptureDisclosure,
   OutgoingAttachment,
@@ -102,6 +98,15 @@ export interface BuildAnswerCardInput {
    * without masking. Omitted (no button shown) when undefined.
    */
   privacyReceipt?: PrivacyReceipt;
+  /**
+   * Privacy Shield v4 — real values rendered into `answer` that the LLM
+   * never saw (resolved server-side behind the data-plane boundary). Their
+   * occurrences in the answer are highlighted in the card's accent colour
+   * (Teams renders accent as its brand violet) so the asker sees at a
+   * glance which data was protected. When present, the answer is rendered
+   * as a `RichTextBlock` of `TextRun`s instead of a markdown `TextBlock`.
+   */
+  maskedValues?: readonly string[];
 }
 
 /** Adaptive-Card Submit payload for the fresh-check button. */
@@ -408,6 +413,7 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     followUps,
     disclosure,
     privacy,
+    input.maskedValues,
   );
   if (bytes(full) <= CARD_BUDGET_BYTES) return full;
 
@@ -423,6 +429,7 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
       followUps,
       disclosure,
       privacy,
+      input.maskedValues,
     );
     if (bytes(compact) <= CARD_BUDGET_BYTES) return compact;
   }
@@ -438,6 +445,7 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     followUps,
     disclosure,
     privacy,
+    input.maskedValues,
   );
   if (bytes(noTrace) <= CARD_BUDGET_BYTES) return noTrace;
 
@@ -452,6 +460,7 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     followUps,
     undefined,
     privacy,
+    input.maskedValues,
   );
   if (bytes(noDisclosure) <= CARD_BUDGET_BYTES) return noDisclosure;
 
@@ -466,6 +475,7 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     followUps,
     undefined,
     undefined,
+    input.maskedValues,
   );
   if (bytes(noPrivacy) <= CARD_BUDGET_BYTES) return noPrivacy;
 
@@ -482,6 +492,7 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
     followUps,
     undefined,
     undefined,
+    input.maskedValues,
   );
 }
 
@@ -499,6 +510,7 @@ function assemble(
   followUps: ReadonlyArray<{ label: string; prompt: string }> = [],
   disclosure?: CaptureDisclosure,
   privacy?: PrivacyReceipt,
+  maskedValues: readonly string[] = [],
 ): CardBody {
   const chipItems: unknown[] = [
     {
@@ -529,12 +541,11 @@ function assemble(
       spacing: 'None',
       items: chipItems,
     },
-    // Answer — `wrap: true` handles long lines, `rtl: false` + markdown support.
-    {
-      type: 'TextBlock',
-      text: answer,
-      wrap: true,
-    },
+    // Answer. A v4 table renders as a native Adaptive-Card `Table` with
+    // masked cells in the accent (violet) colour; prose / non-table answers
+    // stay a markdown `TextBlock` (plus a compact violet line when they
+    // resolved masked values).
+    ...buildAnswerElements(answer, maskedValues),
   ];
 
   // Image attachments sit directly under the answer. Teams renders PNG/JPEG/GIF
@@ -663,6 +674,170 @@ function assemble(
   }
 
   return actions.length > 0 ? { body, actions } : { body };
+}
+
+/**
+ * Build the answer body element(s). A v4 table answer is rendered as a
+ * native Adaptive-Card `Table` so it displays as a real table on Teams (a
+ * markdown `TextBlock` cannot render tables at all) — masked cells get the
+ * accent colour, which Teams renders in its brand violet. Prose and
+ * non-table answers stay a markdown `TextBlock`; when such an answer
+ * resolved masked values, a compact violet line is appended beneath it.
+ */
+function buildAnswerElements(
+  answer: string,
+  maskedValues: readonly string[],
+): unknown[] {
+  const masked = new Set(maskedValues.filter((v) => v.trim().length > 0));
+  const table = extractMarkdownTable(answer);
+  if (table !== undefined) {
+    const out: unknown[] = [];
+    if (table.prose.length > 0) {
+      out.push({ type: 'TextBlock', text: table.prose, wrap: true });
+    }
+    out.push(buildTableElement(table, masked));
+    if (table.trailing.length > 0) {
+      out.push({
+        type: 'TextBlock',
+        text: table.trailing,
+        wrap: true,
+        spacing: 'Small',
+      });
+    }
+    return out;
+  }
+  const out: unknown[] = [{ type: 'TextBlock', text: answer, wrap: true }];
+  if (masked.size > 0) {
+    out.push(maskedValuesLine(masked));
+  }
+  return out;
+}
+
+/** A parsed GFM table — the shape the v4 Materializer emits. */
+interface ParsedAnswerTable {
+  readonly prose: string;
+  readonly trailing: string;
+  readonly headers: readonly string[];
+  readonly rows: ReadonlyArray<readonly string[]>;
+}
+
+/**
+ * Extract the first GFM table from a v4 materialized answer. Returns
+ * `undefined` when there is no table — the caller then keeps a plain
+ * markdown `TextBlock`.
+ */
+function extractMarkdownTable(answer: string): ParsedAnswerTable | undefined {
+  const lines = answer.split('\n');
+  for (let i = 0; i + 1 < lines.length; i += 1) {
+    const headerLine = lines[i];
+    const sepLine = lines[i + 1];
+    if (headerLine === undefined || sepLine === undefined) continue;
+    if (!headerLine.includes('|') || !sepLine.includes('|')) continue;
+    const headers = parseTableRow(headerLine);
+    const sepCells = parseTableRow(sepLine);
+    if (headers.length === 0 || sepCells.length !== headers.length) continue;
+    if (!sepCells.every((c) => /^:?-+:?$/.test(c))) continue;
+    const rows: string[][] = [];
+    let j = i + 2;
+    for (; j < lines.length; j += 1) {
+      const line = lines[j];
+      if (line === undefined || line.trim() === '' || !line.includes('|')) {
+        break;
+      }
+      rows.push(parseTableRow(line));
+    }
+    return {
+      prose: lines.slice(0, i).join('\n').trim(),
+      trailing: lines.slice(j).join('\n').trim(),
+      headers,
+      rows,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Split one pipe-delimited row into trimmed cell values — dropping the
+ * empty fields the bounding pipes produce and un-escaping `\|` (the
+ * Materializer escapes literal pipes inside a cell).
+ */
+function parseTableRow(line: string): string[] {
+  const parts = line.split(/(?<!\\)\|/);
+  if (parts.length > 0 && (parts[0] ?? '').trim() === '') parts.shift();
+  if (parts.length > 0 && (parts[parts.length - 1] ?? '').trim() === '') {
+    parts.pop();
+  }
+  return parts.map((c) => c.trim().replace(/\\\|/g, '|'));
+}
+
+/** Render a parsed table as a native Adaptive-Card `Table` element. */
+function buildTableElement(
+  table: ParsedAnswerTable,
+  masked: ReadonlySet<string>,
+): unknown {
+  const headerRow = {
+    type: 'TableRow',
+    cells: table.headers.map((h) => tableCell(h, 'header')),
+  };
+  const dataRows = table.rows.map((row) => ({
+    type: 'TableRow',
+    cells: table.headers.map((_, ci) => {
+      const value = row[ci] ?? '';
+      return tableCell(value, masked.has(value) ? 'masked' : 'plain');
+    }),
+  }));
+  return {
+    type: 'Table',
+    columns: table.headers.map(() => ({ width: 1 })),
+    firstRowAsHeaders: true,
+    gridStyle: 'default',
+    rows: [headerRow, ...dataRows],
+  };
+}
+
+/** One Adaptive-Card `TableCell`. `masked` cells render in accent/violet. */
+function tableCell(
+  text: string,
+  kind: 'header' | 'masked' | 'plain',
+): unknown {
+  const block: Record<string, unknown> = {
+    type: 'TextBlock',
+    text,
+    wrap: true,
+    size: 'Small',
+  };
+  if (kind === 'header') {
+    block['weight'] = 'Bolder';
+    block['isSubtle'] = true;
+  } else if (kind === 'masked') {
+    // Server-resolved value the LLM never saw — Teams renders Accent violet.
+    block['weight'] = 'Bolder';
+    block['color'] = 'Accent';
+  }
+  return { type: 'TableCell', items: [block] };
+}
+
+/**
+ * A compact violet line listing the masked values — appended under a
+ * non-table answer so the asker still sees what the boundary resolved.
+ */
+function maskedValuesLine(masked: ReadonlySet<string>): unknown {
+  const inlines: unknown[] = [
+    { type: 'TextRun', text: '🛡 Server-seitig eingesetzt: ' },
+  ];
+  const values = [...masked];
+  values.forEach((value, idx) => {
+    inlines.push({
+      type: 'TextRun',
+      text: value,
+      color: 'Accent',
+      weight: 'Bolder',
+    });
+    if (idx < values.length - 1) {
+      inlines.push({ type: 'TextRun', text: ' · ' });
+    }
+  });
+  return { type: 'RichTextBlock', spacing: 'Small', inlines };
 }
 
 function verifierChip(verifier: VerifierBadge): {
@@ -868,156 +1043,54 @@ function buildCaptureDisclosureItems(d: CaptureDisclosure): unknown[] {
 }
 
 /**
- * Header summary for the Privacy-Guard toggle button.
- * Examples: "0 Erkennungen · public-llm", "3 Erkennungen · public-llm",
- * "blocked: customer_data", "DEBUG · 2 Erkennungen".
+ * Header summary for the Privacy-Shield toggle button — e.g.
+ * "1 Tool-Ergebnis · 1 Feld maskiert".
  */
 function privacyReceiptSummary(r: PrivacyReceipt): string {
-  const totalHits = r.detections.reduce((n, d) => n + d.count, 0);
-  const debugPrefix = r.debug ? 'DEBUG · ' : '';
-  const routing =
-    r.routing === 'blocked'
-      ? `blockiert${r.routingReason ? ': ' + r.routingReason : ''}`
-      : r.routing;
-  const hits = `${String(totalHits)} Erkennung${totalHits === 1 ? '' : 'en'}`;
-  return `${debugPrefix}${hits} · ${routing}`;
+  const datasets = `${String(r.datasetsInterned)} Tool-Ergebnis${
+    r.datasetsInterned === 1 ? '' : 'se'
+  }`;
+  const masked =
+    r.fieldsMasked > 0
+      ? ` · ${String(r.fieldsMasked)} Feld${
+          r.fieldsMasked === 1 ? '' : 'er'
+        } maskiert`
+      : '';
+  return `${datasets}${masked}`;
 }
 
 function buildPrivacyReceiptItems(r: PrivacyReceipt): unknown[] {
-  const items: unknown[] = [];
-
-  items.push({
-    type: 'TextBlock',
-    text: '**🛡 Privacy-Guard · was wurde vor dem LLM-Call gefiltert?**',
-    weight: 'Bolder',
-    size: 'Small',
-    wrap: true,
-  });
-
-  if (r.debug) {
-    items.push({
+  const facts: Array<{ title: string; value: string }> = [
+    { title: 'Tool-Ergebnisse interned', value: String(r.datasetsInterned) },
+    { title: 'Felder maskiert', value: String(r.fieldsMasked) },
+    { title: 'Felder Klartext', value: String(r.fieldsCleartext) },
+    {
+      title: 'Verben',
+      value: r.verbsExecuted.length > 0 ? r.verbsExecuted.join(', ') : '—',
+    },
+    {
+      title: 'Pseudonym-Projektion',
+      value: r.pseudonymProjectionUsed ? 'verwendet' : 'nicht verwendet',
+    },
+  ];
+  return [
+    {
       type: 'TextBlock',
-      text: '⚠ DEBUG-MODUS aktiv — Receipt enthält PII-Werte (operator-toggle, niemals in Prod).',
-      color: 'Warning',
+      text: '**🛡 Privacy Shield v4 · Data-Plane-Boundary**',
       weight: 'Bolder',
       size: 'Small',
       wrap: true,
-      spacing: 'Small',
-    });
-  }
-
-  const facts: Array<{ title: string; value: string }> = [
-    { title: 'Modus', value: renderPolicyMode(r.policyMode) },
-    { title: 'Routing', value: renderRouting(r.routing) },
-  ];
-  if (r.routingReason) {
-    facts.push({ title: 'Grund', value: r.routingReason });
-  }
-  facts.push({ title: 'Latenz', value: `${String(r.latencyMs)} ms` });
-  facts.push({
-    title: 'Audit-ID',
-    value: `${r.receiptId} (${r.auditHash.slice(0, 8)}…)`,
-  });
-  items.push({ type: 'FactSet', facts });
-
-  if (r.detections.length === 0) {
-    items.push({
+    },
+    { type: 'FactSet', facts },
+    {
       type: 'TextBlock',
-      text: '_Keine Erkennungen._',
+      text: 'Rohe Tool-Ergebnisse blieben server-seitig — das Modell sah nur einen identitätsfreien Digest. Server-seitig eingesetzte Werte sind in der Antwort violett hervorgehoben.',
       size: 'Small',
       isSubtle: true,
       wrap: true,
-      spacing: 'Medium',
-    });
-  } else {
-    items.push({
-      type: 'TextBlock',
-      text: '**Erkennungen**',
-      weight: 'Bolder',
-      size: 'Small',
-      spacing: 'Medium',
-      wrap: true,
-    });
-    for (const d of r.detections) {
-      items.push(privacyDetectionRow(d));
-    }
-  }
-
-  // Detector run statuses surface fail-open cases (skipped/timeout/error)
-  // that would otherwise look identical to "0 Erkennungen" — mirrors web-ui.
-  const nonOk = r.detectorRuns.filter((run) => run.status !== 'ok');
-  if (nonOk.length > 0) {
-    items.push({
-      type: 'TextBlock',
-      text: '**Detector-Status**',
-      weight: 'Bolder',
-      size: 'Small',
-      spacing: 'Medium',
-      wrap: true,
-    });
-    for (const run of nonOk) {
-      items.push(privacyDetectorRunRow(run));
-    }
-  }
-
-  return items;
-}
-
-function renderPolicyMode(m: PrivacyReceipt['policyMode']): string {
-  return m === 'data-residency' ? 'Data-Residency' : 'PII-Shield';
-}
-
-function renderRouting(r: PrivacyReceipt['routing']): string {
-  switch (r) {
-    case 'public-llm':
-      return 'Public LLM';
-    case 'local-llm':
-      return 'Local LLM (Ollama)';
-    case 'blocked':
-      return 'Blockiert';
-  }
-}
-
-function renderDetectionAction(a: PrivacyDetection['action']): string {
-  switch (a) {
-    case 'redacted':
-      return 'redigiert';
-    case 'tokenized':
-      return 'tokenisiert';
-    case 'blocked':
-      return 'blockiert';
-    case 'passed':
-      return 'durchgelassen';
-  }
-}
-
-function privacyDetectionRow(d: PrivacyDetection): unknown {
-  const confidence = `${(d.confidenceMin * 100).toFixed(0)}%`;
-  const valuesPart =
-    d.values && d.values.length > 0
-      ? ` · Werte: ${d.values.slice(0, 3).join(', ')}${d.values.length > 3 ? '…' : ''}`
-      : '';
-  return {
-    type: 'TextBlock',
-    text: `• **${d.type}** × ${String(d.count)} → ${renderDetectionAction(d.action)} · ${d.detector} · min. Confidence ${confidence}${valuesPart}`,
-    size: 'Small',
-    wrap: true,
-    spacing: 'Small',
-  };
-}
-
-function privacyDetectorRunRow(run: PrivacyDetectorRun): unknown {
-  const icon =
-    run.status === 'timeout' ? '⏱' : run.status === 'error' ? '✗' : '⊘';
-  const reason = run.reason ? ` · ${run.reason}` : '';
-  return {
-    type: 'TextBlock',
-    text: `${icon} **${run.detector}** · ${run.status}${reason} · ${String(run.latencyMs)} ms`,
-    size: 'Small',
-    wrap: true,
-    spacing: 'Small',
-    color: run.status === 'error' ? 'Attention' : 'Warning',
-  };
+      spacing: 'Small',
+    },
+  ];
 }
 
 function toolRow(

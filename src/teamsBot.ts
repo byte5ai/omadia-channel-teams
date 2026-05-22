@@ -893,6 +893,7 @@ export class TeamsBot extends TeamsActivityHandler {
           result.oauthConsentPending ? this.ssoConnectionName : undefined,
           result.captureDisclosure,
           result.privacyReceipt,
+          result.maskedValues,
         );
 
         // Routine-list smart card (sidecar). Rendered AFTER the agent's
@@ -1003,6 +1004,7 @@ async function sendAnswer(
   consentConnectionName: string | undefined,
   captureDisclosure: CaptureDisclosure | undefined,
   privacyReceipt: PrivacyReceipt | undefined,
+  maskedValues: readonly string[] | undefined,
 ): Promise<void> {
   // Blocking clarification — render a standalone Choice-Card instead of
   // an answer. The follow-up / fresh-check actions aren't meaningful here
@@ -1062,6 +1064,7 @@ async function sendAnswer(
         : {}),
       ...(captureDisclosure ? { captureDisclosure } : {}),
       ...(privacyReceipt ? { privacyReceipt } : {}),
+      ...(maskedValues && maskedValues.length > 0 ? { maskedValues } : {}),
     });
     const activity = MessageFactory.attachment(card);
     // Activity-level entities: AI label + mention entities for Teams'
