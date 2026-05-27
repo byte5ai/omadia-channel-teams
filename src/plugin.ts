@@ -11,8 +11,41 @@ import {
   isNoReply,
   logNoReplyDrop,
   type ChannelHandle,
+  type ChannelKeyDirectory,
+  type ChatAgent,
   type CoreApi,
 } from '@omadia/channel-sdk';
+
+import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
+import { TeamsConversationObserver } from './teamsConversationObserver.js';
+
+/**
+ * Narrow shim for the kernel's `channelDirectoryRegistry@1` service so
+ * the plugin doesn't drag in `@omadia/middleware` types. The kernel-side
+ * surface has more methods (size, types, listAll) — we only consume
+ * register / unregister.
+ */
+interface ChannelDirectoryRegistryShim {
+  register(directory: ChannelKeyDirectory): void;
+  unregister(channelType: string): void;
+}
+
+/**
+ * Narrow shim for the kernel's `channelResolver@1` service (Phase A).
+ * Given a `(channel_type, channel_key)` pair, returns the resolved Agent
+ * binding decision — what `resolve()` produces in the kernel-side
+ * registry. We only consume the `chatAgent` field on a successful
+ * `decision: 'bound' | 'fallback'`.
+ */
+interface ChannelResolverShim {
+  resolve(
+    channelType: string,
+    channelKey: string,
+  ): {
+    readonly decision: 'bound' | 'fallback' | 'reject';
+    readonly chatAgent?: ChatAgent;
+  };
+}
 import type { TigrisStore } from '@omadia/diagrams';
 import type { Microsoft365Accessor } from '@omadia/integration-microsoft365';
 import type { ChatAgentBundle } from '@omadia/orchestrator';
@@ -82,6 +115,47 @@ export async function activate(
   const attachmentKeyPrefix =
     ctx.config.get<string>('teams_attachment_key_prefix') ??
     config.TEAMS_ATTACHMENT_KEY_PREFIX;
+
+  // --- Channels-directory contribution (A+B) ---------------------------
+  // Register this Teams bot with the kernel's channel-directory registry
+  // so the operator dashboard at /operator/channels can show it as a
+  // pickable target instead of asking the operator to memorise the
+  // 28:<app-id> key. The registry is optional: a host that has not
+  // landed the A+B platform change degrades to "no entry" gracefully.
+  //
+  // The observer is the SAME instance handed to TeamsBot below — the
+  // bot records every inbound conversation into it, and the directory's
+  // `listKeys()` reads them at render time. That way the operator sees
+  // every Teams channel the bot has been messaged in as a bindable
+  // target, alongside the bot-level catch-all.
+  const conversationObserver = new TeamsConversationObserver();
+  const channelDirectoryDisplayLabel = ctx.config.get<string>(
+    'teams_directory_label',
+  );
+  const channelDirectory = buildTeamsChannelKeyDirectory({
+    microsoftAppId: appId,
+    microsoftTenantId: tenantId,
+    ...(channelDirectoryDisplayLabel
+      ? { displayLabel: channelDirectoryDisplayLabel }
+      : {}),
+    conversationObserver,
+  });
+  const channelDirectoryRegistry =
+    ctx.services.get<ChannelDirectoryRegistryShim>(
+      'channelDirectoryRegistry',
+    );
+  if (channelDirectoryRegistry) {
+    channelDirectoryRegistry.register(channelDirectory);
+    core.log(
+      'info',
+      `channel-key directory contributed: teams · 28:${appId.slice(0, 8)}…`,
+    );
+  } else {
+    core.log(
+      'info',
+      'channelDirectoryRegistry@1 not published — skipping /operator/channels contribution',
+    );
+  }
 
   // --- chatAgent — late-resolved via capability registry (S+10-4b) -----
   // Manifest declares `requires: ["chatAgent@^1"]`, so the resolver guards
@@ -213,6 +287,30 @@ export async function activate(
       )
     : undefined;
 
+  // --- Per-turn Agent resolution (Phase A) -----------------------------
+  // Late-resolved channelResolver@1: when the multi-orchestrator
+  // registry is active AND the operator bound this Teams bot to an
+  // Agent in /operator/channels, each inbound turn is routed to that
+  // Agent. Without the resolver service the bot falls back to the
+  // legacy chatAgent@1 (the `chatAgent` constant captured above).
+  const channelResolver =
+    ctx.services.get<ChannelResolverShim>('channelResolver');
+  const resolveChatAgentForActivity = channelResolver
+    ? (input: { channelType: 'teams'; channelKey: string }): {
+        decision: 'bound' | 'fallback' | 'reject';
+        chatAgent?: ChatAgent;
+      } => {
+        const decision = channelResolver.resolve(
+          input.channelType,
+          input.channelKey,
+        );
+        return {
+          decision: decision.decision,
+          ...(decision.chatAgent ? { chatAgent: decision.chatAgent } : {}),
+        };
+      }
+    : undefined;
+
   // --- Bot + Router ----------------------------------------------------
   const bot = new TeamsBot(
     chatAgent,
@@ -226,7 +324,21 @@ export async function activate(
     captureRoutineTurn,
     handleRoutineAction,
     buildRoutineListSmartCardAttachment,
+    resolveChatAgentForActivity,
+    conversationObserver,
   );
+
+  if (resolveChatAgentForActivity) {
+    core.log(
+      'info',
+      'Teams per-turn Agent resolution active via channelResolver@1',
+    );
+  } else {
+    core.log(
+      'info',
+      'channelResolver@1 not published — Teams routes all turns to default chatAgent',
+    );
+  }
   if (ssoConnectionName) {
     core.log(
       'info',
@@ -467,6 +579,10 @@ export async function activate(
       // client rely on HTTP pools that shut down with the process.
       disposeTeamsUi();
       disposeTeamsNotify();
+      // Drop our channel-directory contribution so /operator/channels
+      // stops surfacing this bot when the plugin is uninstalled or
+      // re-activated with new config.
+      channelDirectoryRegistry?.unregister('teams');
       core.log('info', 'Teams channel closed (routes now 503)');
     },
   };

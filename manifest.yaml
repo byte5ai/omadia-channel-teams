@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.6.1"
+  version: "0.9.0"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für den byte5 Harness. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -54,6 +54,11 @@ setup:
       help: "Browser-Url die Teams öffnet, wenn der User auf die Bell-Notification klickt. Default: harness-Hub. Plugin-spezifische Deep-Links überschreiben das pro Notification."
       required: false
       default: "https://odoo-bot-harness.fly.dev/p/channel-teams/hub"
+    - key: "teams_directory_label"
+      type: "string"
+      label: "Dashboard-Label für Channel-Routing"
+      help: "Optionales operator-freundliches Label für /operator/channels (statt 'Teams · <bot-app-id-short>'). Beispiel: 'Teams · Production · Marketing'. Leer lassen → generiertes Default-Label."
+      required: false
 
 playbook:
   when_to_use: |
