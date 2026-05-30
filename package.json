@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-teams",
-  "version": "0.9.0",
+  "version": "0.10.3",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -34,6 +34,6 @@
   "engines": {
     "node": ">=20"
   },
-  "description": "Microsoft Teams channel plugin for the byte5 Harness. Implements @omadia/channel-sdk's ChannelPlugin contract: Bot-Framework adapter, Adaptive-Card rendering, roster + mention resolution, attachment persistence with signed-URL proxy, and HTTP routes for /api/messages + /attachments. Depends on @omadia/integration-microsoft365 for shared Graph client and App-registration credentials.",
+  "description": "Microsoft Teams channel plugin for Omadia. Implements @omadia/channel-sdk's ChannelPlugin contract: Bot-Framework adapter, Adaptive-Card rendering, roster + mention resolution, attachment persistence with signed-URL proxy, and HTTP routes for /api/messages + /attachments. Depends on @omadia/integration-microsoft365 for shared Graph client and App-registration credentials.",
   "license": "MIT"
 }
