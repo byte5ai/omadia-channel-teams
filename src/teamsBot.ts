@@ -41,6 +41,7 @@ import {
   parseTopicDecisionValue,
 } from './teamsCard.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
+import type { TeamsConversationObserver } from './teamsConversationObserver.js';
 import {
   resolveMentions,
   stripMentionTokens,
@@ -61,8 +62,24 @@ const TYPING_INTERVAL_MS = 5_000;
  * comes from the persistent memory store, not from a stored session.
  */
 export class TeamsBot extends TeamsActivityHandler {
+  /**
+   * Per-turn resolved ChatAgent for the current handleMessage(). Set once
+   * at the top of handleMessage from `resolveChatAgentForActivity` (or
+   * `defaultOrchestrator` if no resolver is wired); read by the chat
+   * invocation later in the same turn. Stored on the instance because
+   * handleMessage delegates to several private helpers that all need it
+   * and threading another argument through every one of them adds noise.
+   * Per-turn means concurrent turns won't trample each other under
+   * normal load (one event-loop tick per Bot Framework invocation) —
+   * a future hot-concurrent harness would need an AsyncLocalStorage.
+   */
+  private currentChatAgent: ChatAgent | undefined;
+
   constructor(
-    private readonly orchestrator: ChatAgent,
+    /** Default / legacy chatAgent. Used when no per-Agent resolver returns
+     *  anything for this turn (e.g. no binding configured for this Teams
+     *  bot yet, or pre-Phase-A boot). */
+    private readonly defaultOrchestrator: ChatAgent,
     private readonly history: ConversationHistoryStore,
     private readonly topicDetector: TopicDetector | undefined,
     /**
@@ -129,6 +146,43 @@ export class TeamsBot extends TeamsActivityHandler {
         lastRunStatus: 'ok' | 'error' | 'timeout' | null;
       }>;
     }) => { contentType: string; content: unknown },
+    /**
+     * Phase A+B follow-up — per-turn ChatAgent resolver from the
+     * multi-orchestrator runtime. Given the activity's recipient
+     * identity (`28:<bot-app-id>` in Teams), the kernel's
+     * `channelResolver@1` is asked which Agent owns this channel. When
+     * unset (no DATABASE_URL / pre-Phase-A boot / no binding configured)
+     * the bot falls back to `defaultOrchestrator` and behaves
+     * identically to before. Errors inside the resolver are caught by
+     * the caller in plugin.ts; this hook receives a swallow-failures
+     * contract.
+     */
+    /**
+     * Resolves a key to a ChatAgent. Returns `decision: 'bound'` ONLY
+     * when an explicit binding exists for the given key — `'fallback'`
+     * means "no specific binding, the platform fallback Agent would
+     * answer", `'reject'` means "no binding and no fallback configured".
+     * The bot tries conversation-id first; on 'bound' it uses that
+     * agent; on 'fallback' / 'reject' it tries recipient-id; if still
+     * not 'bound', accepts the 'fallback' decision from any of the
+     * tried keys.
+     */
+    private readonly resolveChatAgentForActivity?: (input: {
+      readonly channelType: 'teams';
+      readonly channelKey: string;
+      readonly conversationId: string;
+    }) => {
+      readonly decision: 'bound' | 'fallback' | 'reject';
+      readonly chatAgent?: ChatAgent;
+    },
+    /**
+     * Observer that records every inbound conversation so the
+     * `/operator/channels` dashboard can list known Teams channels /
+     * DMs / group chats as bindable targets. Optional — without it,
+     * routing falls back to bot-level (`recipient.id`) and the
+     * dashboard only sees the catch-all entry.
+     */
+    private readonly conversationObserver?: TeamsConversationObserver,
   ) {
     super();
 
@@ -138,7 +192,126 @@ export class TeamsBot extends TeamsActivityHandler {
     });
   }
 
+  /**
+   * Resolve the ChatAgent for THIS turn based on the bot framework
+   * activity. Sets `this.currentChatAgent` so the helpers downstream
+   * (which all read it via `this.currentChatAgent ?? this.defaultOrchestrator`)
+   * see the same agent for the whole turn even if the resolver later
+   * changes (binding edit mid-turn). Called once at the top of
+   * handleMessage.
+   *
+   * `channelKey` is the Teams bot's identity (`activity.recipient.id`,
+   * typically `28:<bot-app-id>`). This matches what the Teams plugin
+   * publishes via its `ChannelKeyDirectory` contribution, so what the
+   * operator picked in `/operator/channels` IS what the resolver
+   * matches at runtime.
+   */
+  private resolveChatAgentForTurn(activity: TurnContext['activity']): void {
+    if (!this.resolveChatAgentForActivity) {
+      this.currentChatAgent = undefined;
+      return;
+    }
+    const conversationId = activity.conversation?.id;
+    const recipientId =
+      typeof activity.recipient?.id === 'string'
+        ? activity.recipient.id
+        : undefined;
+    if (!conversationId && !recipientId) {
+      this.currentChatAgent = undefined;
+      return;
+    }
+    // Precedence: conversation-scoped binding wins over bot-level
+    // catch-all. Operator binds a specific Teams channel to an Agent;
+    // every other channel falls through to the recipient.id binding;
+    // if neither has an explicit binding we accept the registry's
+    // platform fallback Agent (still better than the legacy default).
+    const keysToTry: string[] = [];
+    if (conversationId) keysToTry.push(conversationId);
+    if (recipientId && recipientId !== conversationId)
+      keysToTry.push(recipientId);
+
+    let fallbackCandidate: ChatAgent | undefined;
+    try {
+      for (const key of keysToTry) {
+        const decision = this.resolveChatAgentForActivity({
+          channelType: 'teams',
+          channelKey: key,
+          conversationId: conversationId ?? 'unknown',
+        });
+        if (decision.decision === 'bound' && decision.chatAgent) {
+          this.currentChatAgent = decision.chatAgent;
+          return;
+        }
+        if (decision.decision === 'fallback' && decision.chatAgent) {
+          // Remember the platform fallback but keep checking less-specific
+          // keys — recipient.id might still be explicitly bound.
+          fallbackCandidate ??= decision.chatAgent;
+        }
+      }
+      this.currentChatAgent = fallbackCandidate;
+    } catch (err) {
+      console.error(
+        `[teams] channelResolver threw (conv=${conversationId?.slice(0, 16) ?? '-'}, recipient=${recipientId?.slice(0, 16) ?? '-'}…) — falling back to default agent:`,
+        err,
+      );
+      this.currentChatAgent = undefined;
+    }
+  }
+
+  /**
+   * Whether this inbound activity explicitly @mentions our bot.
+   *
+   * Teams enforces "channel posts require @mention" at platform level
+   * (channel-scoped activities only flow to bots that are tagged). Group
+   * chats are different: depending on tenant policy the bot can receive
+   * every message in the chat once it has been added. Personal 1:1 chats
+   * never require a mention.
+   *
+   * We treat "not mentioned + not personal" as silence — the bot drops
+   * the turn without responding so it doesn't accidentally talk in group
+   * chats where it was added but the current user wasn't addressing it.
+   * The observer still captures the conversation (the directory should
+   * surface it as a bindable target regardless of whether THIS message
+   * was addressed at us).
+   */
+  private isMentioned(activity: TurnContext['activity']): boolean {
+    const recipientId = activity.recipient?.id;
+    if (!recipientId) return false;
+    const entities = activity.entities ?? [];
+    for (const entity of entities) {
+      if (entity.type !== 'mention') continue;
+      const mentioned = (entity as { mentioned?: { id?: string } }).mentioned;
+      if (mentioned?.id === recipientId) return true;
+    }
+    return false;
+  }
+
   private async handleMessage(context: TurnContext): Promise<void> {
+    // Record this conversation so /operator/channels can list it as a
+    // bindable target — idempotent + cheap. Done BEFORE the mention
+    // filter so operators can pre-bind a chat even if nobody has
+    // @-mentioned the bot yet (a "Mention me later" pre-config flow).
+    this.conversationObserver?.observe(context);
+    // Phase A+B follow-up — pick the ChatAgent for THIS turn before any
+    // chat work runs. Falls back to defaultOrchestrator on miss / error.
+    this.resolveChatAgentForTurn(context.activity);
+
+    // Mention-only policy: in any non-personal context (group chat,
+    // channel thread, meeting chat) drop the turn unless the bot was
+    // explicitly @mentioned. Otherwise the bot would chime in on every
+    // message of a group chat the moment it joins — noisy + unwanted.
+    const conversationType =
+      context.activity.conversation?.conversationType ?? 'unknown';
+    const isPersonal = conversationType === 'personal';
+    if (!isPersonal && !this.isMentioned(context.activity)) {
+      const conversationIdShort =
+        (context.activity.conversation?.id ?? '-').slice(0, 24);
+      console.error(
+        `[teams] drop non-mention conv=${conversationIdShort}… type=${conversationType}`,
+      );
+      return;
+    }
+
     const conversationId = context.activity.conversation?.id ?? 'unknown';
     const sessionScope = `teams-${conversationId}`;
     const from = context.activity.from;
@@ -151,6 +324,31 @@ export class TeamsBot extends TeamsActivityHandler {
     console.error(
       `[teams] inbound conv=${conversationId} aad=${from?.aadObjectId ?? '-'} type=${context.activity.type ?? '-'} hasText=${String(Boolean(context.activity.text))} hasAttachments=${String((context.activity.attachments?.length ?? 0) > 0)}`,
     );
+    // Phase-B+ diagnostic — print the full Teams routing context once per
+    // inbound so we can tell genuine "same conversation" from look-alike
+    // contexts (group-chat vs. channel-thread vs. meeting-chat, same vs.
+    // different recipient bot id). Helps debug the operator-channels
+    // dashboard when a conv-id appears stable across what the operator
+    // believes are different chats.
+    {
+      const conv = context.activity.conversation;
+      const recipient = context.activity.recipient;
+      const channelData = context.activity.channelData as
+        | {
+            team?: { id?: string; name?: string };
+            channel?: { id?: string; name?: string };
+            tenant?: { id?: string };
+          }
+        | undefined;
+      console.error(
+        `[teams] inbound-meta conv=${conversationId} ` +
+          `conversationType=${conv?.conversationType ?? '-'} ` +
+          `team=${channelData?.team?.id?.slice(0, 12) ?? '-'}(${channelData?.team?.name ?? '-'}) ` +
+          `channel=${channelData?.channel?.id?.slice(0, 12) ?? '-'}(${channelData?.channel?.name ?? '-'}) ` +
+          `tenant=${channelData?.tenant?.id?.slice(0, 12) ?? '-'} ` +
+          `recipient=${recipient?.id?.slice(0, 16) ?? '-'}(${recipient?.name ?? '-'})`,
+      );
+    }
 
     // Persist any file / image attachments BEFORE delegating to the
     // orchestrator — we want to thread the stored metadata (storage key +
@@ -849,7 +1047,8 @@ export class TeamsBot extends TeamsActivityHandler {
             console.error('[teams] routines turn-context capture failed:', refErr);
           }
         }
-        const result = await this.orchestrator.chat({
+        const chatAgent = this.currentChatAgent ?? this.defaultOrchestrator;
+        const result = await chatAgent.chat({
           userMessage: input.userMessage,
           sessionScope: input.sessionScope,
           ...(input.userId ? { userId: input.userId } : {}),

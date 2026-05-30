@@ -54,6 +54,11 @@ setup:
       help: "Browser-Url die Teams öffnet, wenn der User auf die Bell-Notification klickt. Default: Omadia-Hub. Plugin-spezifische Deep-Links überschreiben das pro Notification."
       required: false
       default: "https://odoo-bot-harness.fly.dev/p/channel-teams/hub"
+    - key: "teams_directory_label"
+      type: "string"
+      label: "Dashboard-Label für Channel-Routing"
+      help: "Optionales operator-freundliches Label für /operator/channels (statt 'Teams · <bot-app-id-short>'). Beispiel: 'Teams · Production · Marketing'. Leer lassen → generiertes Default-Label."
+      required: false
 
 playbook:
   when_to_use: |
