@@ -303,7 +303,16 @@ export class TeamsBot extends TeamsActivityHandler {
     const conversationType =
       context.activity.conversation?.conversationType ?? 'unknown';
     const isPersonal = conversationType === 'personal';
-    if (!isPersonal && !this.isMentioned(context.activity)) {
+    // Action.Submit card interactions (follow-up buttons, choice/slot/routine
+    // cards) always carry a `value` payload and are unambiguously directed at
+    // THIS bot — Teams routes them to us regardless of an @-mention, and a card
+    // click cannot inject a mention entity (messageBack has no entities). Treat
+    // them as bot-directed so channel follow-ups actually trigger a turn;
+    // otherwise the mention-gate silently drops every button click in a channel.
+    const isCardAction =
+      typeof context.activity.value === 'object' &&
+      context.activity.value !== null;
+    if (!isPersonal && !isCardAction && !this.isMentioned(context.activity)) {
       const conversationIdShort =
         (context.activity.conversation?.id ?? '-').slice(0, 24);
       console.error(

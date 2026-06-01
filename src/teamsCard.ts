@@ -548,21 +548,48 @@ function assemble(
     ...buildAnswerElements(answer, maskedValues),
   ];
 
-  // Image attachments sit directly under the answer. Teams renders PNG/JPEG/GIF
-  // inline up to 1024x1024 / 1 MB; SVG is not supported (service never emits).
+  // Attachments sit directly under the answer.
+  //  - image: rendered inline (Teams renders PNG/JPEG/GIF up to 1024x1024 / 1 MB;
+  //    SVG is not supported, the service never emits it).
+  //  - file (e.g. create_xlsx .xlsx, create_docx .docx): Teams has no inline
+  //    element for an arbitrary blob, so we surface a one-click download button.
+  //    Action.OpenUrl opens the signed /documents URL in the browser, which
+  //    streams the file. (Native upload into the channel's Files tab would need
+  //    a Graph file-consent flow — deferred.)
   for (const att of attachments) {
-    if (att.kind !== 'image') continue;
-    body.push({
-      type: 'Image',
-      url: att.url,
-      altText: att.altText,
-      size: 'stretch',
-      spacing: 'Medium',
-      separator: true,
-      // One-click "open full size" — Teams still does not follow redirects on
-      // card images, but Action.OpenUrl opens the browser, which does.
-      selectAction: { type: 'Action.OpenUrl', url: att.url },
-    });
+    if (att.kind === 'image') {
+      body.push({
+        type: 'Image',
+        url: att.url,
+        altText: att.altText,
+        size: 'stretch',
+        spacing: 'Medium',
+        separator: true,
+        // One-click "open full size" — Teams still does not follow redirects on
+        // card images, but Action.OpenUrl opens the browser, which does.
+        selectAction: { type: 'Action.OpenUrl', url: att.url },
+      });
+      continue;
+    }
+    if (att.kind === 'file') {
+      const sizeHint =
+        typeof att.sizeBytes === 'number' && att.sizeBytes > 0
+          ? ` (${String(Math.max(1, Math.round(att.sizeBytes / 1024)))} KB)`
+          : '';
+      body.push({
+        type: 'ActionSet',
+        spacing: 'Medium',
+        separator: true,
+        actions: [
+          {
+            type: 'Action.OpenUrl',
+            title: `📥 ${att.altText}${sizeHint}`,
+            url: att.url,
+          },
+        ],
+      });
+      continue;
+    }
   }
 
   const actions: unknown[] = [];
