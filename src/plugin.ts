@@ -7,9 +7,11 @@ import {
   type RoutinesIntegration,
 } from '@omadia/plugin-api';
 import {
+  CHANNEL_RESOLVER_SERVICE,
   InMemoryConversationHistoryStore,
   isNoReply,
   logNoReplyDrop,
+  type ChannelBindingResolver,
   type ChannelHandle,
   type ChannelKeyDirectory,
   type ChatAgent,
@@ -30,22 +32,6 @@ interface ChannelDirectoryRegistryShim {
   unregister(channelType: string): void;
 }
 
-/**
- * Narrow shim for the kernel's `channelResolver@1` service (Phase A).
- * Given a `(channel_type, channel_key)` pair, returns the resolved Agent
- * binding decision — what `resolve()` produces in the kernel-side
- * registry. We only consume the `chatAgent` field on a successful
- * `decision: 'bound' | 'fallback'`.
- */
-interface ChannelResolverShim {
-  resolve(
-    channelType: string,
-    channelKey: string,
-  ): {
-    readonly decision: 'bound' | 'fallback' | 'reject';
-    readonly chatAgent?: ChatAgent;
-  };
-}
 import type { TigrisStore } from '@omadia/diagrams';
 import type { Microsoft365Accessor } from '@omadia/integration-microsoft365';
 import type { ChatAgentBundle } from '@omadia/orchestrator';
@@ -293,8 +279,9 @@ export async function activate(
   // Agent in /operator/channels, each inbound turn is routed to that
   // Agent. Without the resolver service the bot falls back to the
   // legacy chatAgent@1 (the `chatAgent` constant captured above).
-  const channelResolver =
-    ctx.services.get<ChannelResolverShim>('channelResolver');
+  const channelResolver = ctx.services.get<ChannelBindingResolver>(
+    CHANNEL_RESOLVER_SERVICE,
+  );
   const resolveChatAgentForActivity = channelResolver
     ? (input: { channelType: 'teams'; channelKey: string }): {
         decision: 'bound' | 'fallback' | 'reject';
