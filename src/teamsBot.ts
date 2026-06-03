@@ -40,6 +40,7 @@ import {
   parseRoutineListFilterValue,
   parseTopicDecisionValue,
 } from './teamsCard.js';
+import { buildRecalledContextCard } from './teamsRecall.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
 import {
@@ -1086,6 +1087,15 @@ export class TeamsBot extends TeamsActivityHandler {
             conversationId: input.conversationId,
           });
           return;
+        }
+        // Cross-session KG-recall — surface what the per-turn probe pulled
+        // from PRIOR sessions as a read-only card ABOVE the answer (context
+        // first), mirroring the web-ui RecalledContextCard. No-op when empty.
+        if (result.recalled) {
+          const recallCard = buildRecalledContextCard(result.recalled);
+          if (recallCard) {
+            await context.sendActivity(MessageFactory.attachment(recallCard));
+          }
         }
         await sendAnswer(
           context,
