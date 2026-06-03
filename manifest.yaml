@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.10.5"
+  version: "0.10.6"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für Omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -31,6 +31,64 @@ depends_on:
   - "@omadia/integration-microsoft365"
 
 setup:
+  guide:
+    en: |
+      ## Connect Microsoft Teams
+
+      Teams runs as an Azure Bot that reuses the **same Azure AD app** as the
+      Microsoft 365 integration. **Install @omadia/integration-microsoft365
+      first** — it owns the app credentials (client id / secret / tenant); this
+      channel only adds Teams-specific knobs.
+
+      ### 1. Register the Azure Bot
+      1. [Azure Portal](https://portal.azure.com) → create an **Azure Bot** resource.
+      2. Use the **existing app registration** from the Microsoft 365 integration
+         (same Microsoft App ID).
+      3. **Configuration → Messaging endpoint**:
+         `<your-public-base-url>/api/teams/messages`.
+      4. **Channels** → enable **Microsoft Teams**.
+
+      ### 2. Upload the Teams app
+      Upload the Teams app package (manifest.json + icons as a ZIP) in Teams under
+      **Apps → Manage your apps → Upload a custom app**.
+
+      ### 3. Optional knobs
+      - **OAuth Connection Name**: if you add a v4 OAuth connection in the Azure
+        Bot Service, put its name here to enable calendar SSO (OBO flow). Empty →
+        calendar tools report `sso_unavailable`.
+      - **Notify Team ID**: the AAD groupId of the team where bell notifications
+        appear — get it via Teams → Team settings → **Get link to team** (groupId
+        query param) or Graph Explorer (`/teams`). Empty → log-only.
+      - Attachment prefix, topic URL and directory label have safe defaults.
+    de: |
+      ## Microsoft Teams verbinden
+
+      Teams läuft als Azure-Bot und nutzt die **gleiche Azure-AD-App** wie die
+      Microsoft-365-Integration. **Installiere zuerst
+      @omadia/integration-microsoft365** — sie besitzt die App-Credentials
+      (Client-ID / Secret / Tenant); dieser Channel ergänzt nur Teams-spezifische
+      Einstellungen.
+
+      ### 1. Azure-Bot registrieren
+      1. [Azure Portal](https://portal.azure.com) → **Azure Bot**-Ressource anlegen.
+      2. Die **bestehende App-Registration** der Microsoft-365-Integration
+         verwenden (gleiche Microsoft App ID).
+      3. **Configuration → Messaging endpoint**:
+         `<deine-public-base-url>/api/teams/messages`.
+      4. **Channels** → **Microsoft Teams** aktivieren.
+
+      ### 2. Teams-App hochladen
+      Teams-App-Paket (manifest.json + Icons als ZIP) in Teams unter
+      **Apps → Manage your apps → Upload a custom app** hochladen.
+
+      ### 3. Optionale Einstellungen
+      - **OAuth Connection Name**: wenn du im Azure Bot Service eine v4-OAuth-
+        Connection einrichtest, ihren Namen hier eintragen → Kalender-SSO (OBO).
+        Leer → Kalender-Tools melden `sso_unavailable`.
+      - **Notify Team ID**: AAD-groupId des Teams, in dem Bell-Notifications
+        erscheinen — via Teams → Team-Einstellungen → **Link zum Team abrufen**
+        (groupId-Parameter) oder Graph Explorer (`/teams`). Leer → nur Log.
+      - Attachment-Präfix, Topic-URL und Directory-Label haben sichere Defaults.
   fields:
     - key: "teams_sso_connection_name"
       type: "string"
