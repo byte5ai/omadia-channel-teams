@@ -580,13 +580,17 @@ function decorateDirectLine(
   // Strip a leading `#<token>` directive ONLY when it names one of THIS turn's
   // consulted agents — so a re-click can't compound the prefix
   // (`#strategist #strategist …`), while a legitimate leading hashtag in the
-  // user's text is preserved. `(\s+|$)` also catches a directive-only message
-  // (bare `#strategist`), which then collapses to '' and renders no button.
+  // user's text is preserved. The captured token is normalized through the
+  // SAME `directLineToken` reduction used to build `consultedTokens` (and that
+  // the core resolver mirrors), so a manually-typed dotted/verb-prefixed form
+  // (`#ask_strategist`, `#de.byte5.agent.strategist`) matches too. `(\s+|$)`
+  // also catches a directive-only message (bare `#strategist`), which then
+  // collapses to '' and renders no button.
   const stripDirective = (msg: string): string => {
     const m = /^#([A-Za-z0-9._-]+)(\s+|$)/.exec(msg);
-    return m && consultedTokens.has(m[1]!.toLowerCase())
-      ? msg.slice(m[0].length)
-      : msg;
+    if (!m) return msg;
+    const norm = directLineToken({ label: m[1]! }).toLowerCase();
+    return consultedTokens.has(norm) ? msg.slice(m[0].length) : msg;
   };
   const original = input.originalUserMessage
     ? stripDirective(input.originalUserMessage)
