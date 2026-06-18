@@ -547,16 +547,21 @@ function decorateDirectLine(
   }
 
   if (consulted.length > 0 && chipItems) {
+    // Cap the rendered list so a many-agent turn can't grow the (retained)
+    // chip without bound — the size guard in buildCardBody only sheds buttons.
+    const CHIP_MAX = 6;
+    const shown = consulted.slice(0, CHIP_MAX);
+    const extra = consulted.length - shown.length;
     chipItems.push({
       type: 'TextBlock',
-      text: `🔎 Konsultiert: ${consulted
+      text: `🔎 Konsultiert: ${shown
         .map(
           (c) =>
             `${c.label} ${c.status === 'success' ? '✓' : '✗'}${
               c.toolCalls ? ` · ${String(c.toolCalls)}` : ''
             }`,
         )
-        .join(' · ')}`,
+        .join(' · ')}${extra > 0 ? ` · +${String(extra)}` : ''}`,
       size: 'Small',
       isSubtle: true,
       wrap: true,
@@ -567,11 +572,27 @@ function decorateDirectLine(
   // One dynamic Direct-Line button per consulted agent — re-issues the user's
   // question routed straight to that specialist. Deduped by token; capped so a
   // many-agent turn doesn't flood the action row.
-  // Strip any leading `#<token> ` directive so a re-click doesn't compound the
-  // prefix (`#strategist #strategist …`) and leak stale routing syntax into the
-  // specialist's payload. Cap short (600) — four buttons each embed this, so a
-  // 2 KB message would be the dominant card-size cost.
-  const original = input.originalUserMessage?.replace(/^#[A-Za-z0-9._-]+\s+/, '');
+  const consultedTokens = new Set(
+    consulted
+      .map((a) => directLineToken(a).toLowerCase())
+      .filter((t) => t.length > 0),
+  );
+  // Strip a leading `#<token>` directive ONLY when it names one of THIS turn's
+  // consulted agents — so a re-click can't compound the prefix
+  // (`#strategist #strategist …`), while a legitimate leading hashtag in the
+  // user's text is preserved. `(\s+|$)` also catches a directive-only message
+  // (bare `#strategist`), which then collapses to '' and renders no button.
+  const stripDirective = (msg: string): string => {
+    const m = /^#([A-Za-z0-9._-]+)(\s+|$)/.exec(msg);
+    return m && consultedTokens.has(m[1]!.toLowerCase())
+      ? msg.slice(m[0].length)
+      : msg;
+  };
+  const original = input.originalUserMessage
+    ? stripDirective(input.originalUserMessage)
+    : undefined;
+  // Cap short (600) — four buttons each embed this, so a 2 KB message would be
+  // the dominant card-size cost.
   if (consulted.length > 0 && original && original.trim().length > 0) {
     const trimmed =
       original.length > 600 ? `${original.slice(0, 599)}…` : original;
