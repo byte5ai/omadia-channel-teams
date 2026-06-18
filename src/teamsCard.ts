@@ -192,6 +192,21 @@ export function directLineToken(agent: {
   return base.replace(/[^A-Za-z0-9]/g, '');
 }
 
+/**
+ * Reduce a directive token / agent label to the comparison key the CORE
+ * resolver uses (`normalizeKey` in middleware directLine.ts): take the last
+ * dotted/slashed segment, strip a leading `ask_`/`consult_`/`query_`/`invoke_`/
+ * `agent_` verb, lowercase, then keep only alphanumerics. Used on BOTH sides of
+ * the Direct-Line strip match so that whatever form the user typed
+ * (`#strategist`, `#ask_strategist`, `#de.byte5.agent.strategist`) reduces to
+ * the same key as the consulted agent — exactly as the core would resolve it.
+ */
+function normalizeDirectiveToken(value: string): string {
+  const last = value.split(/[./]/).pop() ?? value;
+  const deverbed = last.replace(/^(?:ask|consult|query|invoke|agent)[-_]/i, '');
+  return deverbed.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 /** Adaptive-Card Submit payload for `ask_user_choice` option clicks. */
 export const CHOICE_ASK_VALUE_TYPE = 'choice_ask';
 
@@ -572,11 +587,15 @@ function decorateDirectLine(
   // One dynamic Direct-Line button per consulted agent — re-issues the user's
   // question routed straight to that specialist. Deduped by token; capped so a
   // many-agent turn doesn't flood the action row.
-  const consultedTokens = new Set(
-    consulted
-      .map((a) => directLineToken(a).toLowerCase())
-      .filter((t) => t.length > 0),
-  );
+  const consultedTokens = new Set<string>();
+  for (const a of consulted) {
+    const fromLabel = normalizeDirectiveToken(a.label);
+    if (fromLabel) consultedTokens.add(fromLabel);
+    if (a.agentId) {
+      const fromId = normalizeDirectiveToken(a.agentId);
+      if (fromId) consultedTokens.add(fromId);
+    }
+  }
   // Strip a leading `#<token>` directive ONLY when it names one of THIS turn's
   // consulted agents — so a re-click can't compound the prefix
   // (`#strategist #strategist …`), while a legitimate leading hashtag in the
@@ -589,7 +608,7 @@ function decorateDirectLine(
   const stripDirective = (msg: string): string => {
     const m = /^#([A-Za-z0-9._-]+)(\s+|$)/.exec(msg);
     if (!m) return msg;
-    const norm = directLineToken({ label: m[1]! }).toLowerCase();
+    const norm = normalizeDirectiveToken(m[1]!);
     return consultedTokens.has(norm) ? msg.slice(m[0].length) : msg;
   };
   const original = input.originalUserMessage
