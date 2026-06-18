@@ -31,6 +31,7 @@ import {
   aiLabelEntity,
   buildAnswerCard,
   buildChoiceAskCard,
+  buildDirectLineOnlyCard,
   buildFollowUpsOnlyCard,
   buildSlotPickerCard,
   buildTopicAskCard,
@@ -1367,6 +1368,20 @@ async function sendAnswer(
   if (followUpOptions && followUpOptions.length > 0) {
     const card = buildFollowUpsOnlyCard(followUpOptions);
     await context.sendActivity(MessageFactory.attachment(card));
+  }
+  // #332 — same fallback for the agent-transparency footer + Direct-Line
+  // buttons; otherwise the trust affordance silently vanishes on long answers.
+  if (directLine?.agentsConsulted?.length || directLine?.delegatedAnswer) {
+    const dlCard = buildDirectLineOnlyCard({
+      ...(directLine.agentsConsulted
+        ? { agentsConsulted: directLine.agentsConsulted }
+        : {}),
+      ...(directLine.delegatedAnswer
+        ? { delegatedAnswer: directLine.delegatedAnswer }
+        : {}),
+      ...(originalUserMessage ? { originalUserMessage } : {}),
+    });
+    if (dlCard) await context.sendActivity(MessageFactory.attachment(dlCard));
   }
   if (pendingSlotCard && pendingSlotCard.slots.length > 0) {
     const slotCard = buildSlotPickerCard({

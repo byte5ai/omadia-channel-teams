@@ -453,12 +453,61 @@ interface CardBody {
   actions?: unknown[];
 }
 
+/**
+ * #332 — slim card carrying ONLY the agent-transparency chips + Direct-Line
+ * buttons, for the long-answer fallback (answer > Teams' single-message cap)
+ * where the full answer card is replaced by plain text chunks. Without this,
+ * the transparency footer and Direct-Line affordance would silently vanish on
+ * long answers. Returns undefined when there is nothing to surface.
+ */
+export function buildDirectLineOnlyCard(
+  input: Pick<
+    BuildAnswerCardInput,
+    'agentsConsulted' | 'delegatedAnswer' | 'originalUserMessage'
+  >,
+): Attachment | undefined {
+  const hasConsulted = (input.agentsConsulted?.length ?? 0) > 0;
+  if (!hasConsulted && !input.delegatedAnswer) return undefined;
+  const base: CardBody = {
+    body: [{ type: 'Container', spacing: 'None', items: [] }],
+    actions: [],
+  };
+  const decorated = decorateDirectLine(base, input as BuildAnswerCardInput);
+  const head = decorated.body[0] as { items?: unknown[] } | undefined;
+  const hasChips = (head?.items?.length ?? 0) > 0;
+  const hasActions = (decorated.actions?.length ?? 0) > 0;
+  if (!hasChips && !hasActions) return undefined;
+  return CardFactory.adaptiveCard({
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    type: 'AdaptiveCard',
+    version: '1.5',
+    body: decorated.body,
+    ...(hasActions ? { actions: decorated.actions } : {}),
+    msteams: { width: 'Full' },
+  });
+}
+
 function buildCardBody(input: BuildAnswerCardInput): CardBody {
   // Size-tier selection stays in `buildCardBodyBase`; the #332 transparency
-  // chips + Direct-Line buttons are small, always-present, and not part of the
-  // drop-order, so we decorate the chosen tier once here instead of threading
-  // two more params through six positional `assemble` calls.
-  return decorateDirectLine(buildCardBodyBase(input), input);
+  // chips + Direct-Line buttons are decorated onto the chosen tier here.
+  const card = decorateDirectLine(buildCardBodyBase(input), input);
+  // The decoration runs AFTER the base fitter, so on an answer fitted near the
+  // budget the added buttons could push the card over Teams' hard cap → silent
+  // render failure. The chips are tiny (keep them); the buttons carry the bulk,
+  // so shed them if we're over budget. The Direct-Line buttons also surface in
+  // the long-answer fallback's slim card, so dropping them here is not a total
+  // loss of the affordance.
+  if (bytes(card) > CARD_BUDGET_BYTES && card.actions) {
+    card.actions = card.actions.filter((a) => !isDirectLineAction(a));
+    if (card.actions.length === 0) delete card.actions;
+  }
+  return card;
+}
+
+/** True for an `Action.Submit` carrying a Direct-Line button payload. */
+function isDirectLineAction(action: unknown): boolean {
+  const data = (action as { data?: { type?: unknown } } | undefined)?.data;
+  return data?.type === DIRECT_LINE_VALUE_TYPE;
 }
 
 /**
@@ -518,10 +567,14 @@ function decorateDirectLine(
   // One dynamic Direct-Line button per consulted agent — re-issues the user's
   // question routed straight to that specialist. Deduped by token; capped so a
   // many-agent turn doesn't flood the action row.
-  const original = input.originalUserMessage;
+  // Strip any leading `#<token> ` directive so a re-click doesn't compound the
+  // prefix (`#strategist #strategist …`) and leak stale routing syntax into the
+  // specialist's payload. Cap short (600) — four buttons each embed this, so a
+  // 2 KB message would be the dominant card-size cost.
+  const original = input.originalUserMessage?.replace(/^#[A-Za-z0-9._-]+\s+/, '');
   if (consulted.length > 0 && original && original.trim().length > 0) {
     const trimmed =
-      original.length > 2000 ? `${original.slice(0, 1999)}…` : original;
+      original.length > 600 ? `${original.slice(0, 599)}…` : original;
     const actions = card.actions ?? [];
     const seen = new Set<string>();
     for (const agent of consulted) {
