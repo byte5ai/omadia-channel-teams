@@ -11,7 +11,9 @@ import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   CaptureDisclosure,
   ChatAgent,
+  AgentConsultation,
   ConversationHistoryStore,
+  DelegatedAnswer,
   FollowUpOption,
   OutgoingAttachment,
   OutgoingChoiceCard,
@@ -34,6 +36,7 @@ import {
   buildTopicAskCard,
   parseBookSlotValue,
   parseChoiceAskValue,
+  parseDirectLineValue,
   parseFollowUpValue,
   parseFreshCheckValue,
   parseRoutineCardActionValue,
@@ -472,7 +475,16 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
 
-    const rawUserMessage = extractUserMessage(context);
+    // #332 — a "💬 Direkt mit <Agent>" button click carries no text, only a
+    // submit value. Synthesize the Direct-Line directive (`#<token> <message>`)
+    // as the user message so it flows through the normal turn (history,
+    // privacy, persistence) and the core dispatcher routes it straight to the
+    // named specialist. Bypasses extractUserMessage's mention-strip — the
+    // directive is already clean.
+    const directLineSubmit = parseDirectLineValue(context.activity.value);
+    const rawUserMessage = directLineSubmit
+      ? `#${directLineSubmit.token} ${directLineSubmit.originalMessage}`
+      : extractUserMessage(context);
 
     // Magic-code intercept for the bypass sign-in flow. When the user pastes
     // the 6-digit code from the BF token-service page into the chat, Bot
@@ -1112,6 +1124,14 @@ export class TeamsBot extends TeamsActivityHandler {
           result.captureDisclosure,
           result.privacyReceipt,
           result.maskedValues,
+          {
+            ...(result.agentsConsulted
+              ? { agentsConsulted: result.agentsConsulted }
+              : {}),
+            ...(result.delegatedAnswer
+              ? { delegatedAnswer: result.delegatedAnswer }
+              : {}),
+          },
         );
 
         // Routine-list smart card (sidecar). Rendered AFTER the agent's
@@ -1223,6 +1243,12 @@ async function sendAnswer(
   captureDisclosure: CaptureDisclosure | undefined,
   privacyReceipt: PrivacyReceipt | undefined,
   maskedValues: readonly string[] | undefined,
+  // #332 — harness-built agent transparency (footer + dynamic Direct-Line
+  // buttons) and the Direct Line attributed-answer marker.
+  directLine?: {
+    agentsConsulted?: readonly AgentConsultation[];
+    delegatedAnswer?: DelegatedAnswer;
+  },
 ): Promise<void> {
   // Blocking clarification — render a standalone Choice-Card instead of
   // an answer. The follow-up / fresh-check actions aren't meaningful here
@@ -1283,6 +1309,12 @@ async function sendAnswer(
       ...(captureDisclosure ? { captureDisclosure } : {}),
       ...(privacyReceipt ? { privacyReceipt } : {}),
       ...(maskedValues && maskedValues.length > 0 ? { maskedValues } : {}),
+      ...(directLine?.agentsConsulted && directLine.agentsConsulted.length > 0
+        ? { agentsConsulted: directLine.agentsConsulted }
+        : {}),
+      ...(directLine?.delegatedAnswer
+        ? { delegatedAnswer: directLine.delegatedAnswer }
+        : {}),
     });
     const activity = MessageFactory.attachment(card);
     // Activity-level entities: AI label + mention entities for Teams'

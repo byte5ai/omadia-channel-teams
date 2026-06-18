@@ -2,7 +2,9 @@ import type { Attachment } from 'botbuilder';
 import { CardFactory } from 'botbuilder';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
+  AgentConsultation,
   CaptureDisclosure,
+  DelegatedAnswer,
   OutgoingAttachment,
   RunTracePayload,
   VerifierBadge,
@@ -107,6 +109,21 @@ export interface BuildAnswerCardInput {
    * as a `RichTextBlock` of `TextRun`s instead of a markdown `TextBlock`.
    */
   maskedValues?: readonly string[];
+  /**
+   * #332 Layer 1 — tamper-evident agent transparency. The harness-built list
+   * of sub-agents actually invoked this turn (from the deterministic run
+   * trace, NOT the LLM's prose). Rendered as a "🔎 Konsultiert: …" footer chip
+   * and as one dynamic "💬 Direkt mit <Agent>" button per consulted agent.
+   * Omitted → no chip, no buttons.
+   */
+  agentsConsulted?: readonly AgentConsultation[];
+  /**
+   * #332 Layer 2 — Direct Line. Present when this turn's answer is a named
+   * specialist's verbatim reply, delivered by the harness. Renders an
+   * attribution chip ("💬 Direkte Antwort von <Agent>") above the answer so the
+   * user knows the body is the specialist's own words, not the orchestrator's.
+   */
+  delegatedAnswer?: DelegatedAnswer;
 }
 
 /** Adaptive-Card Submit payload for the fresh-check button. */
@@ -126,6 +143,53 @@ export function parseFreshCheckValue(value: unknown): FreshCheckValue | undefine
     return undefined;
   }
   return { type: FRESH_CHECK_VALUE_TYPE, originalMessage };
+}
+
+/**
+ * #332 Layer 2 — Adaptive-Card Submit payload for a dynamic "💬 Direkt mit
+ * <Agent>" button. Carries the directive `token` (resolved server-side against
+ * the orchestrator's whitelisted sub-agents) plus the original user message, so
+ * the click re-issues the question as `#<token> <message>` — a harness-routed
+ * Direct Line, no typing required. The token is derived per agent at render
+ * time (NEVER hardcoded).
+ */
+export const DIRECT_LINE_VALUE_TYPE = 'direct_line';
+
+export interface DirectLineValue {
+  type: typeof DIRECT_LINE_VALUE_TYPE;
+  /** Space-free directive token derived from the agent label/id. */
+  token: string;
+  /** The question to re-route verbatim to the specialist. */
+  originalMessage: string;
+}
+
+export function parseDirectLineValue(value: unknown): DirectLineValue | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (v['type'] !== DIRECT_LINE_VALUE_TYPE) return undefined;
+  const token = v['token'];
+  const originalMessage = v['originalMessage'];
+  if (typeof token !== 'string' || token.length === 0) return undefined;
+  if (typeof originalMessage !== 'string' || originalMessage.length === 0) {
+    return undefined;
+  }
+  return { type: DIRECT_LINE_VALUE_TYPE, token, originalMessage };
+}
+
+/**
+ * Derive a space-free directive token for an agent. Prefers the stable agent
+ * id's last segment, falls back to the label; strips everything but
+ * alphanumerics so it survives the channel mention/markup + the core parser's
+ * `#<token>` grammar (and the core resolver normalizes the same way).
+ */
+export function directLineToken(agent: {
+  agentId?: string;
+  label: string;
+}): string {
+  const base = agent.agentId
+    ? (agent.agentId.split(/[./]/).pop() ?? agent.agentId)
+    : agent.label;
+  return base.replace(/[^A-Za-z0-9]/g, '');
 }
 
 /** Adaptive-Card Submit payload for `ask_user_choice` option clicks. */
@@ -390,6 +454,99 @@ interface CardBody {
 }
 
 function buildCardBody(input: BuildAnswerCardInput): CardBody {
+  // Size-tier selection stays in `buildCardBodyBase`; the #332 transparency
+  // chips + Direct-Line buttons are small, always-present, and not part of the
+  // drop-order, so we decorate the chosen tier once here instead of threading
+  // two more params through six positional `assemble` calls.
+  return decorateDirectLine(buildCardBodyBase(input), input);
+}
+
+/**
+ * #332 — add the tamper-evident "🔎 Konsultiert" footer chip, the Direct-Line
+ * attribution chip, and one dynamic "💬 Direkt mit <Agent>" button per consulted
+ * agent. All sourced from harness-built fields (`agentsConsulted` /
+ * `delegatedAnswer`), never hardcoded. Mutates a copy of the assembled card.
+ */
+function decorateDirectLine(
+  card: CardBody,
+  input: BuildAnswerCardInput,
+): CardBody {
+  const consulted = input.agentsConsulted ?? [];
+  const delegated = input.delegatedAnswer;
+  if (consulted.length === 0 && !delegated) return card;
+
+  // The chip Container is body[0] in every `assemble` tier; push there so the
+  // chips sit next to the "✨ AI-generated" / verifier chips. Guard defensively.
+  const head = card.body[0] as { type?: string; items?: unknown[] } | undefined;
+  const chipItems =
+    head?.type === 'Container' && Array.isArray(head.items)
+      ? head.items
+      : undefined;
+
+  if (delegated && chipItems) {
+    chipItems.push({
+      type: 'TextBlock',
+      text: `💬 Direkte Antwort von ${delegated.label}${
+        delegated.status === 'error' ? ' (Fehler)' : ''
+      }`,
+      size: 'Small',
+      weight: 'Bolder',
+      color: delegated.status === 'error' ? 'Attention' : 'Good',
+      wrap: true,
+      spacing: 'Small',
+    });
+  }
+
+  if (consulted.length > 0 && chipItems) {
+    chipItems.push({
+      type: 'TextBlock',
+      text: `🔎 Konsultiert: ${consulted
+        .map(
+          (c) =>
+            `${c.label} ${c.status === 'success' ? '✓' : '✗'}${
+              c.toolCalls ? ` · ${String(c.toolCalls)}` : ''
+            }`,
+        )
+        .join(' · ')}`,
+      size: 'Small',
+      isSubtle: true,
+      wrap: true,
+      spacing: 'Small',
+    });
+  }
+
+  // One dynamic Direct-Line button per consulted agent — re-issues the user's
+  // question routed straight to that specialist. Deduped by token; capped so a
+  // many-agent turn doesn't flood the action row.
+  const original = input.originalUserMessage;
+  if (consulted.length > 0 && original && original.trim().length > 0) {
+    const trimmed =
+      original.length > 2000 ? `${original.slice(0, 1999)}…` : original;
+    const actions = card.actions ?? [];
+    const seen = new Set<string>();
+    for (const agent of consulted) {
+      const token = directLineToken(agent);
+      if (token.length === 0 || seen.has(token)) continue;
+      seen.add(token);
+      actions.push({
+        type: 'Action.Submit',
+        title: `💬 Direkt mit ${agent.label}`,
+        tooltip: `Stelle dieselbe Frage erneut — direkt an ${agent.label}. Die Antwort kommt wortwörtlich vom Spezialisten, ohne dass der Orchestrator sie umformulieren oder unterdrücken kann.`,
+        data: {
+          type: DIRECT_LINE_VALUE_TYPE,
+          token,
+          originalMessage: trimmed,
+        } satisfies DirectLineValue,
+      });
+      if (seen.size >= 4) break;
+    }
+    card.actions = actions;
+  }
+
+  return card;
+}
+
+function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
   const attachments = (input.attachments ?? []).slice(0, MAX_ATTACHMENTS_PER_CARD);
   const originalMessage = input.originalUserMessage;
   const followUps = (input.followUpOptions ?? []).slice(0, FOLLOW_UP_MAX_OPTIONS);

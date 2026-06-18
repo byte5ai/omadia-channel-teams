@@ -23,6 +23,8 @@ import type {
   OutgoingSlotPicker,
   SemanticAnswer,
   VerifierBadge,
+  AgentConsultation,
+  DelegatedAnswer,
 } from '@omadia/channel-sdk';
 
 // Re-export SDK shapes under the names the Teams package uses internally.
@@ -36,6 +38,9 @@ export type {
   OutgoingSlotPicker,
   SemanticAnswer,
   VerifierBadge,
+  // #332 — agent-transparency footer + Direct Line attributed answer.
+  AgentConsultation,
+  DelegatedAnswer,
 };
 
 // ---------------------------------------------------------------------------
