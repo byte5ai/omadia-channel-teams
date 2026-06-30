@@ -1620,10 +1620,20 @@ export function buildApprovalCard(input: BuildApprovalCardInput): Attachment {
   });
 }
 
-/** Runtime guard for an approve/reject button submit (mirrors parseTopicDecisionValue). */
+/** Runtime guard for an approve/reject button submit (mirrors parseTopicDecisionValue).
+ *  Some Teams clients deliver the Action.Submit `data` as a JSON STRING in `activity.value`
+ *  rather than a parsed object — accept both. */
 export function parseApprovalValue(value: unknown): ApprovalValue | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const v = value as Record<string, unknown>;
+  let candidate: unknown = value;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return undefined;
+  const v = candidate as Record<string, unknown>;
   if (v['type'] !== APPROVAL_VALUE_TYPE) return undefined;
   const decision = v['decision'];
   if (decision !== 'approve' && decision !== 'reject') return undefined;
