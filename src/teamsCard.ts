@@ -1522,6 +1522,116 @@ export function parseTopicDecisionValue(
   return { type: TOPIC_DECISION_VALUE_TYPE, choice, originalMessage };
 }
 
+// --- Conductor human-await approval card (Ja/Nein) -----------------------
+// A proactive reminder for a Conductor human step, rendered as an Adaptive Card
+// that shows WHAT is being approved + WHERE we are in the workflow, with two
+// Action.Submit buttons. A click arrives back as a normal message activity whose
+// `value` is an ApprovalValue; the bot resolves the await in-process.
+export const APPROVAL_VALUE_TYPE = 'conductor.approval';
+export type ApprovalDecision = 'approve' | 'reject';
+
+export interface ApprovalValue {
+  type: typeof APPROVAL_VALUE_TYPE;
+  decision: ApprovalDecision;
+  /** the pending await this click resolves — round-tripped from the card. */
+  awaitId: string;
+}
+
+export interface BuildApprovalCardInput {
+  awaitId: string;
+  /** WHAT is being approved — the human step's message. */
+  question: string;
+  workflowName: string;
+  stepLabel: string;
+  stepIndex?: number;
+  totalSteps?: number;
+  quorum: 'any' | 'all';
+}
+
+export function buildApprovalCard(input: BuildApprovalCardInput): Attachment {
+  const progress =
+    input.stepIndex !== undefined && input.totalSteps !== undefined
+      ? `Schritt ${String(input.stepIndex)}/${String(input.totalSteps)} · ${input.stepLabel}`
+      : input.stepLabel;
+  const body: Record<string, unknown>[] = [
+    {
+      type: 'TextBlock',
+      text: '🔔 Freigabe erforderlich',
+      weight: 'Bolder',
+      size: 'Medium',
+      wrap: true,
+    },
+    {
+      type: 'TextBlock',
+      text: `**${input.workflowName}** · ${progress}`,
+      size: 'Small',
+      isSubtle: true,
+      spacing: 'None',
+      wrap: true,
+    },
+    {
+      type: 'Container',
+      style: 'emphasis',
+      items: [
+        {
+          type: 'TextBlock',
+          text: input.question,
+          wrap: true,
+        },
+      ],
+    },
+  ];
+  if (input.quorum === 'all') {
+    body.push({
+      type: 'TextBlock',
+      text: 'ℹ️ Alle Freigeber müssen zustimmen.',
+      size: 'Small',
+      isSubtle: true,
+      wrap: true,
+    });
+  }
+  return CardFactory.adaptiveCard({
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    type: 'AdaptiveCard',
+    version: '1.5',
+    msteams: { width: 'Full' },
+    body,
+    actions: [
+      {
+        type: 'Action.Submit',
+        title: '✓ Ja, genehmigen',
+        style: 'positive',
+        data: {
+          type: APPROVAL_VALUE_TYPE,
+          decision: 'approve',
+          awaitId: input.awaitId,
+        } satisfies ApprovalValue,
+      },
+      {
+        type: 'Action.Submit',
+        title: '✗ Nein, ablehnen',
+        data: {
+          type: APPROVAL_VALUE_TYPE,
+          decision: 'reject',
+          awaitId: input.awaitId,
+        } satisfies ApprovalValue,
+      },
+    ],
+  });
+}
+
+/** Runtime guard for an approve/reject button submit (mirrors parseTopicDecisionValue). */
+export function parseApprovalValue(value: unknown): ApprovalValue | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (v['type'] !== APPROVAL_VALUE_TYPE) return undefined;
+  const decision = v['decision'];
+  if (decision !== 'approve' && decision !== 'reject') return undefined;
+  const awaitId = v['awaitId'];
+  if (typeof awaitId !== 'string' || awaitId.length === 0) return undefined;
+  return { type: APPROVAL_VALUE_TYPE, decision, awaitId };
+}
+
 export interface BuildSlotPickerCardInput {
   question: string;
   slots: ReadonlyArray<{

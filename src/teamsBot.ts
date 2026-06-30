@@ -35,6 +35,7 @@ import {
   buildFollowUpsOnlyCard,
   buildSlotPickerCard,
   buildTopicAskCard,
+  parseApprovalValue,
   parseBookSlotValue,
   parseChoiceAskValue,
   parseDirectLineValue,
@@ -43,6 +44,7 @@ import {
   parseRoutineCardActionValue,
   parseRoutineListFilterValue,
   parseTopicDecisionValue,
+  type ApprovalValue,
 } from './teamsCard.js';
 import { buildRecalledContextCard } from './teamsRecall.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
@@ -60,6 +62,28 @@ const TEAMS_MAX_MESSAGE_CHARS = 25_000;
 // Frequency of typing indicators during long-running orchestrator calls. The Teams
 // client dims the "typing" animation after ~10 s of silence, so we refresh faster.
 const TYPING_INTERVAL_MS = 5_000;
+
+/** Honest confirmation for an approve/reject click, worded by the kernel's resolution outcome so we
+ *  never claim "approved → done" when a quorum='all' await still waits, or on a stale/double click. */
+function approvalAckText(
+  outcome: 'resumed' | 'recorded' | 'already_resolved' | 'not_a_holder',
+  approved: boolean,
+): string {
+  switch (outcome) {
+    case 'resumed':
+      return approved
+        ? '✅ Genehmigt — danke! Der Workflow läuft weiter.'
+        : '❌ Abgelehnt — der Workflow wurde entsprechend fortgesetzt.';
+    case 'recorded':
+      return approved
+        ? '🗳️ Deine Zustimmung wurde erfasst — wir warten noch auf weitere Freigeber.'
+        : '🗳️ Deine Ablehnung wurde erfasst — wir warten noch auf weitere Freigeber.';
+    case 'already_resolved':
+      return 'Diese Freigabe wurde bereits bearbeitet.';
+    case 'not_a_holder':
+      return 'Du bist für diese Freigabe nicht berechtigt.';
+  }
+}
 
 /**
  * Teams bot that delegates every turn to the orchestrator. No session stickiness —
@@ -202,6 +226,16 @@ export class TeamsBot extends TeamsActivityHandler {
      * conversation roster exposes no member email. Undefined when the M365 integration isn't wired.
      */
     private readonly resolveEmailByAad?: (aadObjectId: string) => Promise<string | null>,
+    /**
+     * Resolves a Conductor human-await when the user clicks an approve/reject card button —
+     * in-process via the kernel's `conductorAwaitResolver` service (no HTTP). `responderId` is the
+     * user's email (matches the email-keyed await holder). Undefined when Conductor isn't wired.
+     */
+    private readonly resolveConductorAwait?: (
+      awaitId: string,
+      responderId: string,
+      approved: boolean,
+    ) => Promise<'resumed' | 'recorded' | 'already_resolved' | 'not_a_holder'>,
   ) {
     super();
 
@@ -524,6 +558,15 @@ export class TeamsBot extends TeamsActivityHandler {
           `Konnte die Routine nicht ${verb}: ${detail}`,
         );
       }
+      return;
+    }
+
+    // Conductor approve/reject button click (from a proactive human-await reminder
+    // card). Out-of-band like the routine action — resolves the await in-process via
+    // the kernel callback; never reaches the orchestrator (it's a decision, not a turn).
+    const approval = parseApprovalValue(context.activity.value);
+    if (approval) {
+      await this.handleApprovalDecision(context, approval);
       return;
     }
 
@@ -884,6 +927,47 @@ export class TeamsBot extends TeamsActivityHandler {
       'Wenn der User die Datei NICHT als Asset markiert (nur "hier ein Screenshot", "schau mal drauf"), NICHT ins Brand-Memory schreiben — nur inhaltlich antworten.',
     );
     return lines.join('\n');
+  }
+
+  /**
+   * Resolve a Conductor human-await from an approve/reject card click. Out-of-band (no orchestrator
+   * turn). Responder is keyed by the user's email (matching the email-keyed await holder); falls back
+   * to the AAD object id when the email can't be resolved. Errors surface a friendly message — a
+   * resolve failure must never throw out of the turn.
+   */
+  private async handleApprovalDecision(
+    context: TurnContext,
+    approval: ApprovalValue,
+  ): Promise<void> {
+    if (!this.resolveConductorAwait) {
+      await context.sendActivity(
+        'Conductor ist gerade nicht verfügbar — die Freigabe konnte nicht verarbeitet werden.',
+      );
+      return;
+    }
+    const from = context.activity.from;
+    const userId =
+      from?.aadObjectId ?? (typeof from?.id === 'string' ? from.id : undefined);
+    // Fail closed: resolve the responder into the SAME id space as the await holder (the user's
+    // email). Do NOT fall back to the AAD object id — it never matches an email-keyed holder, so the
+    // kernel rejects it and a quorum='all' vote would be silently stranded (review H2). Ask to retry.
+    const responderId = userId
+      ? await this.resolveBindingEmail(context, userId)
+      : undefined;
+    if (!responderId) {
+      await context.sendActivity(
+        'Ich konnte deine Identität für diese Freigabe nicht bestätigen — bitte versuche es gleich noch einmal.',
+      );
+      return;
+    }
+    const approved = approval.decision === 'approve';
+    try {
+      const outcome = await this.resolveConductorAwait(approval.awaitId, responderId, approved);
+      await context.sendActivity(approvalAckText(outcome, approved));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await context.sendActivity(`Konnte die Freigabe nicht verarbeiten: ${detail}`);
+    }
   }
 
   private async handleTopicDecision(

@@ -2,7 +2,10 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { Pool } from 'pg';
 
 import {
+  CONDUCTOR_AWAIT_RESOLVER_SERVICE_NAME,
   ROUTINES_INTEGRATION_SERVICE_NAME,
+  type ConductorAwaitOutcome,
+  type ConductorAwaitResolver,
   type PluginContext,
   type RoutinesIntegration,
 } from '@omadia/plugin-api';
@@ -45,6 +48,7 @@ import type {
 import { createAttachmentsRouter } from './attachmentsRouter.js';
 import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
+import { buildApprovalCard } from './teamsCard.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import { createTeamsRouter } from './messagesRouter.js';
 import { createTeamsUiRouter } from './uiRouter.js';
@@ -329,6 +333,16 @@ export async function activate(
     ? (aadObjectId: string): Promise<string | null> => m365ForEmail.app.getUserMail(aadObjectId)
     : undefined;
 
+  // Conductor await resolution — let an approve/reject card click resolve the human await in-process
+  // (no HTTP). Undefined when Conductor isn't wired (no Postgres / conductor inert).
+  const conductorAwaitResolver = ctx.services.get<ConductorAwaitResolver>(
+    CONDUCTOR_AWAIT_RESOLVER_SERVICE_NAME,
+  );
+  const resolveConductorAwait = conductorAwaitResolver
+    ? (awaitId: string, responderId: string, approved: boolean): Promise<ConductorAwaitOutcome> =>
+        conductorAwaitResolver.resolve(awaitId, responderId, approved)
+    : undefined;
+
   const bot = new TeamsBot(
     chatAgent,
     conversationHistoryStore,
@@ -345,6 +359,7 @@ export async function activate(
     conversationObserver,
     emitConductorEvent,
     resolveEmailByAad,
+    resolveConductorAwait,
   );
 
   if (resolveChatAgentForActivity) {
@@ -418,6 +433,17 @@ export async function activate(
         await sendProactive(
           conversationRef as Parameters<typeof sendProactive>[0],
           async (turnContext) => {
+            // Conductor human-await reminder: render the approve/reject
+            // Adaptive Card (shows WHAT is being approved + the workflow's
+            // current step) so the user can decide inline. A click resolves
+            // the await in-process via the conductorAwaitResolver service.
+            if (message.approval) {
+              await turnContext.sendActivity({
+                type: 'message',
+                attachments: [buildApprovalCard(message.approval)],
+              });
+              return;
+            }
             // When we have routine metadata + the integration's card
             // builder, render the Adaptive Card so the user sees this
             // is a cron-triggered delivery and can pause/delete inline.
