@@ -120,6 +120,8 @@ export class TeamsBot extends TeamsActivityHandler {
     private readonly captureRoutineTurn?: (info: {
       tenant: string;
       userId: string;
+      /** Operator-addressable id (the user's email) for the Conductor channel-binding key (P2). */
+      principalRef?: string;
       conversationRef: unknown;
     }) => void,
     /**
@@ -201,6 +203,47 @@ export class TeamsBot extends TeamsActivityHandler {
       await this.handleMessage(context);
       await next();
     });
+  }
+
+  /**
+   * userId (AAD object id, or the 29:-channel id) → { resolved SMTP email, when fetched }. The
+   * Conductor channel-binding key must be the operator-addressable id — the user's real email, NOT
+   * the UPN (which can differ from the primary SMTP address, so binding by it would silently miss).
+   * Email isn't on the inbound activity, so we resolve it from the roster and cache with a TTL
+   * (identities can change). P2 identity-bridge.
+   */
+  private readonly emailByUser = new Map<string, { value: string; fetchedAt: number }>();
+
+  /**
+   * Resolve this user's SMTP email for the Conductor binding key. Awaited BEFORE the turn's
+   * `captureRoutineTurn` so the FIRST turn already binds by email (no stranded AAD-keyed binding).
+   * Returns undefined — leaving the binding channel-native-keyed, with a log line — when no SMTP
+   * email is available (we never bind a UPN guess). Cost is bounded: the roster has its own 5-min
+   * cache and this adds a ~30-min TTL, so the Graph is hit at most once per user per window; on a
+   * turn whose roster is already cached this is a cheap in-memory match.
+   */
+  private async resolveBindingEmail(context: TurnContext, userId: string): Promise<string | undefined> {
+    const EMAIL_TTL_MS = 30 * 60 * 1000;
+    const cached = this.emailByUser.get(userId);
+    if (cached && Date.now() - cached.fetchedAt < EMAIL_TTL_MS) return cached.value;
+    if (!this.rosterProvider) return cached?.value;
+    try {
+      const participants = await this.rosterProvider.list(context);
+      const match = participants.find((p) => p.aadObjectId === userId || p.channelUserId === userId);
+      const email = match?.email?.trim().toLowerCase();
+      if (email) {
+        this.emailByUser.set(userId, { value: email, fetchedAt: Date.now() });
+        return email;
+      }
+      if (match) {
+        console.error(
+          `[teams] conductor binding: no SMTP email for user=${userId} — staying channel-native-keyed (email-addressed reminders may miss)`,
+        );
+      }
+    } catch (err) {
+      console.error('[teams] conductor binding email resolve failed:', err);
+    }
+    return cached?.value; // serve a previously-resolved email on a transient refresh failure
   }
 
   /**
@@ -1087,9 +1130,18 @@ export class TeamsBot extends TeamsActivityHandler {
           try {
             const conversationRef =
               TurnContext.getConversationReference(context.activity);
+            // P2 identity-bridge: key the Conductor channel binding by the user's email (the id an
+            // operator addresses in a human step / role holder) when we've resolved it. The roster
+            // lookup is async but this path must stay sync, so we read a cache and populate it in the
+            // background — the binding becomes email-keyed from the first resolved turn onward,
+            // falling back to the AAD object id until then.
+            // Resolve the email BEFORE capture so the very first turn binds by it (await is fine — we
+            // are in the async run loop; the roster is cached and the orchestrator turn dwarfs this).
+            const principalRef = await this.resolveBindingEmail(context, input.userId);
             this.captureRoutineTurn({
               tenant: this.tenantId,
               userId: input.userId,
+              ...(principalRef ? { principalRef } : {}),
               conversationRef,
             });
           } catch (refErr) {

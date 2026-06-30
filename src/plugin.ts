@@ -247,10 +247,12 @@ export async function activate(
 
   // --- Routines wiring (only when the kernel published the integration)
   const captureRoutineTurn = routinesIntegration
-    ? (info: { tenant: string; userId: string; conversationRef: unknown }) =>
+    ? (info: { tenant: string; userId: string; principalRef?: string; conversationRef: unknown }) =>
         routinesIntegration.captureRoutineTurn({
           tenant: info.tenant,
           userId: info.userId,
+          // P2 identity-bridge: the user's email (when resolved) becomes the Conductor binding key.
+          ...(info.principalRef ? { principalRef: info.principalRef } : {}),
           channel: 'teams',
           conversationRef: info.conversationRef,
         })
