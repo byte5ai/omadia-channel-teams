@@ -255,6 +255,27 @@ export async function activate(
           conversationRef: info.conversationRef,
         })
     : undefined;
+
+  // US4 — fire-and-forget Conductor event emitter. `ctx.events` is present iff the manifest
+  // declares `permissions.events.emit`; the kernel registered our `event_emit` capabilities into
+  // the deny-by-default catalog on activation. A workflow trigger must never delay or break a chat
+  // turn, so emit failures are swallowed (logged). Undefined → events off / no Conductor.
+  const events = ctx.events;
+  const emitConductorEvent = events
+    ? (eventId: string, payload: Record<string, unknown>): void => {
+        // `emit` can throw SYNCHRONOUSLY (ConductorUnavailableError when the Conductor router isn't
+        // booted — an EXPECTED runtime condition; EventNotDeclaredError otherwise), not only reject.
+        // Catch both the sync throw and the async rejection so a workflow trigger can NEVER abort the
+        // chat turn.
+        try {
+          void events.emit(eventId, payload).catch((err: unknown) => {
+            core.log('warn', `[teams] conductor event emit failed (${eventId})`, { error: String(err) });
+          });
+        } catch (err: unknown) {
+          core.log('warn', `[teams] conductor event emit threw (${eventId})`, { error: String(err) });
+        }
+      }
+    : undefined;
   const handleRoutineAction = routinesIntegration
     ? (input: {
         action: 'pause' | 'resume' | 'trigger_now' | 'delete';
@@ -313,6 +334,7 @@ export async function activate(
     buildRoutineListSmartCardAttachment,
     resolveChatAgentForActivity,
     conversationObserver,
+    emitConductorEvent,
   );
 
   if (resolveChatAgentForActivity) {

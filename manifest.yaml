@@ -23,6 +23,17 @@ compat:
 lifecycle:
   entry: "dist/plugin.js"
 
+# US4 (Conductor Surface) — let real Teams activity trigger Conductor workflows.
+# Each `event_emit` capability is registered into the deny-by-default event catalog
+# (a plugin may only emit an id it declared); `ctx.events` itself is provisioned by
+# `events.emit: true` under the `permissions:` block further below. Operators subscribe
+# a workflow's event-trigger to these ids.
+capabilities:
+  - id: "teams.message.posted"
+    event_emit: true
+  - id: "teams.mention"
+    event_emit: true
+
 # Implicit prerequisite: the Microsoft 365 integration owns the Bot-Framework
 # App registration (app_id / tenant_id / app_password). The plugin resolves
 # those via ctx dependency-chain from that integration's registry entry;
@@ -129,6 +140,10 @@ playbook:
     Roster-Resolution bleiben Channel-intern.
 
 permissions:
+  # US4 (Conductor Surface) — provisions `ctx.events`; a plugin may only emit an
+  # event id it declared via an `event_emit` capability (see `capabilities` above).
+  events:
+    emit: true
   memory:
     reads: []
     writes: []

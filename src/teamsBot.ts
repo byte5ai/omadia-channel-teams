@@ -188,6 +188,12 @@ export class TeamsBot extends TeamsActivityHandler {
      * dashboard only sees the catch-all entry.
      */
     private readonly conversationObserver?: TeamsConversationObserver,
+    /**
+     * US4 (Conductor Surface) — fire-and-forget emitter that surfaces an inbound Teams activity as a
+     * Conductor domain event so workflows can trigger on real activity. Supplied by activate() from
+     * `ctx.events` (present iff the manifest declares `permissions.events.emit`). Undefined → no emit.
+     */
+    private readonly emitConductorEvent?: (eventId: string, payload: Record<string, unknown>) => void,
   ) {
     super();
 
@@ -583,6 +589,28 @@ export class TeamsBot extends TeamsActivityHandler {
       }
     }
 
+    // US4 (Conductor Surface) — surface a GENUINE user message as a Conductor domain event so a
+    // workflow can trigger on real Teams activity. Placed on the main user-text path: it runs ONLY
+    // after the card-action handlers + the SSO magic-code intercept have early-returned, so it never
+    // leaks a one-time sign-in code (H3) and never fires for button clicks (M1), and it emits the
+    // CLEANED message text (M3). Fire-and-forget — the wrapper swallows sync throws + async
+    // rejections, so a workflow trigger can never delay or break the turn.
+    if (this.emitConductorEvent) {
+      const mentioned = this.isMentioned(context.activity);
+      const channelData = context.activity.channelData as { tenant?: { id?: string } } | undefined;
+      const eventPayload: Record<string, unknown> = {
+        conversationId,
+        activityId: context.activity.id ?? null, // idempotency key — Bot Framework redelivers on 5xx/timeout
+        userId: userId ?? null,
+        userName: from?.name ?? null,
+        text: userMessage,
+        mentioned,
+        // The inbound AAD tenant (not the kernel graph tenant) so workflows can route/isolate by tenant.
+        tenantId: channelData?.tenant?.id ?? context.activity.conversation?.tenantId ?? null,
+      };
+      this.emitConductorEvent('teams.message.posted', eventPayload);
+      if (mentioned) this.emitConductorEvent('teams.mention', eventPayload);
+    }
     await this.runOrchestratorTurn(context, {
       conversationId,
       sessionScope,
