@@ -196,6 +196,12 @@ export class TeamsBot extends TeamsActivityHandler {
      * `ctx.events` (present iff the manifest declares `permissions.events.emit`). Undefined → no emit.
      */
     private readonly emitConductorEvent?: (eventId: string, payload: Record<string, unknown>) => void,
+    /**
+     * P2c — resolve a user's SMTP email by AAD object id via the M365 Graph (app perm User.Read.All).
+     * The reliable email source for the Conductor binding key, especially in 1:1 chats where the
+     * conversation roster exposes no member email. Undefined when the M365 integration isn't wired.
+     */
+    private readonly resolveEmailByAad?: (aadObjectId: string) => Promise<string | null>,
   ) {
     super();
 
@@ -206,44 +212,66 @@ export class TeamsBot extends TeamsActivityHandler {
   }
 
   /**
-   * userId (AAD object id, or the 29:-channel id) → { resolved SMTP email, when fetched }. The
-   * Conductor channel-binding key must be the operator-addressable id — the user's real email, NOT
-   * the UPN (which can differ from the primary SMTP address, so binding by it would silently miss).
-   * Email isn't on the inbound activity, so we resolve it from the roster and cache with a TTL
-   * (identities can change). P2 identity-bridge.
+   * userId (AAD object id, or the 29:-channel id) → { resolved SMTP email or null, when fetched }.
+   * The Conductor channel-binding key must be the operator-addressable id — the user's real email,
+   * NOT the UPN (which can differ from the primary SMTP, so binding by it would silently miss). Email
+   * isn't on the inbound activity, so we resolve it (Graph first, roster fallback) and cache BOTH hits
+   * AND misses (a `null` value) with a TTL, so an unresolvable user doesn't re-hit Graph every turn.
+   * P2 identity-bridge.
    */
-  private readonly emailByUser = new Map<string, { value: string; fetchedAt: number }>();
+  private readonly emailByUser = new Map<string, { value: string | null; fetchedAt: number }>();
 
   /**
-   * Resolve this user's SMTP email for the Conductor binding key. Awaited BEFORE the turn's
-   * `captureRoutineTurn` so the FIRST turn already binds by email (no stranded AAD-keyed binding).
-   * Returns undefined — leaving the binding channel-native-keyed, with a log line — when no SMTP
-   * email is available (we never bind a UPN guess). Cost is bounded: the roster has its own 5-min
-   * cache and this adds a ~30-min TTL, so the Graph is hit at most once per user per window; on a
-   * turn whose roster is already cached this is a cheap in-memory match.
+   * Resolve this user's SMTP email for the Conductor binding key — M365 Graph first (reliable in 1:1
+   * AND group), conversation roster as fallback. Awaited BEFORE the turn's `captureRoutineTurn`, so
+   * the FIRST turn already binds by email (no stranded AAD-keyed binding). Returns undefined — leaving
+   * the binding channel-native-keyed, with a log line — when no SMTP email is resolvable (we never
+   * bind a UPN guess). Both hits and misses are cached (hits 30 min, misses 5 min), so the awaited
+   * Graph call runs at most once per user per window, never per turn.
    */
   private async resolveBindingEmail(context: TurnContext, userId: string): Promise<string | undefined> {
-    const EMAIL_TTL_MS = 30 * 60 * 1000;
+    const POSITIVE_TTL_MS = 30 * 60 * 1000;
+    const NEGATIVE_TTL_MS = 5 * 60 * 1000;
     const cached = this.emailByUser.get(userId);
-    if (cached && Date.now() - cached.fetchedAt < EMAIL_TTL_MS) return cached.value;
-    if (!this.rosterProvider) return cached?.value;
-    try {
-      const participants = await this.rosterProvider.list(context);
-      const match = participants.find((p) => p.aadObjectId === userId || p.channelUserId === userId);
-      const email = match?.email?.trim().toLowerCase();
-      if (email) {
-        this.emailByUser.set(userId, { value: email, fetchedAt: Date.now() });
-        return email;
-      }
-      if (match) {
-        console.error(
-          `[teams] conductor binding: no SMTP email for user=${userId} — staying channel-native-keyed (email-addressed reminders may miss)`,
-        );
-      }
-    } catch (err) {
-      console.error('[teams] conductor binding email resolve failed:', err);
+    if (cached && Date.now() - cached.fetchedAt < (cached.value ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS)) {
+      return cached.value ?? undefined;
     }
-    return cached?.value; // serve a previously-resolved email on a transient refresh failure
+    // 1) M365 Graph by AAD object id (app perm User.Read.All) — reliable in BOTH 1:1 and group, unlike
+    // the conversation roster (no member email in personal scope). Only when userId is a canonical AAD
+    // object id (UUID); the channel-native `29:`/`28:` ids would just 404.
+    if (this.resolveEmailByAad && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+      try {
+        const mail = (await this.resolveEmailByAad(userId))?.trim().toLowerCase();
+        if (mail) {
+          this.emailByUser.set(userId, { value: mail, fetchedAt: Date.now() });
+          return mail;
+        }
+      } catch (err) {
+        console.error('[teams] conductor binding graph email resolve failed:', err);
+      }
+    }
+    // 2) Fallback: the channel roster (exposes member email in group chats).
+    if (this.rosterProvider) {
+      try {
+        const participants = await this.rosterProvider.list(context);
+        const match = participants.find((p) => p.aadObjectId === userId || p.channelUserId === userId);
+        const email = match?.email?.trim().toLowerCase();
+        if (email) {
+          this.emailByUser.set(userId, { value: email, fetchedAt: Date.now() });
+          return email;
+        }
+      } catch (err) {
+        console.error('[teams] conductor binding email resolve failed:', err);
+      }
+    }
+    // Unresolved after Graph + roster. Keep serving a prior email if we had one; otherwise negative-cache
+    // (so we don't re-resolve every turn) and log ONCE so this silent-miss class is diagnosable.
+    if (cached?.value) return cached.value;
+    console.error(
+      `[teams] conductor binding: email unresolved after Graph+roster for user=${userId} — binding stays channel-native-keyed (email-addressed reminders may miss; check the User.Read.All grant)`,
+    );
+    this.emailByUser.set(userId, { value: null, fetchedAt: Date.now() });
+    return undefined;
   }
 
   /**

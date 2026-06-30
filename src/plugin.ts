@@ -322,6 +322,13 @@ export async function activate(
     : undefined;
 
   // --- Bot + Router ----------------------------------------------------
+  // P2c — resolve a user's SMTP email via the M365 Graph (app perm User.Read.All) so the Conductor
+  // binding is email-keyed even in 1:1 chats, where the conversation roster exposes no member email.
+  const m365ForEmail = ctx.services.get<Microsoft365Accessor>('microsoft365.graph');
+  const resolveEmailByAad = m365ForEmail
+    ? (aadObjectId: string): Promise<string | null> => m365ForEmail.app.getUserMail(aadObjectId)
+    : undefined;
+
   const bot = new TeamsBot(
     chatAgent,
     conversationHistoryStore,
@@ -337,6 +344,7 @@ export async function activate(
     resolveChatAgentForActivity,
     conversationObserver,
     emitConductorEvent,
+    resolveEmailByAad,
   );
 
   if (resolveChatAgentForActivity) {
