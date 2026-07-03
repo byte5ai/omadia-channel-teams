@@ -17,6 +17,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
     "clean": "rm -rf dist"
   },
   "peerDependencies": {
@@ -31,9 +32,25 @@
     "express": "^5.0.0",
     "pg": "^8.13.0"
   },
+  "devDependencies": {
+    "typescript": "^6.0.2",
+    "@types/node": "^25.6.0",
+    "@types/express": "^5.0.6",
+    "@types/pg": "^8.11.10",
+    "@anthropic-ai/sdk": "^0.88.0",
+    "botbuilder": "^4.23.3",
+    "express": "^5.0.0",
+    "pg": "^8.13.0",
+    "esbuild": "^0.24.0"
+  },
   "engines": {
     "node": ">=20"
   },
   "description": "Microsoft Teams channel plugin for Omadia. Implements @omadia/channel-sdk's ChannelPlugin contract: Bot-Framework adapter, Adaptive-Card rendering, roster + mention resolution, attachment persistence with signed-URL proxy, and HTTP routes for /api/messages + /attachments. Depends on @omadia/integration-microsoft365 for shared Graph client and App-registration credentials.",
-  "license": "MIT"
+  "license": "MIT",
+  "homepage": "https://github.com/byte5ai/omadia-channel-teams",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/byte5ai/omadia-channel-teams.git"
+  }
 }
