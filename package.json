@@ -41,7 +41,11 @@
     "botbuilder": "^4.23.3",
     "express": "^5.0.0",
     "pg": "^8.13.0",
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.24.0",
+    "@omadia/plugin-api": "file:../odoo-bot/middleware/packages/plugin-api",
+    "@omadia/channel-sdk": "file:../odoo-bot/middleware/packages/harness-channel-sdk",
+    "@omadia/diagrams": "file:../odoo-bot/middleware/packages/harness-diagrams",
+    "@omadia/plugin-ui-helpers": "file:../odoo-bot/middleware/packages/harness-ui-helpers"
   },
   "engines": {
     "node": ">=20"
@@ -52,5 +56,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/byte5ai/omadia-channel-teams.git"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true
   }
 }
