@@ -6,7 +6,12 @@ import {
   TurnContext,
   type SigninStateVerificationQuery,
 } from 'botbuilder';
-import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import {
+  formatSessionScope,
+  isNoReply,
+  logNoReplyDrop,
+  unsharedConversationScope,
+} from '@omadia/channel-sdk';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   CaptureDisclosure,
@@ -62,6 +67,61 @@ const TEAMS_MAX_MESSAGE_CHARS = 25_000;
 // Frequency of typing indicators during long-running orchestrator calls. The Teams
 // client dims the "typing" animation after ~10 s of silence, so we refresh faster.
 const TYPING_INTERVAL_MS = 5_000;
+
+/**
+ * #575 D7 — the Teams turn's session scope, derived through the channel SDK's
+ * typed resolver instead of being hand-built.
+ *
+ * The bug this closes is measured, not theoretical. The scope used to be
+ * `` `teams-${conversation?.id ?? 'unknown'}` ``, so **every** Teams activity
+ * arriving without a conversation id landed in the single literal bucket
+ * `teams-unknown` — and that string keys conversation history *and* the
+ * knowledge-graph partition. Two unrelated callers who both hit that gap shared
+ * one memory. It is the `'http-default'` hole again, in production Teams, and
+ * it is why `SHARED_SCOPE_TOKENS` lists `teams-unknown` at all.
+ *
+ * `unsharedConversationScope` gives each such turn its own scope, keyed on the
+ * Bot Framework activity id so a **retry of the same message** stays continuous
+ * rather than forking a new conversation.
+ *
+ * ## Why the id is checked here rather than handed over verbatim
+ *
+ * Passing `` `teams-${id ?? 'unknown'}` `` straight to the resolver looks
+ * equivalent and very nearly is: `teams-unknown` is a known shared token, so
+ * the SDK neutralises it either way. It differs in exactly one case, and that
+ * case is a live hole — an **empty** conversation id builds `teams-`, which is
+ * *not* a known shared token, so the resolver classifies it as a perfectly
+ * ordinary conversation and every caller with a blank id shares it. Refusing to
+ * build a scope from a falsy id is what actually closes that. Verified by
+ * mutation: without the check, every other assertion in the scope test still
+ * passes.
+ *
+ * Two properties this deliberately preserves:
+ *
+ *  - **A present conversation id round-trips byte-identically.** The SDK's
+ *    adapter keeps `teams-<id>` an opaque conversation scope precisely so that
+ *    introducing the type moves no scope string, and therefore orphans no
+ *    existing graph partition.
+ *  - **The spelling stays `teams-<id>`, not the canonical `teams::<id>`.**
+ *    Re-spelling carries exactly the cost #575 D3 carries — every live Teams
+ *    conversation's partition would move — so it is its own migration, not a
+ *    rider on an isolation fix.
+ *
+ * Exported so the behaviour is testable without standing up a Bot Framework
+ * adapter; the parameter is structurally typed for the same reason.
+ */
+export function teamsSessionScope(activity: {
+  readonly conversation?: { readonly id?: string } | undefined;
+  readonly id?: string | undefined;
+}): string {
+  const rawConversationId = activity.conversation?.id;
+  return formatSessionScope(
+    unsharedConversationScope({
+      scope: rawConversationId ? `teams-${rawConversationId}` : undefined,
+      uniqueSuffix: typeof activity.id === 'string' ? activity.id : undefined,
+    }),
+  );
+}
 
 /** Honest confirmation for an approve/reject click, worded by the kernel's resolution outcome so we
  *  never claim "approved → done" when a quorum='all' await still waits, or on a stale/double click. */
@@ -437,8 +497,11 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
 
+    // `conversationId` deliberately keeps its old `'unknown'` fallback — it is
+    // read by the attachment store (`conversationId !== 'unknown'`) and a dozen
+    // log lines. Only the SCOPE changes; the reasoning is on `teamsSessionScope`.
     const conversationId = context.activity.conversation?.id ?? 'unknown';
-    const sessionScope = `teams-${conversationId}`;
+    const sessionScope = teamsSessionScope(context.activity);
     const from = context.activity.from;
     const userId =
       from?.aadObjectId ??
