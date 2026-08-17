@@ -18,7 +18,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
-    "clean": "rm -rf dist"
+    "package": "node scripts/build-zip.mjs",
+    "clean": "rm -rf dist out"
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
