@@ -10,7 +10,7 @@ export { activate } from './plugin.js';
 // Bot runtime + adapters (re-exported for the kernel bootstrap call-site
 // + the answer-card tests under test/)
 // ---------------------------------------------------------------------------
-export { TeamsBot } from './teamsBot.js';
+export { TeamsBot, teamsSessionScope } from './teamsBot.js';
 export {
   TeamsAttachmentStore,
   type TeamsAttachmentStoreOptions,
