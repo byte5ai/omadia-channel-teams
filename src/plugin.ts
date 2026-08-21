@@ -50,6 +50,11 @@ import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
 import { buildApprovalCard } from './teamsCard.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
+import {
+  createTeamsRosterAdapter,
+  createTeamsTargetedSendAdapter,
+  TeamsConversationReferenceCache,
+} from './teamsGroupPrimitives.js';
 import { createTeamsRouter } from './messagesRouter.js';
 import { createTeamsUiRouter } from './uiRouter.js';
 
@@ -249,6 +254,21 @@ export async function activate(
   const teamsRosterProvider = new TeamsRosterProvider();
   core.log('info', 'teams roster provider ready (ttl=5min)');
 
+  // --- #330 B2 — group-conversation primitives --------------------------
+  // The reference cache always runs (cheap, feeds the roster adapter); the
+  // kernel seams are feature-detected: on a pre-#330 kernel every optional
+  // CoreApi method below is undefined and this plugin behaves exactly as
+  // before.
+  const conversationRefs = new TeamsConversationReferenceCache();
+  const groupPrimitives = {
+    captureConversationReference: (turnCtx: Parameters<TeamsConversationReferenceCache['capture']>[0]): void =>
+      conversationRefs.capture(turnCtx),
+    emitMembershipEvent: (event: Parameters<NonNullable<CoreApi['emitConversationEvent']>>[0]): void => {
+      // The catalog id is authoritative here — the bot cannot know it.
+      core.emitConversationEvent?.({ ...event, channelId: ctx.agentId });
+    },
+  };
+
   // --- Routines wiring (only when the kernel published the integration)
   const captureRoutineTurn = routinesIntegration
     ? (info: { tenant: string; userId: string; principalRef?: string; conversationRef: unknown }) =>
@@ -360,6 +380,7 @@ export async function activate(
     emitConductorEvent,
     resolveEmailByAad,
     resolveConductorAwait,
+    groupPrimitives,
   );
 
   if (resolveChatAgentForActivity) {
@@ -404,6 +425,18 @@ export async function activate(
   // Mount at /api — same prefix as before, now owned by the channel
   // runtime so deactivation cleanly returns 503 instead of crashing.
   core.registerRouter(ctx.agentId, '/api', router);
+
+  // #330 B2 — register the group-conversation capabilities where the kernel
+  // offers the seams (needs `sendProactive`, hence after the router exists).
+  core.registerRosterProvider?.(
+    ctx.agentId,
+    createTeamsRosterAdapter({ refs: conversationRefs, roster: teamsRosterProvider, sendProactive }),
+  );
+  core.registerTargetedSendProvider?.(ctx.agentId, createTeamsTargetedSendAdapter({ sendProactive }));
+  core.log(
+    'info',
+    `group primitives (#330): roster=${typeof core.registerRosterProvider === 'function' ? 'on' : 'kernel<B1'}, targetedSend=${typeof core.registerTargetedSendProvider === 'function' ? 'on' : 'kernel<B1'}, membershipEvents=${typeof core.emitConversationEvent === 'function' ? 'on' : 'kernel<B1'}`,
+  );
   core.log(
     'info',
     `Teams endpoint active at /api/messages (app=${appId}, type=${config.MICROSOFT_APP_TYPE}, credentials=vault)`,
