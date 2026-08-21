@@ -18,6 +18,14 @@ export {
   type PersistTurnInput,
 } from './teamsAttachmentStore.js';
 export { TeamsRosterProvider } from './teamsRoster.js';
+// #330 B2 — group-conversation adapters (kernel roster / targeted-send /
+// membership-event seams). Re-exported for the tests under tests/.
+export {
+  createTeamsRosterAdapter,
+  createTeamsTargetedSendAdapter,
+  TeamsConversationReferenceCache,
+  toSdkConversationType,
+} from './teamsGroupPrimitives.js';
 
 // ---------------------------------------------------------------------------
 // Mentions

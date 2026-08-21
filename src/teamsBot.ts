@@ -12,6 +12,8 @@ import {
   logNoReplyDrop,
   unsharedConversationScope,
 } from '@omadia/channel-sdk';
+import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
+import { toSdkConversationType } from './teamsGroupPrimitives.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   CaptureDisclosure,
@@ -296,13 +298,83 @@ export class TeamsBot extends TeamsActivityHandler {
       responderId: string,
       approved: boolean,
     ) => Promise<'resumed' | 'recorded' | 'already_resolved' | 'not_a_holder'>,
+    /**
+     * #330 B2 — group-conversation hooks, present only when the kernel exposes
+     * the group primitives (feature-detected in plugin.ts). `capture` feeds the
+     * per-conversation reference cache the roster provider resolves through;
+     * `emitMembershipEvent` forwards bot-invited / members-changed events
+     * (`bot_added` is the Facilitator's explicit, announced entry).
+     */
+    private readonly groupPrimitives?: {
+      captureConversationReference: (context: TurnContext) => void;
+      emitMembershipEvent: (event: ConversationMembershipEvent) => void;
+    },
   ) {
     super();
 
     this.onMessage(async (context, next) => {
+      this.groupPrimitives?.captureConversationReference(context);
       await this.handleMessage(context);
       await next();
     });
+
+    // #330 B2 — membership lifecycle. Runs regardless of groupPrimitives so
+    // the roster cache invalidation below stays correct on old kernels too.
+    this.onMembersAdded(async (context, next) => {
+      this.handleMembershipChange(context, 'added');
+      await next();
+    });
+    this.onMembersRemoved(async (context, next) => {
+      this.handleMembershipChange(context, 'removed');
+      await next();
+    });
+  }
+
+  /** #330 B2 — translate a Bot-Framework conversationUpdate into the SDK's
+   *  membership event, invalidate the roster cache, and (when the added
+   *  members include this bot) emit `bot_added` with the inviter. */
+  private handleMembershipChange(context: TurnContext, change: 'added' | 'removed'): void {
+    try {
+      const activity = context.activity;
+      const conversationId = activity.conversation?.id;
+      if (!conversationId) return;
+      this.rosterProvider?.invalidate(conversationId);
+      this.groupPrimitives?.captureConversationReference(context);
+      if (!this.groupPrimitives) return;
+
+      const accounts = (change === 'added' ? activity.membersAdded : activity.membersRemoved) ?? [];
+      const members: ChannelUserRef[] = accounts.map((m) => ({
+        kind: 'teams-aad',
+        id: m.aadObjectId ?? m.id,
+        ...(m.name ? { displayName: m.name } : {}),
+      }));
+      const botAdded = change === 'added' && accounts.some((m) => m.id === activity.recipient?.id);
+      const inviter: ChannelUserRef | undefined =
+        botAdded && activity.from?.id && activity.from.id !== activity.recipient?.id
+          ? {
+              kind: 'teams-aad',
+              id: activity.from.aadObjectId ?? activity.from.id,
+              ...(activity.from.name ? { displayName: activity.from.name } : {}),
+            }
+          : undefined;
+
+      const conversationType = toSdkConversationType(activity.conversation?.conversationType);
+      this.groupPrimitives.emitMembershipEvent({
+        kind: botAdded ? 'bot_added' : change === 'added' ? 'members_added' : 'members_removed',
+        channelId: 'de.byte5.channel.teams',
+        channelType: 'teams',
+        conversationId,
+        ...(conversationType ? { conversationType } : {}),
+        members,
+        ...(inviter ? { addedBy: inviter } : {}),
+        occurredAt:
+          activity.timestamp instanceof Date ? activity.timestamp.toISOString() : new Date().toISOString(),
+        rawEvent: activity,
+      });
+    } catch (err) {
+      // A membership event must never break the conversationUpdate turn.
+      console.error('[teams] membership event handling failed:', err instanceof Error ? err.message : err);
+    }
   }
 
   /**
