@@ -51,6 +51,7 @@ import { TeamsBot } from './teamsBot.js';
 import { buildApprovalCard } from './teamsCard.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import {
+  createTeamsConversationSendAdapter,
   createTeamsRosterAdapter,
   createTeamsTargetedSendAdapter,
   TeamsConversationReferenceCache,
@@ -433,9 +434,13 @@ export async function activate(
     createTeamsRosterAdapter({ refs: conversationRefs, roster: teamsRosterProvider, sendProactive }),
   );
   core.registerTargetedSendProvider?.(ctx.agentId, createTeamsTargetedSendAdapter({ sendProactive }));
+  core.registerConversationSendProvider?.(
+    ctx.agentId,
+    createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive }),
+  );
   core.log(
     'info',
-    `group primitives (#330): roster=${typeof core.registerRosterProvider === 'function' ? 'on' : 'kernel<B1'}, targetedSend=${typeof core.registerTargetedSendProvider === 'function' ? 'on' : 'kernel<B1'}, membershipEvents=${typeof core.emitConversationEvent === 'function' ? 'on' : 'kernel<B1'}`,
+    `group primitives (#330): roster=${typeof core.registerRosterProvider === 'function' ? 'on' : 'kernel<B1'}, targetedSend=${typeof core.registerTargetedSendProvider === 'function' ? 'on' : 'kernel<B1'}, membershipEvents=${typeof core.emitConversationEvent === 'function' ? 'on' : 'kernel<B1'}, conversationSend=${typeof core.registerConversationSendProvider === 'function' ? 'on' : 'kernel<C3'}`,
   );
   core.log(
     'info',
