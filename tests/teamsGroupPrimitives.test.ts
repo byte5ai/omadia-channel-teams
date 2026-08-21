@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import type { TurnContext } from 'botbuilder';
 
 import {
+  createTeamsConversationSendAdapter,
   createTeamsRosterAdapter,
   createTeamsTargetedSendAdapter,
   TeamsConversationReferenceCache,
@@ -128,5 +129,41 @@ describe('createTeamsTargetedSendAdapter', () => {
     });
     const outcome = await adapter.sendToUser({ principalId: 'jane@co.com', conversationRef: {} }, { text: 'x' });
     assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'channel_error');
+  });
+});
+
+describe('createTeamsConversationSendAdapter (#330 C3b)', () => {
+  it('delivers into a conversation with a cached reference via the proactive path', async () => {
+    const cache = new TeamsConversationReferenceCache();
+    cache.capture(fakeContext({ conversationId: 'conv-1', teamsType: 'groupChat' }));
+    const sent: string[] = [];
+    const sendProactive: TeamsProactiveSend = async (_ref, build) => {
+      await build({
+        sendActivity: async (activity: { text?: string }) => {
+          sent.push(activity.text ?? '');
+          return undefined;
+        },
+      } as unknown as TurnContext);
+    };
+    const adapter = createTeamsConversationSendAdapter({ refs: cache, sendProactive });
+    const out = await adapter.sendToConversation('conv-1', { text: 'nudge: wer fehlt noch?' });
+    assert.deepEqual(out, { outcome: 'delivered' });
+    assert.deepEqual(sent, ['nudge: wer fehlt noch?']);
+  });
+
+  it("returns 'no_binding' without a cached reference and 'channel_error' on a proactive throw", async () => {
+    const cache = new TeamsConversationReferenceCache();
+    const adapter = createTeamsConversationSendAdapter({
+      refs: cache,
+      sendProactive: async () => {
+        throw new Error('BF token expired');
+      },
+    });
+    const missing = await adapter.sendToConversation('conv-never-seen', { text: 'x' });
+    assert.equal(missing.outcome === 'unreachable' ? missing.code : '', 'no_binding');
+
+    cache.capture(fakeContext({ conversationId: 'conv-1' }));
+    const threw = await adapter.sendToConversation('conv-1', { text: 'x' });
+    assert.equal(threw.outcome === 'unreachable' ? threw.code : '', 'channel_error');
   });
 });

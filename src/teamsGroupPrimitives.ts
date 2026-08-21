@@ -9,6 +9,7 @@ import type {
   ConversationParticipant,
   ConversationRoster,
   ConversationRosterProvider,
+  ConversationSendProvider,
   ConversationType,
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
@@ -143,6 +144,45 @@ export function createTeamsTargetedSendAdapter(deps: {
       }
       try {
         await deps.sendProactive(target.conversationRef as Partial<ConversationReference>, async (turnContext) => {
+          await turnContext.sendActivity({ type: 'message', text: message.text });
+        });
+        return { outcome: 'delivered' };
+      } catch (err) {
+        return {
+          outcome: 'unreachable',
+          code: 'channel_error',
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  };
+}
+
+
+/**
+ * SDK conversation-send provider (#330 C3b - the Facilitator's group nudges).
+ * Delivers INTO a conversation via the proactive path on the cached
+ * per-conversation reference. The kernel has already scope-checked the caller
+ * (own ephemeral attachment only); this adapter only knows how to deliver.
+ * No cached reference = named unreachable outcome, never a throw.
+ */
+export function createTeamsConversationSendAdapter(deps: {
+  refs: TeamsConversationReferenceCache;
+  sendProactive: TeamsProactiveSend;
+}): ConversationSendProvider {
+  return {
+    channelType: 'teams',
+    async sendToConversation(conversationId, message) {
+      const cached = deps.refs.get(conversationId);
+      if (!cached) {
+        return {
+          outcome: 'unreachable',
+          code: 'no_binding',
+          message: `no Teams conversation reference cached for '${conversationId}' - no inbound activity seen yet`,
+        };
+      }
+      try {
+        await deps.sendProactive(cached.ref, async (turnContext) => {
           await turnContext.sendActivity({ type: 'message', text: message.text });
         });
         return { outcome: 'delivered' };
