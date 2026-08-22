@@ -31,6 +31,24 @@ export function toSdkConversationType(teamsType: string | undefined): Conversati
 }
 
 /**
+ * #330 field report — speaker attribution for group turns. A group
+ * conversation funnels every participant into ONE conversation-scoped agent
+ * session; without attribution the agent cannot tell speakers apart (it
+ * literally had to ask "wer von euch bist du?"). The prefix is built from the
+ * Bot-Framework activity's verified sender — never from message content — so
+ * participants cannot impersonate each other any more convincingly than free
+ * text always allowed. 1:1 turns stay untouched.
+ */
+export function attributeGroupMessage(
+  text: string,
+  opts: { isGroup: boolean; senderName?: string | undefined },
+): string {
+  const name = opts.senderName?.trim();
+  if (!opts.isGroup || !name) return text;
+  return `[${name}]: ${text}`;
+}
+
+/**
  * Per-conversation `ConversationReference` cache, fed from every inbound
  * activity (messages AND membership updates). The roster provider needs it to
  * open a proactive TurnContext for a conversation OUTSIDE an active turn —

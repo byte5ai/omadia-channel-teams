@@ -21,6 +21,7 @@ export { TeamsRosterProvider } from './teamsRoster.js';
 // #330 B2 — group-conversation adapters (kernel roster / targeted-send /
 // membership-event seams). Re-exported for the tests under tests/.
 export {
+  attributeGroupMessage,
   createTeamsConversationSendAdapter,
   createTeamsRosterAdapter,
   createTeamsTargetedSendAdapter,
