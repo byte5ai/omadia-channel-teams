@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import type { TurnContext } from 'botbuilder';
 
 import {
+  attributeGroupMessage,
   createTeamsConversationSendAdapter,
   createTeamsRosterAdapter,
   createTeamsTargetedSendAdapter,
@@ -165,5 +166,27 @@ describe('createTeamsConversationSendAdapter (#330 C3b)', () => {
     cache.capture(fakeContext({ conversationId: 'conv-1' }));
     const threw = await adapter.sendToConversation('conv-1', { text: 'x' });
     assert.equal(threw.outcome === 'unreachable' ? threw.code : '', 'channel_error');
+  });
+});
+
+describe('attributeGroupMessage (#330 field report — who is speaking?)', () => {
+  it('prefixes group turns with the verified sender name', () => {
+    assert.equal(
+      attributeGroupMessage('Business Entscheider als Zielgruppe.', { isGroup: true, senderName: 'Marcel Wege' }),
+      '[Marcel Wege]: Business Entscheider als Zielgruppe.',
+    );
+  });
+
+  it('leaves 1:1 turns untouched — no prefix noise where the speaker is unambiguous', () => {
+    assert.equal(attributeGroupMessage('hallo', { isGroup: false, senderName: 'Marcel Wege' }), 'hallo');
+  });
+
+  it('degrades to the raw text when the sender name is missing or blank', () => {
+    assert.equal(attributeGroupMessage('hallo', { isGroup: true }), 'hallo');
+    assert.equal(attributeGroupMessage('hallo', { isGroup: true, senderName: '   ' }), 'hallo');
+  });
+
+  it('trims the sender name (Bot Framework pads some display names)', () => {
+    assert.equal(attributeGroupMessage('x', { isGroup: true, senderName: '  Christian Wendler ' }), '[Christian Wendler]: x');
   });
 });

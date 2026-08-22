@@ -13,7 +13,7 @@ import {
   unsharedConversationScope,
 } from '@omadia/channel-sdk';
 import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
-import { toSdkConversationType } from './teamsGroupPrimitives.js';
+import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   CaptureDisclosure,
@@ -1398,8 +1398,15 @@ export class TeamsBot extends TeamsActivityHandler {
           }
         }
         const chatAgent = this.currentChatAgent ?? this.defaultOrchestrator;
+        // #330 field report — the attributed form is what the agent sees AND
+        // what lands in history; sendAnswer keeps the raw text for mention
+        // resolution. See attributeGroupMessage for the why.
+        const attributedMessage = attributeGroupMessage(input.userMessage, {
+          isGroup: isGroupConversation,
+          senderName: context.activity.from?.name,
+        });
         const result = await chatAgent.chat({
-          userMessage: input.userMessage,
+          userMessage: attributedMessage,
           sessionScope: input.sessionScope,
           ...(input.userId ? { userId: input.userId } : {}),
           ...(input.priorTurns.length > 0 ? { priorTurns: input.priorTurns } : {}),
