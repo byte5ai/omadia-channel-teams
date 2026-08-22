@@ -14,6 +14,7 @@ import {
 } from '@omadia/channel-sdk';
 import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
+import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   CaptureDisclosure,
@@ -721,7 +722,7 @@ export class TeamsBot extends TeamsActivityHandler {
             : 'Zeig mir nur die pausierten Routinen.';
       this.history.clearPending(sessionScope);
       const priorTurns = this.history.get(sessionScope);
-      await this.runOrchestratorTurn(context, {
+      await this.runOrchestratorTurnDetached(context, {
         conversationId,
         sessionScope,
         userId,
@@ -1134,7 +1135,7 @@ export class TeamsBot extends TeamsActivityHandler {
     }
     const priorTurns =
       decision.choice === 'reset' ? [] : this.history.get(sessionScope);
-    await this.runOrchestratorTurn(context, {
+    await this.runOrchestratorTurnDetached(context, {
       conversationId,
       sessionScope,
       userId,
@@ -1191,7 +1192,7 @@ export class TeamsBot extends TeamsActivityHandler {
     );
     this.history.clearPending(sessionScope);
     const priorTurns = this.history.get(sessionScope);
-    await this.runOrchestratorTurn(context, {
+    await this.runOrchestratorTurnDetached(context, {
       conversationId,
       sessionScope,
       userId,
@@ -1218,7 +1219,7 @@ export class TeamsBot extends TeamsActivityHandler {
     );
     this.history.clearPending(sessionScope);
     const priorTurns = this.history.get(sessionScope);
-    await this.runOrchestratorTurn(context, {
+    await this.runOrchestratorTurnDetached(context, {
       conversationId,
       sessionScope,
       userId,
@@ -1336,6 +1337,59 @@ export class TeamsBot extends TeamsActivityHandler {
     });
   }
 
+  /** Late-bound proactive sender (the adapter exists only after the router is
+   *  created, which needs this bot) — see attachProactiveSend. */
+  private proactiveSend?: TeamsProactiveSend;
+
+  attachProactiveSend(send: TeamsProactiveSend): void {
+    this.proactiveSend = send;
+  }
+
+  /**
+   * Card Action.Submit clicks (choice / follow-up / topic decision / routine
+   * filter): the Teams client renders "Something went wrong. Please try
+   * again." whenever the submit's HTTP turn stays open past its ~15s budget —
+   * which EVERY orchestrator turn does — even though the bot keeps processing
+   * and answers fine. So: capture what only the live inbound activity can
+   * give us (SSO assertion, verified sender name), end the inbound turn
+   * immediately, and run the heavy work on a proactive continuation of the
+   * same conversation. Without an attached proactive sender this falls back
+   * to the old inline behaviour.
+   */
+  private async runOrchestratorTurnDetached(
+    context: TurnContext,
+    input: {
+      conversationId: string;
+      sessionScope: string;
+      userId: string | undefined;
+      userMessage: string;
+      priorTurns: ReturnType<ConversationHistoryStore['get']>;
+      freshCheck?: boolean;
+    },
+  ): Promise<void> {
+    if (!this.proactiveSend) {
+      await this.runOrchestratorTurn(context, input);
+      return;
+    }
+    const presetSsoAssertion = this.ssoConnectionName
+      ? await extractSsoAssertion(context, this.ssoConnectionName)
+      : undefined;
+    const presetSenderName = context.activity.from?.name;
+    const reference = TurnContext.getConversationReference(context.activity);
+    void this.proactiveSend(reference, async (proactive) => {
+      await this.runOrchestratorTurn(proactive, {
+        ...input,
+        ...(presetSsoAssertion ? { presetSsoAssertion } : {}),
+        ...(presetSenderName ? { presetSenderName } : {}),
+      });
+    }).catch((err: unknown) => {
+      console.error(
+        `[teams] detached card turn failed conv=${input.conversationId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
+
   private async runOrchestratorTurn(
     context: TurnContext,
     input: {
@@ -1346,6 +1400,12 @@ export class TeamsBot extends TeamsActivityHandler {
       priorTurns: ReturnType<ConversationHistoryStore['get']>;
       /** When true, the orchestrator skips context retrieval + memory read. */
       freshCheck?: boolean;
+      /** Pre-extracted on the ORIGINAL inbound turn for detached card clicks —
+       *  a proactive continuation cannot read the user token itself. */
+      presetSsoAssertion?: string;
+      /** Verified sender name captured on the original inbound turn — the
+       *  proactive continuation's `from` is the bot, not the user. */
+      presetSenderName?: string;
     },
   ): Promise<void> {
     // Scope-local binding so the ALS wrapper can forward the roster accessor
@@ -1359,9 +1419,9 @@ export class TeamsBot extends TeamsActivityHandler {
 
     const run = async (): Promise<void> => {
       const stopTyping = startTypingLoop(context);
-      const ssoAssertion = this.ssoConnectionName
-        ? await extractSsoAssertion(context, this.ssoConnectionName)
-        : undefined;
+      const ssoAssertion =
+        input.presetSsoAssertion ??
+        (this.ssoConnectionName ? await extractSsoAssertion(context, this.ssoConnectionName) : undefined);
       console.log(
         `[teams] turn start conv=${input.conversationId} user=${input.userId ?? 'anon'} history=${String(input.priorTurns.length)} freshCheck=${String(Boolean(input.freshCheck))} roster=${rosterProvider ? 'on' : 'off'} sso=${ssoAssertion ? 'yes' : 'no'}`,
       );
@@ -1403,7 +1463,7 @@ export class TeamsBot extends TeamsActivityHandler {
         // resolution. See attributeGroupMessage for the why.
         const attributedMessage = attributeGroupMessage(input.userMessage, {
           isGroup: isGroupConversation,
-          senderName: context.activity.from?.name,
+          senderName: input.presetSenderName ?? context.activity.from?.name,
         });
         const result = await chatAgent.chat({
           userMessage: attributedMessage,

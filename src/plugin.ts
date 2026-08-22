@@ -423,6 +423,10 @@ export async function activate(
     appTenantId: tenantId,
   });
 
+  // Card-click early-ack (#330 field report): the bot needs the proactive
+  // sender to detach long orchestrator turns from Action.Submit HTTP turns.
+  bot.attachProactiveSend(sendProactive);
+
   // Mount at /api — same prefix as before, now owned by the channel
   // runtime so deactivation cleanly returns 503 instead of crashing.
   core.registerRouter(ctx.agentId, '/api', router);
