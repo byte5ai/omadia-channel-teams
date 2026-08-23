@@ -56,6 +56,7 @@ import {
   createTeamsTargetedSendAdapter,
   TeamsConversationReferenceCache,
 } from './teamsGroupPrimitives.js';
+import { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 import { createTeamsRouter } from './messagesRouter.js';
 import { createTeamsUiRouter } from './uiRouter.js';
 
@@ -261,6 +262,14 @@ export async function activate(
   // CoreApi method below is undefined and this plugin behaves exactly as
   // before.
   const conversationRefs = new TeamsConversationReferenceCache();
+  // #330 field report — restart-proof proactive delivery: write the refs
+  // through to the kernel's `teams_conversation_refs` table when a pool is
+  // available. Pre-migration kernels degrade to cache-only (load fails soft).
+  if (graphPool) {
+    conversationRefs.attachPersistence(
+      new PgTeamsConversationRefStore(graphPool, (m) => core.log('info', m)),
+    );
+  }
   const groupPrimitives = {
     captureConversationReference: (turnCtx: Parameters<TeamsConversationReferenceCache['capture']>[0]): void =>
       conversationRefs.capture(turnCtx),

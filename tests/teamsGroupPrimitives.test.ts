@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 
 import type { TurnContext } from 'botbuilder';
 
+import { PgTeamsConversationRefStore } from '@omadia/channel-teams';
 import {
   attributeGroupMessage,
   createTeamsConversationSendAdapter,
@@ -188,5 +189,99 @@ describe('attributeGroupMessage (#330 field report — who is speaking?)', () =>
 
   it('trims the sender name (Bot Framework pads some display names)', () => {
     assert.equal(attributeGroupMessage('x', { isGroup: true, senderName: '  Christian Wendler ' }), '[Christian Wendler]: x');
+  });
+});
+
+// #330 field report — references survive restarts: write-through on capture,
+// store fallback on cache miss. Losing the store degrades to the old
+// cache-only behaviour, never a throw on the message path.
+describe('TeamsConversationReferenceCache persistence', () => {
+  function fakeStore() {
+    const rows = new Map<string, { ref: unknown; teamsType?: string }>();
+    return {
+      saves: [] as string[],
+      rows,
+      async save(conversationId: string, ref: unknown, teamsType?: string) {
+        this.saves.push(conversationId);
+        rows.set(conversationId, { ref, ...(teamsType ? { teamsType } : {}) });
+      },
+      async load(conversationId: string) {
+        return rows.get(conversationId) as { ref: Partial<import('botbuilder').ConversationReference>; teamsType?: string } | undefined;
+      },
+    };
+  }
+
+  it('writes captures through once per distinct reference, and survives a "restart"', async () => {
+    const store = fakeStore();
+    const before = new TeamsConversationReferenceCache();
+    before.attachPersistence(store);
+    before.capture(fakeContext({ conversationId: 'conv-1', teamsType: 'groupChat' }));
+    before.capture(fakeContext({ conversationId: 'conv-1', teamsType: 'groupChat' }));
+    await Promise.resolve();
+    assert.deepEqual(store.saves, ['conv-1'], 'identical re-captures must not re-write');
+
+    // "Restart": a fresh cache over the same backing store.
+    const after = new TeamsConversationReferenceCache();
+    after.attachPersistence(store);
+    assert.equal(after.get('conv-1'), undefined, 'sync path stays cache-only');
+    const loaded = await after.getOrLoad('conv-1');
+    assert.equal(loaded?.teamsType, 'groupChat');
+    // Re-seeded: the next lookup is a plain cache hit.
+    assert.ok(after.get('conv-1'));
+  });
+
+  it('conversationSend delivers after a restart via the persisted reference', async () => {
+    const store = fakeStore();
+    const before = new TeamsConversationReferenceCache();
+    before.attachPersistence(store);
+    before.capture(fakeContext({ conversationId: 'conv-1', teamsType: 'groupChat' }));
+    await Promise.resolve();
+
+    const after = new TeamsConversationReferenceCache();
+    after.attachPersistence(store);
+    const sent: string[] = [];
+    const adapter = createTeamsConversationSendAdapter({
+      refs: after,
+      sendProactive: async (_ref, build) => {
+        await build({
+          sendActivity: async (activity: { text?: string }) => {
+            sent.push(activity.text ?? '');
+            return undefined;
+          },
+        } as unknown as TurnContext);
+      },
+    });
+    const out = await adapter.sendToConversation('conv-1', { text: 'nudge nach neustart' });
+    assert.deepEqual(out, { outcome: 'delivered' });
+    assert.deepEqual(sent, ['nudge nach neustart']);
+  });
+
+  it('without persistence the old cache-only behaviour is unchanged', async () => {
+    const cache = new TeamsConversationReferenceCache();
+    assert.equal(await cache.getOrLoad('conv-never'), undefined);
+  });
+});
+
+// Review M2 — a poisoned DB row must not point proactive turns at an
+// attacker host; only Bot-Framework service hosts pass the load path.
+describe('PgTeamsConversationRefStore — serviceUrl allowlist', () => {
+  function storeWithRow(ref: Record<string, unknown>) {
+    const pool = {
+      query: async () => ({ rows: [{ ref, teams_type: 'groupChat' }] }),
+    } as unknown as import('pg').Pool;
+    return new PgTeamsConversationRefStore(pool);
+  }
+
+  it('returns a reference pointing at Bot Framework hosts', async () => {
+    const ok = await storeWithRow({ serviceUrl: 'https://smba.trafficmanager.net/emea/', conversation: { id: 'c1' } }).load('c1');
+    assert.equal(ok?.teamsType, 'groupChat');
+    const okBf = await storeWithRow({ serviceUrl: 'https://europe.botframework.com/', conversation: { id: 'c1' } }).load('c1');
+    assert.ok(okBf);
+  });
+
+  it('drops rows with an attacker or missing serviceUrl', async () => {
+    assert.equal(await storeWithRow({ serviceUrl: 'https://evil.example.com/', conversation: { id: 'c1' } }).load('c1'), undefined);
+    assert.equal(await storeWithRow({ conversation: { id: 'c1' } }).load('c1'), undefined);
+    assert.equal(await storeWithRow({ serviceUrl: 'not a url' }).load('c1'), undefined);
   });
 });

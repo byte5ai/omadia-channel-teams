@@ -28,6 +28,8 @@ export {
   TeamsConversationReferenceCache,
   toSdkConversationType,
 } from './teamsGroupPrimitives.js';
+export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
+export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 
 // ---------------------------------------------------------------------------
 // Mentions
