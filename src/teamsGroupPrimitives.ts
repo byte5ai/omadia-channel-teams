@@ -15,6 +15,7 @@ import type {
 } from '@omadia/channel-sdk';
 
 import type { TeamsProactiveSend } from './messagesRouter.js';
+import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { ChatParticipant } from './kernel-types.js';
 
@@ -58,6 +59,17 @@ export function attributeGroupMessage(
  */
 export class TeamsConversationReferenceCache {
   private readonly refs = new Map<string, { ref: Partial<ConversationReference>; teamsType?: string }>();
+  /** Last serialization written through per conversation — capture() fires on
+   *  EVERY inbound activity, the store only needs changes. */
+  private readonly lastWritten = new Map<string, string>();
+  private persistence?: TeamsConversationRefPersistence;
+
+  /** #330 field report — optional write-through store (kernel graph table
+   *  `teams_conversation_refs`) so references survive restarts. Writes are
+   *  fire-and-forget; a missing table degrades to cache-only behaviour. */
+  attachPersistence(persistence: TeamsConversationRefPersistence): void {
+    this.persistence = persistence;
+  }
 
   capture(context: TurnContext): void {
     const conversationId = context.activity.conversation?.id;
@@ -67,14 +79,47 @@ export class TeamsConversationReferenceCache {
     this.refs.delete(conversationId);
     const teamsType = context.activity.conversation?.conversationType;
     this.refs.set(conversationId, { ref, ...(teamsType ? { teamsType } : {}) });
+    if (this.persistence) {
+      const serialized = JSON.stringify({ ref, teamsType: teamsType ?? null });
+      if (this.lastWritten.get(conversationId) !== serialized) {
+        this.lastWritten.set(conversationId, serialized);
+        void this.persistence.save(conversationId, ref, teamsType).catch(() => {
+          // Next capture retries: forgetting the marker keeps save attempts alive.
+          this.lastWritten.delete(conversationId);
+        });
+      }
+    }
     if (this.refs.size > MAX_CACHED_REFERENCES) {
       const oldest = this.refs.keys().next().value;
-      if (oldest !== undefined) this.refs.delete(oldest);
+      if (oldest !== undefined) {
+        this.refs.delete(oldest);
+        this.lastWritten.delete(oldest);
+      }
     }
   }
 
   get(conversationId: string): { ref: Partial<ConversationReference>; teamsType?: string } | undefined {
     return this.refs.get(conversationId);
+  }
+
+  /** Cache-or-store lookup for the proactive adapters: a miss after a restart
+   *  falls back to the persisted reference and re-seeds the cache. */
+  async getOrLoad(conversationId: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined> {
+    const cached = this.refs.get(conversationId);
+    if (cached) return cached;
+    if (!this.persistence) return undefined;
+    const persisted = await this.persistence.load(conversationId);
+    if (!persisted) return undefined;
+    this.refs.delete(conversationId);
+    this.refs.set(conversationId, persisted);
+    if (this.refs.size > MAX_CACHED_REFERENCES) {
+      const oldest = this.refs.keys().next().value;
+      if (oldest !== undefined) {
+        this.refs.delete(oldest);
+        this.lastWritten.delete(oldest);
+      }
+    }
+    return persisted;
   }
 }
 
@@ -111,7 +156,7 @@ export function createTeamsRosterAdapter(deps: {
   return {
     channelType: 'teams',
     async getRoster(conversationId: string): Promise<ConversationRoster | undefined> {
-      const cached = deps.refs.get(conversationId);
+      const cached = await deps.refs.getOrLoad(conversationId);
       if (!cached) return undefined;
 
       let members: ChatParticipant[] = [];
@@ -191,7 +236,7 @@ export function createTeamsConversationSendAdapter(deps: {
   return {
     channelType: 'teams',
     async sendToConversation(conversationId, message) {
-      const cached = deps.refs.get(conversationId);
+      const cached = await deps.refs.getOrLoad(conversationId);
       if (!cached) {
         return {
           outcome: 'unreachable',
