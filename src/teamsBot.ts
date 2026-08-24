@@ -388,6 +388,48 @@ export class TeamsBot extends TeamsActivityHandler {
    */
   private readonly emailByUser = new Map<string, { value: string | null; fetchedAt: number }>();
 
+  /** conversationId → last `bot_present` emit (epoch ms). Re-emitted after
+   *  the interval so the kernel's 24h eligibility TTL cannot outlive a
+   *  long-running process's only emit. */
+  private readonly botPresentEmittedAt = new Map<string, number>();
+  private static readonly BOT_PRESENT_REEMIT_MS = 12 * 60 * 60 * 1000;
+
+  private maybeEmitBotPresent(context: TurnContext): void {
+    try {
+      if (!this.groupPrimitives) return;
+      const activity = context.activity;
+      const conversationId = activity.conversation?.id;
+      if (!conversationId) return;
+      if (toSdkConversationType(activity.conversation?.conversationType) !== 'group') return;
+      const now = Date.now();
+      const last = this.botPresentEmittedAt.get(conversationId);
+      if (last !== undefined && now - last < TeamsBot.BOT_PRESENT_REEMIT_MS) return;
+      this.botPresentEmittedAt.set(conversationId, now);
+      const sender: ChannelUserRef | undefined = activity.from?.id
+        ? {
+            kind: 'teams-aad',
+            id: activity.from.aadObjectId ?? activity.from.id,
+            ...(activity.from.name ? { displayName: activity.from.name } : {}),
+          }
+        : undefined;
+      this.groupPrimitives.emitMembershipEvent({
+        kind: 'bot_present',
+        channelId: 'de.byte5.channel.teams',
+        channelType: 'teams',
+        conversationId,
+        conversationType: 'group',
+        members: activity.recipient?.id
+          ? [{ kind: 'teams-aad', id: activity.recipient.id, ...(activity.recipient.name ? { displayName: activity.recipient.name } : {}) }]
+          : [],
+        ...(sender ? { addedBy: sender } : {}),
+        occurredAt: activity.timestamp instanceof Date ? activity.timestamp.toISOString() : new Date().toISOString(),
+      });
+    } catch (err) {
+      // Eligibility signalling must never break the message turn.
+      console.error('[teams] bot_present emit failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
   /**
    * Resolve this user's SMTP email for the Conductor binding key — M365 Graph first (reliable in 1:1
    * AND group), conversation roster as fallback. Awaited BEFORE the turn's `captureRoutineTurn`, so
@@ -838,6 +880,16 @@ export class TeamsBot extends TeamsActivityHandler {
         );
       }
     }
+
+    // #330 field report round 3 — a bot that is ALREADY a group member never
+    // gets another conversationUpdate, so the kernel's invite index (the
+    // facilitation auto-bind scope guard) stayed closed for exactly the chats
+    // people talk to the bot in; two live facilitation attempts died on this.
+    // An inbound GROUP message is transport-verified proof of membership, so
+    // emit ONE synthetic `bot_present` per conversation per interval —
+    // ELIGIBILITY only, consumers must not eagerly bind on it. The verified
+    // sender rides along as addedBy (the person engaging the bot).
+    this.maybeEmitBotPresent(context);
 
     // US4 (Conductor Surface) — surface a GENUINE user message as a Conductor domain event so a
     // workflow can trigger on real Teams activity. Placed on the main user-text path: it runs ONLY
