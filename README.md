@@ -51,6 +51,18 @@ SSO (OBO flow), notify-team AAD groupId for bell notifications, attachment
 key prefix, notification topic URL, dashboard directory label. See
 [`manifest.yaml`](manifest.yaml) for the full field list.
 
+### Optional: resolved names + members on the channels dashboard
+
+The operator channels dashboard shows raw conversation ids (`28:<app-id>`,
+`19:…@thread.skype`) until Graph can resolve them. To get group-chat
+topics, member display names, and the tenant org name on the catch-all
+row, grant the app registration these **application permissions** (admin
+consent required): `Chat.Read.All`, `ChatMember.Read.All`,
+`TeamMember.Read.All`, `Organization.Read.All`. Without them the plugin
+degrades silently to the Bot-Framework-derived labels (one log line per
+failure class explains what is missing). Resolution is cached (10 min
+TTL) and never blocks the dashboard render.
+
 ## Build, typecheck & test
 
 ```bash

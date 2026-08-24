@@ -23,6 +23,7 @@ import {
 
 import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 import { TeamsConversationObserver } from './teamsConversationObserver.js';
+import { TeamsGraphResolver } from './teamsGraphResolver.js';
 
 /**
  * Narrow shim for the kernel's `channelDirectoryRegistry@1` service so
@@ -125,7 +126,19 @@ export async function activate(
   // `listKeys()` reads them at render time. That way the operator sees
   // every Teams channel the bot has been messaged in as a bindable
   // target, alongside the bot-level catch-all.
-  const conversationObserver = new TeamsConversationObserver();
+  // Graph resolver for human-readable directory rows: group-chat topics,
+  // member display names, tenant org name. Same App Registration as the
+  // bot; degrades to Bot-Framework labels when the tenant has not granted
+  // the Graph application permissions (see teamsGraphResolver.ts).
+  const graphResolver = new TeamsGraphResolver({
+    tenantId,
+    clientId: appId,
+    clientSecret: appPassword,
+    log: (m: string) => core.log('info', m),
+  });
+  const conversationObserver = new TeamsConversationObserver((conv) =>
+    graphResolver.prime(conv),
+  );
   const channelDirectoryDisplayLabel = ctx.config.get<string>(
     'teams_directory_label',
   );
@@ -136,6 +149,7 @@ export async function activate(
       ? { displayLabel: channelDirectoryDisplayLabel }
       : {}),
     conversationObserver,
+    graphResolver,
   });
   const channelDirectoryRegistry =
     ctx.services.get<ChannelDirectoryRegistryShim>(

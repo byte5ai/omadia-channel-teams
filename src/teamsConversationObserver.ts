@@ -27,6 +27,13 @@ export interface TeamsConversation {
   /** Bot-Framework tenant id when present — same value the kernel uses
    *  for graph-tenant-id (multi-tenant deployments). */
   readonly tenantId?: string;
+  /** AAD group id of the owning team (`channelData.team.aadGroupId`) —
+   *  Teams-channel conversations only. Lets the Graph resolver fetch the
+   *  team roster without parsing the conversation id. */
+  readonly teamAadGroupId?: string;
+  /** `activity.from.name` for 1:1 chats — the human on the other side.
+   *  Makes the DM label self-describing without any Graph call. */
+  readonly peerName?: string;
   /** ms since epoch of the most recent inbound. Useful for sorting + for
    *  a future "drop stale entries after N days" sweep. */
   readonly lastSeenAt: number;
@@ -34,6 +41,12 @@ export interface TeamsConversation {
 
 export class TeamsConversationObserver {
   private readonly seen = new Map<string, TeamsConversation>();
+
+  /** Optional hook fired after every observe() — the plugin wires the
+   *  Graph resolver's fire-and-forget prime() here. Must never throw. */
+  constructor(
+    private readonly onObserved?: (conv: TeamsConversation) => void,
+  ) {}
 
   /**
    * Capture an inbound activity. Idempotent — re-recording an existing
@@ -49,19 +62,25 @@ export class TeamsConversationObserver {
     const channelData = context.activity.channelData as
       | {
           channel?: { id?: string; name?: string };
-          team?: { id?: string; name?: string };
+          team?: { id?: string; name?: string; aadGroupId?: string };
           tenant?: { id?: string };
         }
       | undefined;
 
     const channelName = channelData?.channel?.name;
     const teamName = channelData?.team?.name;
+    const teamAadGroupId = channelData?.team?.aadGroupId;
     const conversationType = context.activity.conversation?.conversationType;
+    const peerName =
+      conversationType === 'personal'
+        ? context.activity.from?.name?.trim() || undefined
+        : undefined;
 
     const label = buildLabel({
       channelName,
       teamName,
       conversationType,
+      peerName,
       fallbackId: conversationId,
     });
 
@@ -75,9 +94,16 @@ export class TeamsConversationObserver {
       ...(conversationType ? { conversationType } : {}),
       label,
       ...(tenantId ? { tenantId } : {}),
+      ...(teamAadGroupId ? { teamAadGroupId } : {}),
+      ...(peerName ? { peerName } : {}),
       lastSeenAt: Date.now(),
     };
     this.seen.set(conversationId, entry);
+    try {
+      this.onObserved?.(entry);
+    } catch {
+      // The hook is best-effort enrichment — it must never break a turn.
+    }
   }
 
   list(): readonly TeamsConversation[] {
@@ -96,15 +122,18 @@ function buildLabel(input: {
   channelName?: string;
   teamName?: string;
   conversationType?: string;
+  peerName?: string;
   fallbackId: string;
 }): string {
-  const { channelName, teamName, conversationType, fallbackId } = input;
+  const { channelName, teamName, conversationType, peerName, fallbackId } =
+    input;
   if (channelName && teamName) {
     return `Teams · #${channelName} in ${teamName}`;
   }
   if (channelName) return `Teams · #${channelName}`;
   if (teamName) return `Teams · ${teamName}`;
   if (conversationType === 'personal') {
+    if (peerName) return `Teams · DM · ${peerName}`;
     return `Teams · DM (${fallbackId.slice(0, 12)}…)`;
   }
   if (conversationType === 'groupChat') {

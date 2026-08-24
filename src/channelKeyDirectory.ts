@@ -4,6 +4,7 @@ import type {
 } from '@omadia/channel-sdk';
 
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
+import type { TeamsGraphResolver } from './teamsGraphResolver.js';
 
 const PLUGIN_ID = '@omadia/channel-teams';
 
@@ -36,6 +37,12 @@ export function buildTeamsChannelKeyDirectory(opts: {
    *  `listKeys()` time for the live set — the kernel calls listKeys()
    *  once per `/operator/channels` page render. */
   readonly conversationObserver: TeamsConversationObserver;
+  /** Optional Graph resolver. When present, `listKeys()` merges its
+   *  cached names/members (group-chat topic, member display names,
+   *  tenant org name for the catch-all) and primes it fire-and-forget —
+   *  the render path never awaits Graph. Absent → labels stay purely
+   *  Bot-Framework-derived, exactly as before. */
+  readonly graphResolver?: TeamsGraphResolver;
 }): ChannelKeyDirectory {
   const botKey = `28:${opts.microsoftAppId}`;
   const shortApp =
@@ -52,17 +59,27 @@ export function buildTeamsChannelKeyDirectory(opts: {
     channelType: 'teams',
     originPluginId: PLUGIN_ID,
     async listKeys(): Promise<readonly ChannelKeyEntry[]> {
+      const resolver = opts.graphResolver;
+      resolver?.primeOrg();
+      // Operator-set label wins; otherwise prefer the Graph org name over
+      // the raw app-id fragment for the catch-all row.
+      const orgName = resolver?.getOrgName();
+      const catchAllLabel =
+        opts.displayLabel?.trim() ||
+        (orgName ? `Teams · ${orgName} (all)` : botLabel);
       const entries: ChannelKeyEntry[] = [
         {
           key: botKey,
-          label: botLabel,
+          label: catchAllLabel,
           hint: `${tenantHint} · catch-all`,
         },
       ];
       for (const conv of opts.conversationObserver.list()) {
+        resolver?.prime(conv);
+        const resolved = resolver?.get(conv.conversationId);
         entries.push({
           key: conv.conversationId,
-          label: conv.label,
+          label: resolved?.label ?? conv.label,
           hint:
             conv.conversationType === 'channel'
               ? 'Teams channel'
@@ -71,6 +88,12 @@ export function buildTeamsChannelKeyDirectory(opts: {
                 : conv.conversationType === 'groupChat'
                   ? 'Group chat'
                   : 'conversation',
+          ...(resolved?.members !== undefined
+            ? { members: resolved.members }
+            : {}),
+          ...(resolved?.memberCount !== undefined
+            ? { memberCount: resolved.memberCount }
+            : {}),
         });
       }
       return entries;

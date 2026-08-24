@@ -32,6 +32,22 @@ export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 
 // ---------------------------------------------------------------------------
+// Channels-directory contribution + Graph name/member resolution
+// (re-exported for the tests under tests/)
+// ---------------------------------------------------------------------------
+export { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
+export {
+  TeamsConversationObserver,
+  type TeamsConversation,
+} from './teamsConversationObserver.js';
+export {
+  TeamsGraphResolver,
+  type ConversationToResolve,
+  type ResolvedConversation,
+  type TeamsGraphResolverOptions,
+} from './teamsGraphResolver.js';
+
+// ---------------------------------------------------------------------------
 // Mentions
 // ---------------------------------------------------------------------------
 export {
