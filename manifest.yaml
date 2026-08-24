@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.19.0"
+  version: "0.19.1"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für Omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -179,13 +179,63 @@ integrations:
 #     and feeds `bundle.agent` into the TeamsBot. Without it the channel
 #     has nothing to delegate user turns to, so we hard-block (S+10-4b).
 #
-# Deferred to S+11+ (currently structural, enforced at instantiation site):
-#   - `microsoft365.graph@^1` — consumed via `ctx.services.get<Microsoft365Accessor>`
-#     for Graph-backed attachment downloads. The microsoft365 integration
-#     publishes it conditionally (only when app credentials are configured),
-#     so promoting it to `requires:` would block channel activation in dev
-#     environments without MS365 setup. Stays optional/soft-degrade until
-#     S+11 reworks the dev-default story.
 requires:
   - "chatAgent@^1"
+
+# omadia#838 — the thirteen further names this channel resolves through
+# `ctx.services.get`, declared so the `@omadia/channel-teams` row in
+# `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` can retire. The service gate
+# (#795) accepts an `optional_requires:` entry as a full declaration, and the
+# capability resolver deliberately never reads this list, so nothing here can
+# hold activation back or add an ordering edge.
+#
+# Every name below is under `optional_requires:` rather than `requires:`, for
+# one of two reasons.
+#
+# DEGRADABLE — resolved, found `undefined`, and activate() carries on with a
+# narrower feature set:
+#   - `channelDirectoryRegistry@1` — logs "not published" and skips the
+#     /operator/channels contribution.
+#   - `channelResolver@1`          — per-turn Agent routing; absent means every
+#                                    turn goes to the default `chatAgent`.
+#   - `conductorAwaitResolver@1`   — in-process approve/reject of a Conductor
+#                                    await; absent means card clicks fall back
+#                                    to the HTTP path.
+#   - `embeddingClient@1`          — passed through, currently unused.
+#   - `graphPool@1` + `tigrisStore@1` — both guarded by the same `if`; without
+#                                    either, attachment persistence is off.
+#   - `graphTenantId@1`            — defaults to 'default'.
+#   - `microsoft365.graph@1`       — the integration publishes it only when app
+#                                    credentials are configured, so `requires:`
+#                                    would block activation in dev environments
+#                                    without MS365 setup (the long-standing
+#                                    S+11 note this block replaces).
+#   - `routinesIntegration@1`      — routine cards are simply not rendered.
+#   - `topicDetector@1`            — history passes through undetected.
+#
+# NOT DEGRADABLE, BUT KERNEL-PUBLISHED — `anthropicClient@1`, `turnContext@1`
+# and `uiRouteCatalog@1` each make activate() throw when missing, so on the
+# face of it they belong under `requires:`. They must not go there.
+# `resolveCapabilities` builds its provider index exclusively from other
+# plugins' `provides:` lists, and these three are published by the middleware
+# kernel itself (`middleware/src/index.ts`), not by any plugin manifest. A
+# `requires:` entry naming one of them is therefore permanently unresolved,
+# and an unresolved `requires:` DROPS the consumer from the eligible set — the
+# channel would silently never activate at all. `optional_requires:` grants the
+# exact declaration the service gate asks for and leaves activate()'s own
+# explicit throw as the honest failure mode.
+optional_requires:
+  - "anthropicClient@1"
+  - "channelDirectoryRegistry@1"
+  - "channelResolver@1"
+  - "conductorAwaitResolver@1"
+  - "embeddingClient@1"
+  - "graphPool@1"
+  - "graphTenantId@1"
+  - "microsoft365.graph@1"
+  - "routinesIntegration@1"
+  - "tigrisStore@1"
+  - "topicDetector@1"
+  - "turnContext@1"
+  - "uiRouteCatalog@1"
 provides: []
