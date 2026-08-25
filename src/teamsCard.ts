@@ -44,6 +44,32 @@ export function aiLabelEntity(): Readonly<typeof AI_LABEL_ENTITY> {
   return AI_LABEL_ENTITY;
 }
 
+/**
+ * AI-Act Art. 50 (#643/#644) — remove the disclosure line the kernel folded
+ * into `SemanticAnswer.text` for wire-only channels. Teams has its own
+ * provenance surface (the "✨ AI-generated" card chip + the activity-level
+ * {@link aiLabelEntity}), so the folded sentence would mark the answer twice.
+ * Only the marking line is removed; an operator-authored addendum
+ * (`aiDisclosure.operatorNote`, folded as its own paragraph after the line)
+ * stays — the operator asked for it explicitly. When the answer consists of
+ * nothing but the marking line, it is kept: an empty card body would
+ * otherwise degrade to the "keine Antwort" error path.
+ */
+export function stripFoldedAiDisclosure(
+  text: string,
+  disclosureLine: string | undefined,
+): string {
+  if (!disclosureLine || disclosureLine.trim().length === 0) return text;
+  if (text === disclosureLine) return text;
+  const folded = `\n\n${disclosureLine}`;
+  if (text.endsWith(folded)) return text.slice(0, -folded.length);
+  // Line folded mid-text (operator note follows as its own paragraph).
+  const withNote = `${folded}\n\n`;
+  const idx = text.lastIndexOf(withNote);
+  if (idx !== -1) return text.slice(0, idx) + text.slice(idx + folded.length);
+  return text;
+}
+
 export interface BuildAnswerCardInput {
   answer: string;
   runTrace?: RunTracePayload;
@@ -63,8 +89,18 @@ export interface BuildAnswerCardInput {
    * When present, renders a `🔄 Fresh Check` button that re-asks the same
    * question while bypassing memory read + FTS context block. Used when
    * the user suspects an old memory entry is poisoning the answer.
+   * Also feeds the #332 Direct-Line buttons (see `decorateDirectLine`).
    */
   originalUserMessage?: string;
+  /**
+   * Gate for the `🔄 Fresh Check` button: render it only when the kernel
+   * reported that memory actually influenced this answer
+   * (`SemanticAnswer.memoryUsed`). Without memory in the turn a fresh check
+   * cannot produce a different answer, so the affordance is noise. Does NOT
+   * affect the Direct-Line buttons, which read `originalUserMessage`
+   * independently.
+   */
+  showFreshCheck?: boolean;
   /**
    * Teams @-mention entities resolved against the active chat's roster.
    * When non-empty, embedded in the card's `msteams.entities` so Teams
@@ -645,7 +681,12 @@ function decorateDirectLine(
 
 function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
   const attachments = (input.attachments ?? []).slice(0, MAX_ATTACHMENTS_PER_CARD);
-  const originalMessage = input.originalUserMessage;
+  // Fresh-Check gate: `originalMessage` here ONLY drives the Fresh-Check
+  // action in `assemble`. The Direct-Line buttons read
+  // `input.originalUserMessage` directly in `decorateDirectLine` and stay
+  // available regardless of the gate.
+  const originalMessage =
+    input.showFreshCheck === true ? input.originalUserMessage : undefined;
   const followUps = (input.followUpOptions ?? []).slice(0, FOLLOW_UP_MAX_OPTIONS);
   const disclosure = input.captureDisclosure;
   const privacy = input.privacyReceipt;

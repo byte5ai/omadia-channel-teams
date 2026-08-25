@@ -233,6 +233,7 @@ describe('buildAnswerCard — follow-up options', () => {
     const card = buildAnswerCard({
       answer: 'Antwort',
       originalUserMessage: 'Originalfrage',
+      showFreshCheck: true,
       followUpOptions: [
         { label: 'A', prompt: 'Frage A' },
         { label: 'B', prompt: 'Frage B' },

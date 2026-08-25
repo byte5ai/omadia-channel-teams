@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { aiLabelEntity, buildAnswerCard } from '@omadia/channel-teams';
+import {
+  aiLabelEntity,
+  buildAnswerCard,
+  stripFoldedAiDisclosure,
+} from '@omadia/channel-teams';
 import type { RunTracePayload } from '@omadia/orchestrator';
 
 const sampleTrace: RunTracePayload = {
@@ -216,5 +220,56 @@ describe('buildAnswerCard', () => {
       `card size ${String(Buffer.byteLength(serialized, 'utf8'))} exceeds Teams cap`,
     );
     assert.doesNotMatch(serialized, /capture-disclosure-container/);
+  });
+});
+
+describe('buildAnswerCard — Fresh-Check gate (memoryUsed)', () => {
+  it('renders NO Fresh-Check button when showFreshCheck is not set', () => {
+    const att = buildAnswerCard({
+      answer: 'pong',
+      originalUserMessage: 'ping',
+    });
+    assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
+  });
+
+  it('renders the Fresh-Check button when memory influenced the answer', () => {
+    const att = buildAnswerCard({
+      answer: 'Antwort aus Memory',
+      originalUserMessage: 'Frage',
+      showFreshCheck: true,
+    });
+    assert.match(JSON.stringify(att.content), /Fresh Check/);
+  });
+
+  it('never renders Fresh-Check without an originalUserMessage', () => {
+    const att = buildAnswerCard({ answer: 'ok', showFreshCheck: true });
+    assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
+  });
+});
+
+describe('stripFoldedAiDisclosure', () => {
+  const LINE = 'Diese Antwort wurde von einem KI-System erzeugt.';
+
+  it('removes the folded disclosure paragraph from the end of the answer', () => {
+    assert.equal(stripFoldedAiDisclosure(`pong 🏓\n\n${LINE}`, LINE), 'pong 🏓');
+  });
+
+  it('keeps an operator note that follows the marking line', () => {
+    assert.equal(
+      stripFoldedAiDisclosure(`Antwort.\n\n${LINE}\n\nOperator-Hinweis.`, LINE),
+      'Antwort.\n\nOperator-Hinweis.',
+    );
+  });
+
+  it('returns the text unchanged when the line was not folded this turn', () => {
+    assert.equal(stripFoldedAiDisclosure('Antwort ohne Marking.', LINE), 'Antwort ohne Marking.');
+  });
+
+  it('keeps a disclosure-only answer (never empties the card body)', () => {
+    assert.equal(stripFoldedAiDisclosure(LINE, LINE), LINE);
+  });
+
+  it('is a no-op without a structured disclosure', () => {
+    assert.equal(stripFoldedAiDisclosure(`Antwort.\n\n${LINE}`, undefined), `Antwort.\n\n${LINE}`);
   });
 });
