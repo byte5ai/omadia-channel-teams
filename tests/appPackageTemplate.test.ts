@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -242,5 +243,78 @@ describe('#19 W0 — appPackage icons + README', () => {
     for (const name of KNOWN_PLACEHOLDERS) {
       assert.ok(readme.includes(`{{${name}}}`), `README does not document {{${name}}}`);
     }
+  });
+});
+
+/**
+ * #860 W0a — the template must SHIP, not just exist. The release ZIP is what
+ * the provisioner installs, so a template that lives in the repo but not in
+ * `out/<id>-<version>.zip` is still the unversioned manual artifact this wave
+ * retires. These tests hold the packaging script to that, plus the two-file
+ * version invariant its drift guard enforces.
+ */
+describe('#860 W0a — release artifact ships the appPackage template', () => {
+  const pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')) as {
+    name: string;
+    version: string;
+  };
+
+  it('package.json and manifest.yaml carry the same semver (drift-guard input)', () => {
+    const manifestYaml = readFileSync(join(pkgRoot, 'manifest.yaml'), 'utf8');
+    // Same expression build-zip.mjs uses to read identity.version.
+    const manifestVersion = manifestYaml.match(/^\s{2}version:\s*["']?([^"'\s]+)/m)?.[1];
+    assert.match(pkgJson.version, /^\d+\.\d+\.\d+$/, 'package.json version is not plain semver');
+    assert.equal(
+      manifestVersion,
+      pkgJson.version,
+      `version drift: package.json says ${pkgJson.version}, manifest.yaml says ${manifestVersion}`,
+    );
+  });
+
+  it('build-zip.mjs stages appPackage/ as a REQUIRED dir, not an optional one', () => {
+    const script = readFileSync(join(pkgRoot, 'scripts', 'build-zip.mjs'), 'utf8');
+    assert.match(
+      script,
+      /REQUIRED_DIRS\s*=\s*\[[^\]]*'appPackage'/,
+      'appPackage missing from REQUIRED_DIRS — the template would silently drop out of the ZIP',
+    );
+  });
+
+  it('npm run package produces a flat artifact containing the template', () => {
+    // Runs the real packaging script (which also exercises the drift guard).
+    // Requires `npm run build` first — same precondition as the whole suite.
+    const res = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'build-zip.mjs')], {
+      cwd: pkgRoot,
+      encoding: 'utf8',
+    });
+    assert.equal(res.status, 0, `build-zip.mjs failed:\n${res.stdout}\n${res.stderr}`);
+
+    const safeName = pkgJson.name.replace(/^@/, '').replace(/\//g, '-');
+    const stageDir = join(pkgRoot, 'out', `${safeName}-${pkgJson.version}-stage`);
+    const zipPath = join(pkgRoot, 'out', `${safeName}-${pkgJson.version}.zip`);
+    assert.ok(existsSync(zipPath), `missing release ZIP: ${zipPath}`);
+
+    // The stage dir mirrors the archive root (createFlatZip archives its
+    // CONTENTS), so asserting on it asserts the ZIP layout: FLAT, with the
+    // template directory alongside manifest.yaml and dist/.
+    assert.ok(existsSync(join(stageDir, 'manifest.yaml')), 'stage is not flat: manifest.yaml not at root');
+    assert.ok(existsSync(join(stageDir, 'dist', 'plugin.js')), 'stage is missing dist/plugin.js');
+    for (const rel of ['manifest.json.template', 'color.png', 'outline.png', 'README.md']) {
+      assert.ok(
+        existsSync(join(stageDir, 'appPackage', rel)),
+        `release artifact is missing appPackage/${rel}`,
+      );
+    }
+
+    // Held invariants from the packaging script: no node_modules, and the
+    // staged package.json ships without devDependencies (their file:../ paths
+    // describe one machine's directory layout, not the artifact's).
+    assert.ok(!existsSync(join(stageDir, 'node_modules')), 'node_modules leaked into the stage');
+    const stagedPkg = JSON.parse(readFileSync(join(stageDir, 'package.json'), 'utf8')) as {
+      version: string;
+      devDependencies?: Record<string, string>;
+    };
+    assert.equal(stagedPkg.devDependencies, undefined, 'devDependencies not stripped');
+    assert.equal(stagedPkg.version, pkgJson.version);
   });
 });
