@@ -41,7 +41,13 @@ const pkgRoot = process.cwd();
 
 /** Everything the host needs at runtime. `node_modules` must never be in here. */
 const REQUIRED_FILES = ['manifest.yaml'];
-const REQUIRED_DIRS = ['dist'];
+// `appPackage/` is the versioned Teams app-package template (#19, epic
+// byte5ai/omadia#860 W0): the middleware's per-agent ZIP generator reads it
+// out of the INSTALLED plugin, so a release artifact without it would leave
+// the provisioner with nothing to render. Required, not optional — a template
+// that silently drops out of the ZIP is exactly the unversioned manual
+// artifact this unit retires.
+const REQUIRED_DIRS = ['dist', 'appPackage'];
 const OPTIONAL_FILES = ['README.md', 'LICENSE', 'NOTICE', 'INTEGRATION.md'];
 const OPTIONAL_DIRS = ['assets', 'skills'];
 
@@ -103,7 +109,8 @@ console.log('  + package.json (devDependencies stripped)');
 for (const rel of REQUIRED_DIRS) {
   const src = join(pkgRoot, rel);
   if (!existsSync(src)) {
-    throw new Error(`missing required dir: ${rel}/ — run \`npm run build\` first`);
+    const hint = rel === 'dist' ? ' — run `npm run build` first' : '';
+    throw new Error(`missing required dir: ${rel}/${hint}`);
   }
   cpSync(src, join(stageDir, rel), { recursive: true });
   console.log(`  + ${rel}/`);
