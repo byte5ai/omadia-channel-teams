@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,6 +37,11 @@ const KNOWN_PLACEHOLDERS = [
   'DESCRIPTION',
   'DESCRIPTION_FULL',
   'ACCENT_COLOR',
+  'DEVELOPER_NAME',
+  'DEVELOPER_WEBSITE_URL',
+  'DEVELOPER_PRIVACY_URL',
+  'DEVELOPER_TERMS_URL',
+  'COMMAND_LISTS',
   'TAB_BASE_URL',
   'VALID_DOMAINS',
   'MIDDLEWARE_HOST',
@@ -52,20 +58,37 @@ const SPEC_REQUIRED_PLACEHOLDERS = [
 ];
 
 /**
- * Substitute `{{NAME}}` tokens. String values are inserted verbatim into the
- * surrounding JSON string literal; VALID_DOMAINS is a raw JSON array and is
- * inserted where the template deliberately leaves the value unquoted.
+ * Substitute `{{NAME}}` tokens, following the README's substitution contract:
+ * string values are JSON-escaped (`JSON.stringify(value).slice(1, -1)`)
+ * before insertion into the surrounding JSON string literal; non-string
+ * values (VALID_DOMAINS, COMMAND_LISTS) are raw JSON, serialised with
+ * `JSON.stringify` where the template deliberately leaves the value unquoted.
  */
-function render(template: string, values: Record<string, string | string[]>): string {
+function render(template: string, values: Record<string, string | unknown[]>): string {
   return template.replace(/\{\{([A-Z0-9_]+)\}\}/g, (_match, name: string) => {
     const value = values[name];
     if (value === undefined) throw new Error(`no value for placeholder {{${name}}}`);
-    return Array.isArray(value) ? JSON.stringify(value) : value;
+    return Array.isArray(value) ? JSON.stringify(value) : JSON.stringify(value).slice(1, -1);
   });
 }
 
+/** The German default command list of the previously shipped manifest. */
+const LEGACY_COMMAND_LISTS = [
+  {
+    scopes: ['personal', 'team', 'groupChat'],
+    commands: [
+      { title: 'Umsatz', description: 'Wer sind unsere umsatzstärksten Kunden (YTD + Vorjahr)?' },
+      { title: 'Offene Posten', description: 'Zeig mir die offenen Ausgangsrechnungen, sortiert nach Fälligkeit.' },
+      { title: 'Urlaub', description: 'Wie viele Urlaubstage hat <Mitarbeiter> dieses Jahr genommen?' },
+      { title: 'Diagramm', description: 'Visualisiere die letzte Antwort als Chart (Balken, Linie, Pie).' },
+      { title: 'Playbook', description: 'Such im Confluence-Playbook nach <Thema>.' },
+      { title: 'Termin', description: 'Finde freie Termine mit <Person> für <Dauer> und buche direkt.' },
+    ],
+  },
+];
+
 /** The values of today's shipped single-bot manifest (middleware v1.3.0). */
-const LEGACY_VALUES: Record<string, string | string[]> = {
+const LEGACY_VALUES: Record<string, string | unknown[]> = {
   VERSION: '1.3.0',
   APP_ID: 'bc0bd6cf-7037-4c7c-9e29-de86c4b77177',
   BOT_ID: '737c6ddd-6d4e-4599-8dc3-260281ea906e',
@@ -75,6 +98,12 @@ const LEGACY_VALUES: Record<string, string | string[]> = {
   DESCRIPTION_FULL:
     'omadia-agent verbindet Microsoft Teams mit einem Claude-Agent, der über spezialisierte Fach-Agenten auf eure byte5-Systeme zugreift: Odoo-17 (Accounting + HR), Confluence-Playbook, Diagramm-Rendering. Stellt Fragen auf Deutsch — der Bot delegiert an den richtigen Agenten, verifiziert die Antwort gegen die Quelle und merkt sich wiederkehrende Konventionen über Sessions hinweg.',
   ACCENT_COLOR: '#714B67',
+  // Developer defaults (README "Default" column) — byte5 for every package.
+  DEVELOPER_NAME: 'byte5',
+  DEVELOPER_WEBSITE_URL: 'https://omadia.ai',
+  DEVELOPER_PRIVACY_URL: 'https://omadia.ai/privacy',
+  DEVELOPER_TERMS_URL: 'https://omadia.ai/terms',
+  COMMAND_LISTS: LEGACY_COMMAND_LISTS,
   TAB_BASE_URL: 'https://odoo-bot-harness.fly.dev/p/channel-teams',
   VALID_DOMAINS: ['odoo-bot-middleware.fly.dev', 'odoo-bot-harness.fly.dev'],
   MIDDLEWARE_HOST: 'odoo-bot-middleware.fly.dev',
@@ -144,7 +173,7 @@ describe('#19 W0 — appPackage/manifest.json.template', () => {
     assert.equal(manifest.description.full, LEGACY_VALUES.DESCRIPTION_FULL);
     assert.equal(manifest.accentColor, '#714B67');
 
-    // Developer block stays literal.
+    // Developer block renders from the documented byte5 defaults.
     assert.deepEqual(manifest.developer, {
       name: 'byte5',
       websiteUrl: 'https://omadia.ai',
@@ -211,19 +240,48 @@ describe('#19 W0 — appPackage/manifest.json.template', () => {
         VALID_DOMAINS: ['example-middleware.fly.dev'],
         MIDDLEWARE_HOST: 'example-middleware.fly.dev',
         TAB_BASE_URL: 'https://example-harness.fly.dev/p/channel-teams',
+        COMMAND_LISTS: [],
       }),
     );
+    // {{APP_ID}} → id, {{BOT_ID}} → bots[0].botId + webApplicationInfo — a
+    // generator that swaps them ships a manifest Teams rejects on upload.
     assert.equal(manifest.id, '11111111-2222-3333-4444-555555555555');
     assert.equal(manifest.bots[0].botId, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    assert.notEqual(manifest.id, manifest.bots[0].botId);
     assert.equal(manifest.webApplicationInfo.id, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
     assert.equal(
       manifest.webApplicationInfo.resource,
       'api://example-middleware.fly.dev/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
     );
     assert.deepEqual(manifest.validDomains, ['example-middleware.fly.dev']);
+    // commandLists is optional — the documented default is an empty list.
+    assert.deepEqual(manifest.bots[0].commandLists, []);
     // The pinned schema + RSC grants are identical for every generated bot.
     assert.equal(manifest.manifestVersion, '1.17');
     assert.equal(manifest.authorization.permissions.resourceSpecific.length, RSC_GRANTS.length);
+  });
+
+  it('JSON-escaping contract: hostile string values neither break nor override the manifest', () => {
+    // Routine-hostile operator input: quotes, backslashes, newlines — plus a
+    // deliberate duplicate-key injection attempt through accentColor. Under
+    // the README's escaping rule (JSON.stringify(value).slice(1, -1)) all of
+    // it stays INSIDE the string literal it was substituted into.
+    const manifest = JSON.parse(
+      render(template, {
+        ...LEGACY_VALUES,
+        NAME_SHORT: 'Acme "Sales" Bot',
+        NAME_FULL: 'Acme \\ Sales — "Bot"',
+        DESCRIPTION_FULL: 'Line one.\nLine two.',
+        ACCENT_COLOR: '#000000", "id": "deadbeef-dead-beef-dead-beefdeadbeef',
+      }),
+    );
+    assert.equal(manifest.name.short, 'Acme "Sales" Bot');
+    assert.equal(manifest.name.full, 'Acme \\ Sales — "Bot"');
+    assert.equal(manifest.description.full, 'Line one.\nLine two.');
+    // The injection attempt stays a harmless accentColor VALUE — the Teams
+    // app id is still the genuine {{APP_ID}}.
+    assert.equal(manifest.accentColor, '#000000", "id": "deadbeef-dead-beef-dead-beefdeadbeef');
+    assert.equal(manifest.id, LEGACY_VALUES.APP_ID);
   });
 });
 
@@ -278,6 +336,36 @@ describe('#860 W0a — release artifact ships the appPackage template', () => {
       /REQUIRED_DIRS\s*=\s*\[[^\]]*'appPackage'/,
       'appPackage missing from REQUIRED_DIRS — the template would silently drop out of the ZIP',
     );
+  });
+
+  it('the version drift guard actually throws on a package.json↔manifest.yaml mismatch', () => {
+    // Real execution, not a source-text assertion: run build-zip.mjs against
+    // a sandbox whose manifest.yaml disagrees with package.json and assert
+    // the guard aborts before staging anything.
+    const sandbox = mkdtempSync(join(tmpdir(), 'w0a-drift-guard-'));
+    try {
+      writeFileSync(
+        join(sandbox, 'package.json'),
+        `${JSON.stringify({ name: '@omadia/channel-teams', version: '9.9.9' }, null, 2)}\n`,
+      );
+      writeFileSync(join(sandbox, 'manifest.yaml'), 'identity:\n  id: "@omadia/channel-teams"\n  version: "1.0.0"\n');
+      mkdirSync(join(sandbox, 'dist'), { recursive: true });
+      writeFileSync(join(sandbox, 'dist', 'plugin.js'), 'module.exports = {};\n');
+      cpSync(appPackageDir, join(sandbox, 'appPackage'), { recursive: true });
+
+      const res = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'build-zip.mjs')], {
+        cwd: sandbox,
+        encoding: 'utf8',
+      });
+      assert.notEqual(res.status, 0, 'build-zip.mjs must fail on version drift');
+      assert.match(
+        `${res.stdout}\n${res.stderr}`,
+        /version drift: package\.json says 9\.9\.9, manifest\.yaml says 1\.0\.0/,
+      );
+      assert.ok(!existsSync(join(sandbox, 'out')), 'drift guard must abort before staging');
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   it('npm run package produces a flat artifact containing the template', () => {

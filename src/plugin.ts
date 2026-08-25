@@ -384,13 +384,38 @@ export async function activate(
       { defaultBotAppId: defaultBot.appId },
     );
     conversationRefs.attachPersistence(refStore);
-    // #860 W0a — one-shot, idempotent backfill: rows written before kernel
-    // migration 0010 carry the `''` sentinel and belong to the legacy
-    // single bot — attribute them to teams_bots[0] so existing proactive
-    // sends neither break nor cross bots. Best-effort by contract (the
-    // store logs + swallows every failure mode); awaited so the keying is
-    // settled before the first proactive read.
-    await refStore.backfillLegacyBotAppId(defaultBot.appId);
+    // #860 W0a — one-shot, idempotent, NON-destructive backfill: rows
+    // written before kernel migration 0010 carry the `''` sentinel and
+    // belong to the bot that ACTUALLY captured them — that is the legacy
+    // scalar `microsoft_app_id` identity when one is configured (it was the
+    // only bot that could have written pre-multi-bot rows), NOT whatever
+    // the operator happened to list first in teams_bots[]. Falls back to
+    // teams_bots[0] when no scalar identity exists. Best-effort by
+    // contract (the store logs + swallows every failure mode); awaited so
+    // the keying is settled before the first proactive read.
+    const legacyScalarAppId = ctx.config.get<string>('microsoft_app_id');
+    const backfillTarget =
+      typeof legacyScalarAppId === 'string' && legacyScalarAppId.trim().length > 0
+        ? legacyScalarAppId
+        : defaultBot.appId;
+    await refStore.backfillLegacyBotAppId(backfillTarget);
+    // #860 W0a guardrail — cross-bot conversation-ref isolation needs the
+    // kernel's bot_app_id column (migration 0010, ships in the monorepo).
+    // On a pre-migration kernel the store degrades to ONE shared row per
+    // conversation for all bots: proactive sends can then continue another
+    // bot's conversation. Refuse silence — warn loudly per activation.
+    if (teamsBots.length > 1 && refStore.knownSchemaMode !== 'per-bot') {
+      core.log(
+        'warn',
+        `teams: ${String(teamsBots.length)} bots configured but the kernel's teams_conversation_refs table has no bot_app_id column (migration 0010 pending) — conversation references are NOT isolated per bot; proactive sends may cross bots until the kernel is upgraded`,
+      );
+    }
+  }
+  if (!graphPool && teamsBots.length > 1) {
+    core.log(
+      'warn',
+      `teams: ${String(teamsBots.length)} bots configured without a graph pool — conversation references are cache-only and not isolated across restarts`,
+    );
   }
   const groupPrimitives = {
     captureConversationReference: (turnCtx: Parameters<TeamsConversationReferenceCache['capture']>[0]): void =>

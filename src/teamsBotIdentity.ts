@@ -80,20 +80,30 @@ export const TEAMS_BOT_KEY_PREFIX = '28:';
  * publishes as the bot-level catch-all row and (b) the turn resolver sees
  * as `activity.recipient.id`. Exact string equality is what routes — never
  * rebuild this inline.
+ *
+ * The app id is normalized to lowercase: Azure serialises app ids
+ * lowercase on the wire, but operator-pasted config values may differ in
+ * casing. Normalizing HERE (the single key builder) guarantees the key
+ * published to the directory and the key parsed from
+ * `activity.recipient.id` are the same string regardless of config casing.
  */
 export function teamsBotKey(appId: string): string {
-  return `${TEAMS_BOT_KEY_PREFIX}${appId}`;
+  return `${TEAMS_BOT_KEY_PREFIX}${appId.toLowerCase()}`;
 }
 
 /**
  * Inverse of {@link teamsBotKey}: extract the app id from a `28:<appId>`
  * bot key. Returns `undefined` for anything that is not a bot identity key
  * (user ids `29:…`, conversation ids, empty app id).
+ *
+ * Returns the app id lowercased — same normalization as
+ * {@link teamsBotKey}, so `teamsBotKey(parseTeamsBotKey(k)!) === k` holds
+ * for every normalized key and mixed-casing input can never split routing.
  */
 export function parseTeamsBotKey(key: string): string | undefined {
   if (!key.startsWith(TEAMS_BOT_KEY_PREFIX)) return undefined;
   const appId = key.slice(TEAMS_BOT_KEY_PREFIX.length);
-  return appId.length > 0 ? appId : undefined;
+  return appId.length > 0 ? appId.toLowerCase() : undefined;
 }
 
 /**

@@ -247,7 +247,7 @@ describe('PgTeamsConversationRefStore — pre-migration kernel (no bot_app_id co
 });
 
 describe('PgTeamsConversationRefStore.backfillLegacyBotAppId', () => {
-  it('attributes legacy rows to the default bot, drops stale sentinel duplicates, and re-runs as a no-op', async () => {
+  it('attributes legacy rows to the target bot NON-destructively and re-runs as a no-op', async () => {
     const table = new FakeRefTable(true);
     table.seed('conv-1', '', ref('legacy-1'));
     table.seed('conv-2', '', ref('legacy-2-stale'));
@@ -257,7 +257,11 @@ describe('PgTeamsConversationRefStore.backfillLegacyBotAppId', () => {
 
     await store.backfillLegacyBotAppId('AppA');
     const after = table.snapshot();
-    assert.deepEqual(after, ['conv-1|appa', 'conv-2|appa', 'conv-3|appb']);
+    // Coordinator decision (#860 W0a): NOTHING is deleted. conv-1's sentinel
+    // row is attributed to the default bot; conv-2's stale sentinel STAYS
+    // (its conversation already has a fresher default-bot row, and reads
+    // prefer the exact match over the sentinel).
+    assert.deepEqual(after, ['conv-1|appa', 'conv-2|', 'conv-2|appa', 'conv-3|appb']);
     assert.equal((table.rows.get('conv-2|appa')?.ref.conversation as { id?: string } | undefined)?.id, 'fresh-2', 'fresh row wins over stale sentinel');
 
     await store.backfillLegacyBotAppId('AppA');
@@ -265,6 +269,9 @@ describe('PgTeamsConversationRefStore.backfillLegacyBotAppId', () => {
 
     const loaded = await store.load('conv-1', 'appa');
     assert.equal((loaded?.ref.conversation as { id?: string } | undefined)?.id, 'legacy-1');
+    // The stale sentinel never shadows the fresh default-bot row.
+    const loaded2 = await store.load('conv-2', 'appa');
+    assert.equal((loaded2?.ref.conversation as { id?: string } | undefined)?.id, 'fresh-2');
   });
 
   it('is a silent no-op on a pre-migration kernel and never throws on pool trouble', async () => {
@@ -300,13 +307,13 @@ function fakeContext(input: { conversationId: string; teamsType?: string; recipi
 class RecordingPersistence implements TeamsConversationRefPersistence {
   readonly saves: { conversationId: string; teamsType?: string; botAppId?: string }[] = [];
   readonly loads: { conversationId: string; botAppId?: string }[] = [];
-  loadResult: { ref: Partial<ConversationReference>; teamsType?: string } | undefined;
+  loadResult: { ref: Partial<ConversationReference>; teamsType?: string; botAppId?: string } | undefined;
 
   async save(conversationId: string, _ref: Partial<ConversationReference>, teamsType?: string, botAppId?: string): Promise<void> {
     this.saves.push({ conversationId, ...(teamsType !== undefined ? { teamsType } : {}), ...(botAppId !== undefined ? { botAppId } : {}) });
   }
 
-  async load(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined> {
+  async load(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string; botAppId?: string } | undefined> {
     this.loads.push({ conversationId, ...(botAppId !== undefined ? { botAppId } : {}) });
     return this.loadResult;
   }
@@ -377,6 +384,54 @@ describe('TeamsConversationReferenceCache — per-bot keying (#860 W0a)', () => 
     persistence.loadResult = undefined;
     assert.equal(cache.get('conv-9', 'appb'), undefined);
     assert.equal(await cache.getOrLoad('conv-9', 'appb'), undefined);
+  });
+
+  it('production call shape: getOrLoad without botAppId, then capture(), then get() — one bot, one cache slot', async () => {
+    // Regression (#860 W0a review): with no explicit botAppId AND no default
+    // configured, a restart-load used to seed under the '' sentinel while the
+    // next inbound capture() seeded under the real recipient appId — two keys
+    // for ONE bot, permanent ambiguity, get() missing forever.
+    const cache = new TeamsConversationReferenceCache();
+    const persistence = new RecordingPersistence();
+    persistence.loadResult = {
+      ref: { serviceUrl: ALLOWED_SERVICE_URL, conversation: { id: 'conv-r' } } as Partial<ConversationReference>,
+      teamsType: 'channel',
+    };
+    cache.attachPersistence(persistence);
+
+    // Restart: proactive path loads with no bot argument (teamsGroupPrimitives
+    // call shape) — seeds under the sentinel, and the lookup still hits.
+    assert.ok(await cache.getOrLoad('conv-r'));
+    assert.ok(cache.get('conv-r'), 'sentinel-seeded entry must be readable');
+
+    // First inbound activity re-captures under the real bot key.
+    cache.capture(fakeContext({ conversationId: 'conv-r', teamsType: 'channel', recipientId: '28:AppA' }));
+
+    // The sync lookup must now hit the real entry — no ambiguity, no
+    // permanent DB round-trips, no doubled capacity for the conversation.
+    const hit = cache.get('conv-r');
+    assert.equal(hit?.ref.bot?.id, '28:AppA', 'lookup resolves to the recaptured real-bot entry');
+    const before = persistence.loads.length;
+    assert.ok(await cache.getOrLoad('conv-r'), 'getOrLoad stays a cache hit');
+    assert.equal(persistence.loads.length, before, 'no extra store round-trip after recapture');
+  });
+
+  it('getOrLoad re-seeds under the OWNING bot the store reports, matching a later capture()', async () => {
+    const cache = new TeamsConversationReferenceCache();
+    const persistence = new RecordingPersistence();
+    persistence.loadResult = {
+      ref: { serviceUrl: ALLOWED_SERVICE_URL, conversation: { id: 'conv-own' }, bot: { id: '28:AppA', name: 'bot' } } as Partial<ConversationReference>,
+      teamsType: 'channel',
+      botAppId: 'appa',
+    };
+    cache.attachPersistence(persistence);
+
+    await cache.getOrLoad('conv-own');
+    // Seeded under 'appa' (the owning bot), NOT under the '' sentinel.
+    assert.ok(cache.get('conv-own', 'appa'), 'entry keyed under the owning bot');
+    assert.ok(cache.get('conv-own'), 'unique-holder lookup resolves it too');
+    cache.capture(fakeContext({ conversationId: 'conv-own', teamsType: 'channel', recipientId: '28:AppA' }));
+    assert.equal(cache.get('conv-own')?.ref.bot?.id, '28:AppA');
   });
 
   it('eviction under the composite key drops the oldest (bot, conversation) entry only — never another bot\'s', () => {

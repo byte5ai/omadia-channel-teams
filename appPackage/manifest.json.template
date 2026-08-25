@@ -4,10 +4,10 @@
   "version": "{{VERSION}}",
   "id": "{{APP_ID}}",
   "developer": {
-    "name": "byte5",
-    "websiteUrl": "https://omadia.ai",
-    "privacyUrl": "https://omadia.ai/privacy",
-    "termsOfUseUrl": "https://omadia.ai/terms"
+    "name": "{{DEVELOPER_NAME}}",
+    "websiteUrl": "{{DEVELOPER_WEBSITE_URL}}",
+    "privacyUrl": "{{DEVELOPER_PRIVACY_URL}}",
+    "termsOfUseUrl": "{{DEVELOPER_TERMS_URL}}"
   },
   "name": {
     "short": "{{NAME_SHORT}}",
@@ -32,41 +32,7 @@
       ],
       "supportsFiles": true,
       "isNotificationOnly": false,
-      "commandLists": [
-        {
-          "scopes": [
-            "personal",
-            "team",
-            "groupChat"
-          ],
-          "commands": [
-            {
-              "title": "Umsatz",
-              "description": "Wer sind unsere umsatzstärksten Kunden (YTD + Vorjahr)?"
-            },
-            {
-              "title": "Offene Posten",
-              "description": "Zeig mir die offenen Ausgangsrechnungen, sortiert nach Fälligkeit."
-            },
-            {
-              "title": "Urlaub",
-              "description": "Wie viele Urlaubstage hat <Mitarbeiter> dieses Jahr genommen?"
-            },
-            {
-              "title": "Diagramm",
-              "description": "Visualisiere die letzte Antwort als Chart (Balken, Linie, Pie)."
-            },
-            {
-              "title": "Playbook",
-              "description": "Such im Confluence-Playbook nach <Thema>."
-            },
-            {
-              "title": "Termin",
-              "description": "Finde freie Termine mit <Person> für <Dauer> und buche direkt."
-            }
-          ]
-        }
-      ]
+      "commandLists": {{COMMAND_LISTS}}
     }
   ],
   "permissions": [

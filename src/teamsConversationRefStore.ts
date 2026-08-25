@@ -37,8 +37,12 @@ import type { Pool } from 'pg';
 export interface TeamsConversationRefPersistence {
   /** `botAppId` undefined = the default bot (legacy single-bot call sites). */
   save(conversationId: string, ref: Partial<ConversationReference>, teamsType?: string, botAppId?: string): Promise<void>;
-  /** `botAppId` undefined = the default bot (legacy single-bot call sites). */
-  load(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined>;
+  /** `botAppId` undefined = the default bot (legacy single-bot call sites).
+   *  The returned `botAppId` is the OWNING bot of the served row (lowercase,
+   *  `undefined` for legacy/sentinel rows) — cache re-seeding must key on it
+   *  so a restart-loaded entry lands under the same composite key a
+   *  subsequent `capture()` of the same conversation would use. */
+  load(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string; botAppId?: string } | undefined>;
 }
 
 /** Sentinel `bot_app_id` of rows written before migration 0010 backfilled
@@ -140,7 +144,7 @@ export class PgTeamsConversationRefStore implements TeamsConversationRefPersiste
     );
   }
 
-  async load(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined> {
+  async load(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string; botAppId?: string } | undefined> {
     try {
       const row = this.schemaMode === 'legacy'
         ? await this.loadLegacy(conversationId, botAppId)
@@ -150,7 +154,12 @@ export class PgTeamsConversationRefStore implements TeamsConversationRefPersiste
         this.log?.(`[teams] persisted conversation ref for '${conversationId}' dropped — serviceUrl outside Bot Framework domains`);
         return undefined;
       }
-      return { ref: row.ref, ...(row.teams_type ? { teamsType: row.teams_type } : {}) };
+      const owningBotAppId = normalizeTeamsBotAppId(row.bot_app_id ?? undefined);
+      return {
+        ref: row.ref,
+        ...(row.teams_type ? { teamsType: row.teams_type } : {}),
+        ...(owningBotAppId !== undefined ? { botAppId: owningBotAppId } : {}),
+      };
     } catch (err) {
       // Pre-migration kernel or transient pool trouble: cache-only behaviour.
       this.log?.(`[teams] conversation-ref load failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -203,13 +212,25 @@ export class PgTeamsConversationRefStore implements TeamsConversationRefPersiste
     return r.rows[0];
   }
 
+  /** Schema mode as far as it is known — `'unknown'` until the first query
+   *  (or `backfillLegacyBotAppId`) probed the kernel schema. The config
+   *  wiring uses this to warn loudly when more than one bot is configured
+   *  on a pre-migration kernel (no cross-bot row isolation available). */
+  get knownSchemaMode(): SchemaMode {
+    return this.schemaMode;
+  }
+
   /**
-   * One-shot, idempotent backfill of pre-migration rows onto the legacy
-   * single-bot app id — run at activation by the config-wiring layer with
-   * `teams_bots[0].appId`. Two steps, each a no-op on re-run:
-   *   1. attribute `''` rows to the default bot where it has no newer row;
-   *   2. drop the `''` rows that remain (their conversation already has a
-   *      fresher default-bot row — the sentinel copy is stale).
+   * One-shot, idempotent, NON-destructive backfill of pre-migration rows
+   * onto the legacy single-bot app id — run at activation by the
+   * config-wiring layer with the app id of the bot that actually captured
+   * the legacy rows (the legacy scalar `microsoft_app_id`, falling back to
+   * `teams_bots[0].appId`). A single guarded UPDATE, a no-op on re-run:
+   * attribute `''` rows to that bot where it has no newer row. Nothing is
+   * ever deleted (coordinator decision #860 W0a: no destructive backfill in
+   * the plugin — the kernel migration owns the column default); a `''` row
+   * whose conversation already has a fresher target-bot row simply stays,
+   * and reads prefer the exact-match row over the sentinel.
    * Best-effort: a pre-migration kernel (no column) or pool trouble is
    * logged and swallowed — activation must not fail over this.
    */
@@ -227,7 +248,6 @@ export class PgTeamsConversationRefStore implements TeamsConversationRefPersiste
            )`,
         [target],
       );
-      await this.pool.query(`DELETE FROM teams_conversation_refs WHERE bot_app_id = ''`);
       this.schemaMode = 'per-bot';
     } catch (err) {
       if (isPreMigrationSchemaError(err)) {

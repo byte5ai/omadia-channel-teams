@@ -55,8 +55,10 @@ export const LEGACY_TEAMS_BOT_SECRET_REF = 'microsoft_app_password';
 export const LEGACY_TEAMS_BOT_DISPLAY_NAME = 'Microsoft Teams Bot';
 
 /** `botSlug` is a URL path segment of `/api/teams/:botSlug/messages` —
- *  constrain it to unambiguous, log-safe characters. */
-const BOT_SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+ *  constrain it to unambiguous, log-safe, lowercase characters
+ *  (coordinator decision #860 W0a: no slashes, no uppercase, no
+ *  whitespace; max 63 chars; dash-only separator). */
+const BOT_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 const APP_TYPES: readonly TeamsBotAppType[] = [
   'MultiTenant',
@@ -100,7 +102,7 @@ function parseEntry(raw: unknown, index: number): TeamsBotIdentity {
   }
   if (!BOT_SLUG_PATTERN.test(botSlug)) {
     throw new TeamsBotsConfigError(
-      `entry ${String(index)} has an invalid botSlug '${botSlug}' — use 1-64 letters, digits, '.', '_' or '-', starting alphanumeric`,
+      `entry ${String(index)} has an invalid botSlug '${botSlug}' — use 1-63 lowercase letters, digits or '-', starting with a letter or digit`,
     );
   }
   const appId = asTrimmedString(entry['appId']);

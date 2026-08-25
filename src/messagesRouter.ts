@@ -252,9 +252,17 @@ export function createTeamsRouter(deps: TeamsRouterDeps): TeamsRouterArtifacts {
   };
 
   /** Which bot's adapter continues this conversation — see
-   *  {@link TeamsProactiveSend} for the priority order. Unknown/unattributed
-   *  references fall back to the default bot (best-effort, matching the ref
-   *  store's legacy-row contract) rather than throwing. */
+   *  {@link TeamsProactiveSend} for the priority order.
+   *
+   *  Fallback policy (review #860 W0a, cross-bot isolation): the default
+   *  bot serves ONLY (a) references without any bot attribution (legacy
+   *  rows, matching the ref store's legacy-row contract) and (b) unknown
+   *  attributions in SINGLE-bot deployments (app-registration rotation:
+   *  the one configured identity is the only sane candidate). With more
+   *  than one bot configured, an attributed-but-unknown reference throws a
+   *  log-safe error instead — silently continuing another bot's
+   *  conversation under the default bot's identity is exactly the
+   *  cross-bot leak this unit exists to prevent. */
   const resolveRuntimeForReference = (
     reference: Partial<ConversationReference>,
     explicitBotAppId: string | undefined,
@@ -264,10 +272,16 @@ export function createTeamsRouter(deps: TeamsRouterDeps): TeamsRouterArtifacts {
     if (referencedAppId === undefined) return defaultBotRuntime;
     const runtime = getBotRuntimeByAppId(referencedAppId);
     if (runtime) return runtime;
-    console.warn(
-      '[teams] proactive send: reference bot is not a configured bot — falling back to the default bot',
+    if (botRuntimes.length === 1) {
+      console.warn(
+        '[teams] proactive send: reference bot is not the configured bot — using the single configured bot (app-registration rotation)',
+      );
+      return defaultBotRuntime;
+    }
+    // Log-safe: no appId in the message.
+    throw new Error(
+      '[teams] proactive send refused — the conversation reference is attributed to a bot that is not configured in teams_bots[]',
     );
-    return defaultBotRuntime;
   };
 
   // Slug → runtime resolution goes through the canonical helper

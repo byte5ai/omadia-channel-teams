@@ -16,6 +16,7 @@ import {
   teamsBotLogLabel,
 } from '../src/teamsBotIdentity.js';
 import type { TeamsBotIdentity } from '../src/teamsBotIdentity.js';
+import { buildTeamsChannelKeyDirectory } from '../src/channelKeyDirectory.js';
 
 const BOTS: readonly TeamsBotIdentity[] = [
   {
@@ -46,6 +47,16 @@ describe('teamsBotKey', () => {
     );
     assert.equal(TEAMS_BOT_KEY_PREFIX, '28:');
   });
+
+  it('normalizes the appId to lowercase — mixed-casing config can never split routing', () => {
+    // Operator pastes the GUID uppercase into teams_bots[]; Azure delivers
+    // activity.recipient.id lowercase. Both must produce the SAME key, or
+    // the directory row and the runtime lookup drift apart.
+    const configCased = teamsBotKey('A1B2C3D4-1111-4222-8333-B4C5D6E7F8A9');
+    const wireCased = teamsBotKey('a1b2c3d4-1111-4222-8333-b4c5d6e7f8a9');
+    assert.equal(configCased, wireCased);
+    assert.equal(configCased, '28:a1b2c3d4-1111-4222-8333-b4c5d6e7f8a9');
+  });
 });
 
 describe('parseTeamsBotKey', () => {
@@ -59,6 +70,18 @@ describe('parseTeamsBotKey', () => {
     assert.equal(parseTeamsBotKey('19:meeting@thread.v2'), undefined);
     assert.equal(parseTeamsBotKey('28:'), undefined);
     assert.equal(parseTeamsBotKey(''), undefined);
+  });
+
+  it('returns the appId lowercased — same normalization as teamsBotKey', () => {
+    assert.equal(
+      parseTeamsBotKey('28:A1B2C3D4-1111-4222-8333-B4C5D6E7F8A9'),
+      'a1b2c3d4-1111-4222-8333-b4c5d6e7f8a9',
+    );
+    // Normalized round-trip: key built from UPPERCASE config equals the key
+    // re-built from the appId parsed off a lowercase recipient.id.
+    const fromConfig = teamsBotKey('A1B2C3D4-1111-4222-8333-B4C5D6E7F8A9');
+    const fromWire = teamsBotKey(parseTeamsBotKey('28:a1b2c3d4-1111-4222-8333-b4c5d6e7f8a9')!);
+    assert.equal(fromConfig, fromWire);
   });
 });
 
@@ -106,6 +129,24 @@ describe('getDefaultTeamsBot', () => {
 describe('DEFAULT_TEAMS_BOT_APP_TYPE', () => {
   it('is SingleTenant (MultiTenant creation deprecated 07/2025)', () => {
     assert.equal(DEFAULT_TEAMS_BOT_APP_TYPE, 'SingleTenant');
+  });
+});
+
+describe('directory publication ↔ runtime resolution casing (#860 W0a review A)', () => {
+  it('an UPPERCASE-configured appId publishes the same catch-all key the lowercase recipient.id resolves to', async () => {
+    const directory = buildTeamsChannelKeyDirectory({
+      microsoftAppId: 'A1B2C3D4-1111-4222-8333-B4C5D6E7F8A9', // operator-pasted casing
+      microsoftTenantId: 'tenant-1',
+      conversationObserver: { list: () => [] } as unknown as Parameters<
+        typeof buildTeamsChannelKeyDirectory
+      >[0]['conversationObserver'],
+    });
+    const entries = await directory.listKeys();
+    const catchAllKey = entries[0]!.key;
+    // What Azure puts on the wire: activity.recipient.id, lowercase GUID.
+    const wireRecipientId = '28:a1b2c3d4-1111-4222-8333-b4c5d6e7f8a9';
+    const runtimeLookupKey = teamsBotKey(parseTeamsBotKey(wireRecipientId)!);
+    assert.equal(catchAllKey, runtimeLookupKey, 'operator binding and runtime lookup must use one key');
   });
 });
 

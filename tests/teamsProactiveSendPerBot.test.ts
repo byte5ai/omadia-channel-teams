@@ -109,11 +109,32 @@ describe('sendProactive — per-bot dispatch (#860 W0a)', () => {
     assert.equal(callsB.length, 0);
   });
 
-  it('an UNKNOWN bot attribution falls back to the default bot instead of throwing (best-effort contract)', async () => {
-    const { artifacts, callsA } = makeRouter();
+  it('an UNKNOWN bot attribution with more than one bot configured REFUSES instead of crossing identities', async () => {
+    // Cross-bot isolation (#860 W0a review): delivering another bot's
+    // conversation under the default bot's credentials is the exact leak
+    // this unit exists to prevent — fail loudly, appId-free message.
+    const { artifacts, callsA, callsB } = makeRouter();
+    await assert.rejects(
+      artifacts.sendProactive(refOwnedBy('99999999-0000-4000-8000-000000000000'), noopBuild),
+      (err: Error) => {
+        assert.match(err.message, /not configured in teams_bots/);
+        assert.ok(!err.message.includes('99999999'), 'error message must not leak the appId');
+        return true;
+      },
+    );
+    assert.equal(callsA.length, 0);
+    assert.equal(callsB.length, 0);
+  });
+
+  it('an UNKNOWN bot attribution with a SINGLE configured bot falls back to it (app-registration rotation)', async () => {
+    const artifacts = createTeamsRouter({
+      bot: fakeBot,
+      bots: [{ identity: identity('hr', APP_ID_A), appPassword: 'secret-a' }],
+    });
+    const calls = recordContinuations(artifacts.defaultBotRuntime);
     await artifacts.sendProactive(refOwnedBy('99999999-0000-4000-8000-000000000000'), noopBuild);
-    assert.equal(callsA.length, 1);
-    assert.equal(callsA[0]?.botAppId, APP_ID_A);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.botAppId, APP_ID_A);
   });
 
   it('a user id (29:…) in bot.id is not bot attribution — default bot serves it', async () => {

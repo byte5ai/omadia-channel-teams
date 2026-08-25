@@ -91,9 +91,13 @@ export class TeamsConversationReferenceCache {
 
   /** Bot part of the composite key for a lookup: explicit bot, else the
    *  configured default, else — single-bot compatibility — the one bot that
-   *  holds a reference for this conversation, IF it is unique. Two bots
-   *  holding the same conversation with no explicit choice is ambiguous:
-   *  no cross-bot guessing, the lookup misses. */
+   *  holds a reference for this conversation, IF it is unique. The
+   *  unattributed sentinel `''` is a WILDCARD, superseded by exactly one
+   *  real app id (a restart-load may seed `''` before the next inbound
+   *  activity re-captures under the real bot key — that is one bot, not
+   *  two). Two DIFFERENT real bots holding the same conversation with no
+   *  explicit choice is ambiguous: no cross-bot guessing, the lookup
+   *  misses. */
   private resolveBotKeyPart(conversationId: string, botAppId: string | undefined): string | undefined {
     const explicit = normalizeTeamsBotAppId(botAppId);
     if (explicit !== undefined) return explicit;
@@ -103,6 +107,9 @@ export class TeamsConversationReferenceCache {
     for (const key of this.refs.keys()) {
       if (!key.endsWith(suffix)) continue;
       const botPart = key.slice(0, key.length - suffix.length);
+      // Sentinel entries never make the lookup ambiguous — they are the
+      // "bot unknown" placeholder, not a second bot.
+      if (botPart === '') continue;
       if (sole !== undefined && sole !== botPart) return undefined;
       sole = botPart;
     }
@@ -128,6 +135,14 @@ export class TeamsConversationReferenceCache {
     const botAppId = normalizeTeamsBotAppId(parseTeamsBotKey(context.activity.recipient?.id ?? ''));
     const key = TeamsConversationReferenceCache.key(conversationId, botAppId ?? '');
     const ref = TurnContext.getConversationReference(context.activity);
+    // A real bot attribution supersedes the unattributed sentinel twin a
+    // restart-load may have seeded for the same conversation — one bot must
+    // occupy one cache slot, not two (and never trip the ambiguity rule).
+    if (botAppId !== undefined) {
+      const sentinelKey = TeamsConversationReferenceCache.key(conversationId, '');
+      this.refs.delete(sentinelKey);
+      this.lastWritten.delete(sentinelKey);
+    }
     // Map.delete+set keeps insertion order = recency, making the FIFO an LRU.
     this.refs.delete(key);
     const teamsType = context.activity.conversation?.conversationType;
@@ -163,11 +178,21 @@ export class TeamsConversationReferenceCache {
     const effective = normalizeTeamsBotAppId(botAppId) ?? this.defaultBotAppId;
     const persisted = await this.persistence.load(conversationId, effective);
     if (!persisted) return undefined;
-    const key = TeamsConversationReferenceCache.key(conversationId, effective ?? '');
+    // Re-seed under the key capture() would use for this conversation: the
+    // OWNING bot of the served row when the store knows it, else the
+    // caller's intent, else the unattributed sentinel (which a later
+    // capture() supersedes — see resolveBotKeyPart). Seeding under a key
+    // capture() never writes would split one bot across two cache slots.
+    const owningBotAppId = normalizeTeamsBotAppId(persisted.botAppId) ?? effective;
+    const entry = {
+      ref: persisted.ref,
+      ...(persisted.teamsType ? { teamsType: persisted.teamsType } : {}),
+    };
+    const key = TeamsConversationReferenceCache.key(conversationId, owningBotAppId ?? '');
     this.refs.delete(key);
-    this.refs.set(key, persisted);
+    this.refs.set(key, entry);
     this.evictOverflow();
-    return persisted;
+    return entry;
   }
 }
 
