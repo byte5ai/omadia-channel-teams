@@ -1,0 +1,145 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "{{VERSION}}",
+  "id": "{{APP_ID}}",
+  "developer": {
+    "name": "byte5",
+    "websiteUrl": "https://omadia.ai",
+    "privacyUrl": "https://omadia.ai/privacy",
+    "termsOfUseUrl": "https://omadia.ai/terms"
+  },
+  "name": {
+    "short": "{{NAME_SHORT}}",
+    "full": "{{NAME_FULL}}"
+  },
+  "description": {
+    "short": "{{DESCRIPTION}}",
+    "full": "{{DESCRIPTION_FULL}}"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "{{ACCENT_COLOR}}",
+  "bots": [
+    {
+      "botId": "{{BOT_ID}}",
+      "scopes": [
+        "personal",
+        "team",
+        "groupChat"
+      ],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "personal",
+            "team",
+            "groupChat"
+          ],
+          "commands": [
+            {
+              "title": "Umsatz",
+              "description": "Wer sind unsere umsatzstärksten Kunden (YTD + Vorjahr)?"
+            },
+            {
+              "title": "Offene Posten",
+              "description": "Zeig mir die offenen Ausgangsrechnungen, sortiert nach Fälligkeit."
+            },
+            {
+              "title": "Urlaub",
+              "description": "Wie viele Urlaubstage hat <Mitarbeiter> dieses Jahr genommen?"
+            },
+            {
+              "title": "Diagramm",
+              "description": "Visualisiere die letzte Antwort als Chart (Balken, Linie, Pie)."
+            },
+            {
+              "title": "Playbook",
+              "description": "Such im Confluence-Playbook nach <Thema>."
+            },
+            {
+              "title": "Termin",
+              "description": "Finde freie Termine mit <Person> für <Dauer> und buche direkt."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "staticTabs": [
+    {
+      "entityId": "omadia-hub",
+      "name": "Omadia Hub",
+      "contentUrl": "{{TAB_BASE_URL}}/hub",
+      "websiteUrl": "{{TAB_BASE_URL}}/hub",
+      "scopes": [
+        "personal"
+      ]
+    }
+  ],
+  "configurableTabs": [
+    {
+      "configurationUrl": "{{TAB_BASE_URL}}/tab-config",
+      "canUpdateConfiguration": true,
+      "scopes": [
+        "team",
+        "groupChat"
+      ]
+    }
+  ],
+  "validDomains": {{VALID_DOMAINS}},
+  "webApplicationInfo": {
+    "id": "{{BOT_ID}}",
+    "resource": "api://{{MIDDLEWARE_HOST}}/{{BOT_ID}}"
+  },
+  "activities": {
+    "activityTypes": [
+      {
+        "type": "pluginEvent",
+        "description": "Notification from an Omadia plugin",
+        "templateText": "{pluginId}: {title}"
+      }
+    ]
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        {
+          "type": "Application",
+          "name": "ChannelMessage.Read.Group"
+        },
+        {
+          "type": "Application",
+          "name": "ChatMessage.Read.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "TeamsActivity.Send.Group"
+        },
+        {
+          "type": "Application",
+          "name": "TeamsActivity.Send.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "FileStorageContainer.Selected.Group"
+        },
+        {
+          "type": "Application",
+          "name": "ChatMember.Read.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "ChannelMember.Read.Group"
+        }
+      ]
+    }
+  }
+}
