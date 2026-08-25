@@ -15,6 +15,8 @@ import type {
 } from '@omadia/channel-sdk';
 
 import type { TeamsProactiveSend } from './messagesRouter.js';
+import { parseTeamsBotKey } from './teamsBotIdentity.js';
+import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { ChatParticipant } from './kernel-types.js';
@@ -58,11 +60,15 @@ export function attributeGroupMessage(
  * the next inbound activity re-captures it).
  */
 export class TeamsConversationReferenceCache {
+  /** #860 W0a — keyed `${botAppId}|${conversationId}` (bot part normalized
+   *  lowercase, `''` when unattributed): one bot's reference for a
+   *  conversation must never be served — or evicted — as another bot's. */
   private readonly refs = new Map<string, { ref: Partial<ConversationReference>; teamsType?: string }>();
-  /** Last serialization written through per conversation — capture() fires on
-   *  EVERY inbound activity, the store only needs changes. */
+  /** Last serialization written through per (bot, conversation) — capture()
+   *  fires on EVERY inbound activity, the store only needs changes. */
   private readonly lastWritten = new Map<string, string>();
   private persistence?: TeamsConversationRefPersistence;
+  private defaultBotAppId?: string;
 
   /** #330 field report — optional write-through store (kernel graph table
    *  `teams_conversation_refs`) so references survive restarts. Writes are
@@ -71,54 +77,96 @@ export class TeamsConversationReferenceCache {
     this.persistence = persistence;
   }
 
-  capture(context: TurnContext): void {
-    const conversationId = context.activity.conversation?.id;
-    if (!conversationId) return;
-    const ref = TurnContext.getConversationReference(context.activity);
-    // Map.delete+set keeps insertion order = recency, making the FIFO an LRU.
-    this.refs.delete(conversationId);
-    const teamsType = context.activity.conversation?.conversationType;
-    this.refs.set(conversationId, { ref, ...(teamsType ? { teamsType } : {}) });
-    if (this.persistence) {
-      const serialized = JSON.stringify({ ref, teamsType: teamsType ?? null });
-      if (this.lastWritten.get(conversationId) !== serialized) {
-        this.lastWritten.set(conversationId, serialized);
-        void this.persistence.save(conversationId, ref, teamsType).catch(() => {
-          // Next capture retries: forgetting the marker keeps save attempts alive.
-          this.lastWritten.delete(conversationId);
-        });
-      }
+  /** #860 W0a — which bot a lookup WITHOUT an explicit `botAppId` means
+   *  (the legacy adapters' call shape). Wired by the config layer with
+   *  `teams_bots[0].appId`; unset, lookups fall back to the unique-holder
+   *  rule below, which is exactly the single-bot behaviour. */
+  setDefaultBotAppId(botAppId: string): void {
+    this.defaultBotAppId = normalizeTeamsBotAppId(botAppId);
+  }
+
+  private static key(conversationId: string, botKeyPart: string): string {
+    return `${botKeyPart}|${conversationId}`;
+  }
+
+  /** Bot part of the composite key for a lookup: explicit bot, else the
+   *  configured default, else — single-bot compatibility — the one bot that
+   *  holds a reference for this conversation, IF it is unique. Two bots
+   *  holding the same conversation with no explicit choice is ambiguous:
+   *  no cross-bot guessing, the lookup misses. */
+  private resolveBotKeyPart(conversationId: string, botAppId: string | undefined): string | undefined {
+    const explicit = normalizeTeamsBotAppId(botAppId);
+    if (explicit !== undefined) return explicit;
+    if (this.defaultBotAppId !== undefined) return this.defaultBotAppId;
+    const suffix = `|${conversationId}`;
+    let sole: string | undefined;
+    for (const key of this.refs.keys()) {
+      if (!key.endsWith(suffix)) continue;
+      const botPart = key.slice(0, key.length - suffix.length);
+      if (sole !== undefined && sole !== botPart) return undefined;
+      sole = botPart;
     }
-    if (this.refs.size > MAX_CACHED_REFERENCES) {
-      const oldest = this.refs.keys().next().value;
-      if (oldest !== undefined) {
-        this.refs.delete(oldest);
-        this.lastWritten.delete(oldest);
-      }
+    return sole ?? '';
+  }
+
+  private evictOverflow(): void {
+    if (this.refs.size <= MAX_CACHED_REFERENCES) return;
+    // Oldest composite entry only — one bot's eviction never drops another
+    // bot's reference for the same conversation.
+    const oldest = this.refs.keys().next().value;
+    if (oldest !== undefined) {
+      this.refs.delete(oldest);
+      this.lastWritten.delete(oldest);
     }
   }
 
-  get(conversationId: string): { ref: Partial<ConversationReference>; teamsType?: string } | undefined {
-    return this.refs.get(conversationId);
+  capture(context: TurnContext): void {
+    const conversationId = context.activity.conversation?.id;
+    if (!conversationId) return;
+    // The bot the activity was addressed to (`28:<appId>`) — with multiple
+    // bots in one tenant this is the identity the reference belongs to.
+    const botAppId = normalizeTeamsBotAppId(parseTeamsBotKey(context.activity.recipient?.id ?? ''));
+    const key = TeamsConversationReferenceCache.key(conversationId, botAppId ?? '');
+    const ref = TurnContext.getConversationReference(context.activity);
+    // Map.delete+set keeps insertion order = recency, making the FIFO an LRU.
+    this.refs.delete(key);
+    const teamsType = context.activity.conversation?.conversationType;
+    this.refs.set(key, { ref, ...(teamsType ? { teamsType } : {}) });
+    if (this.persistence) {
+      const serialized = JSON.stringify({ ref, teamsType: teamsType ?? null });
+      if (this.lastWritten.get(key) !== serialized) {
+        this.lastWritten.set(key, serialized);
+        void this.persistence.save(conversationId, ref, teamsType, botAppId).catch(() => {
+          // Next capture retries: forgetting the marker keeps save attempts alive.
+          this.lastWritten.delete(key);
+        });
+      }
+    }
+    this.evictOverflow();
+  }
+
+  get(conversationId: string, botAppId?: string): { ref: Partial<ConversationReference>; teamsType?: string } | undefined {
+    const botKeyPart = this.resolveBotKeyPart(conversationId, botAppId);
+    if (botKeyPart === undefined) return undefined;
+    return this.refs.get(TeamsConversationReferenceCache.key(conversationId, botKeyPart));
   }
 
   /** Cache-or-store lookup for the proactive adapters: a miss after a restart
    *  falls back to the persisted reference and re-seeds the cache. */
-  async getOrLoad(conversationId: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined> {
-    const cached = this.refs.get(conversationId);
+  async getOrLoad(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined> {
+    const cached = this.get(conversationId, botAppId);
     if (cached) return cached;
     if (!this.persistence) return undefined;
-    const persisted = await this.persistence.load(conversationId);
+    // The store applies the same default-bot semantics on its side (incl.
+    // pre-backfill legacy rows), so the raw intent is passed through — not
+    // the resolved key part.
+    const effective = normalizeTeamsBotAppId(botAppId) ?? this.defaultBotAppId;
+    const persisted = await this.persistence.load(conversationId, effective);
     if (!persisted) return undefined;
-    this.refs.delete(conversationId);
-    this.refs.set(conversationId, persisted);
-    if (this.refs.size > MAX_CACHED_REFERENCES) {
-      const oldest = this.refs.keys().next().value;
-      if (oldest !== undefined) {
-        this.refs.delete(oldest);
-        this.lastWritten.delete(oldest);
-      }
-    }
+    const key = TeamsConversationReferenceCache.key(conversationId, effective ?? '');
+    this.refs.delete(key);
+    this.refs.set(key, persisted);
+    this.evictOverflow();
     return persisted;
   }
 }
