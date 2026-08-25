@@ -323,6 +323,81 @@ describe('TeamsConversationObserver Graph fields', () => {
       [],
     );
   });
+
+  it('uses conversation.name as the group-chat label when Teams sends it', () => {
+    const observer = new TeamsConversationObserver();
+    observer.observe(
+      turn({
+        conversation: {
+          id: '19:9cdb@thread.skype',
+          conversationType: 'groupChat',
+          name: 'Projekt Phoenix',
+        },
+      }),
+    );
+    const conv = observer
+      .list()
+      .find((c) => c.conversationId === '19:9cdb@thread.skype');
+    assert.equal(conv?.label, 'Teams · Projekt Phoenix');
+  });
+
+  it('derives a members label for unnamed group chats and keeps it across re-observes', async () => {
+    const observer = new TeamsConversationObserver(undefined, async () => ({
+      names: [
+        'Teresita Biel - byte5',
+        'Christian Köhler - byte5',
+        'Christian Wendler - byte5',
+        'Marcel Wege - byte5',
+      ],
+      count: 4,
+    }));
+    const groupTurn = turn({
+      conversation: { id: '19:9cdb@thread.skype', conversationType: 'groupChat' },
+    });
+    observer.observe(groupTurn);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    let conv = observer
+      .list()
+      .find((c) => c.conversationId === '19:9cdb@thread.skype');
+    assert.equal(
+      conv?.label,
+      'Teams · Group chat: Teresita, Christian, Christian +1',
+    );
+
+    // Re-observe (roster refresh in flight) must not regress the label
+    // to the opaque-id fallback.
+    observer.observe(groupTurn);
+    conv = observer
+      .list()
+      .find((c) => c.conversationId === '19:9cdb@thread.skype');
+    assert.equal(
+      conv?.label,
+      'Teams · Group chat: Teresita, Christian, Christian +1',
+    );
+  });
+
+  it('a real group name wins over the members-derived label', async () => {
+    const observer = new TeamsConversationObserver(undefined, async () => ({
+      names: ['Alice'],
+      count: 1,
+    }));
+    observer.observe(
+      turn({
+        conversation: {
+          id: '19:9cdb@thread.skype',
+          conversationType: 'groupChat',
+          name: 'Projekt Phoenix',
+        },
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const conv = observer
+      .list()
+      .find((c) => c.conversationId === '19:9cdb@thread.skype');
+    assert.equal(conv?.label, 'Teams · Projekt Phoenix');
+    assert.deepEqual(conv?.members, ['Alice']);
+  });
 });
 
 describe('buildTeamsChannelKeyDirectory Graph merge', () => {
