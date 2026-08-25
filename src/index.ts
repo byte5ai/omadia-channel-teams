@@ -72,6 +72,7 @@ export {
   parseFollowUpValue,
   parseFreshCheckValue,
   parseTopicDecisionValue,
+  stripFoldedAiDisclosure,
   type BuildAnswerCardInput,
   type BuildChoiceAskCardInput,
   type FreshCheckValue,

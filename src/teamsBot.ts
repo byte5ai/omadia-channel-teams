@@ -52,6 +52,7 @@ import {
   parseRoutineCardActionValue,
   parseRoutineListFilterValue,
   parseTopicDecisionValue,
+  stripFoldedAiDisclosure,
   type ApprovalValue,
 } from './teamsCard.js';
 import { buildRecalledContextCard } from './teamsRecall.js';
@@ -1557,9 +1558,18 @@ export class TeamsBot extends TeamsActivityHandler {
             await context.sendActivity(MessageFactory.attachment(recallCard));
           }
         }
+        // AI-Act marking (#643/#644): the kernel folds the disclosure
+        // sentence into `text` for wire-only channels. Teams marks the
+        // answer itself (✨ AI-generated card chip + activity-level AI
+        // label entity), so the folded sentence would double-mark — strip
+        // it, keeping any operator-authored addendum.
+        const answerText = stripFoldedAiDisclosure(
+          result.text,
+          result.aiDisclosure?.text,
+        );
         await sendAnswer(
           context,
-          result.text,
+          answerText,
           undefined,
           result.attachments,
           result.verifier,
@@ -1579,6 +1589,7 @@ export class TeamsBot extends TeamsActivityHandler {
             ...(result.delegatedAnswer
               ? { delegatedAnswer: result.delegatedAnswer }
               : {}),
+            ...(result.memoryUsed ? { memoryUsed: true } : {}),
           },
         );
 
@@ -1602,7 +1613,9 @@ export class TeamsBot extends TeamsActivityHandler {
         if (!pendingChoice) {
           this.history.append(input.sessionScope, {
             userMessage: input.userMessage,
-            assistantAnswer: result.text,
+            // Stripped variant — the disclosure sentence is channel chrome,
+            // not conversation content, and would pollute the verbatim tail.
+            assistantAnswer: answerText,
             at: Date.now(),
           });
         }
@@ -1692,10 +1705,13 @@ async function sendAnswer(
   privacyReceipt: PrivacyReceipt | undefined,
   maskedValues: readonly string[] | undefined,
   // #332 — harness-built agent transparency (footer + dynamic Direct-Line
-  // buttons) and the Direct Line attributed-answer marker.
+  // buttons) and the Direct Line attributed-answer marker. `memoryUsed`
+  // rides along as the Fresh-Check gate: the button renders only when the
+  // kernel reported that memory actually influenced this answer.
   directLine?: {
     agentsConsulted?: readonly AgentConsultation[];
     delegatedAnswer?: DelegatedAnswer;
+    memoryUsed?: boolean;
   },
 ): Promise<void> {
   // Blocking clarification — render a standalone Choice-Card instead of
@@ -1750,6 +1766,7 @@ async function sendAnswer(
       ...(attachments ? { attachments } : {}),
       ...(verifier ? { verifier } : {}),
       ...(originalUserMessage ? { originalUserMessage } : {}),
+      ...(directLine?.memoryUsed ? { showFreshCheck: true } : {}),
       ...(mentionEntities.length > 0 ? { mentions: mentionEntities } : {}),
       ...(followUpOptions && followUpOptions.length > 0
         ? { followUpOptions }
