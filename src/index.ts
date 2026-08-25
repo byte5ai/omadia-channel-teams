@@ -32,6 +32,33 @@ export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 
 // ---------------------------------------------------------------------------
+// #860 W0a — per-bot identity + teams_bots[] config surface (config-wiring).
+// Re-exported for the kernel/provisioner call-sites and the tests under
+// tests/ (scripts/test.mjs runs them against the built dist/).
+// ---------------------------------------------------------------------------
+export {
+  DEFAULT_TEAMS_BOT_APP_TYPE,
+  findTeamsBotByAppId,
+  findTeamsBotBySlug,
+  getDefaultTeamsBot,
+  parseTeamsBotKey,
+  TEAMS_BOT_KEY_PREFIX,
+  teamsBotKey,
+  teamsBotLogLabel,
+  type TeamsBotAppType,
+  type TeamsBotIdentity,
+} from './teamsBotIdentity.js';
+export {
+  LEGACY_TEAMS_BOT_DISPLAY_NAME,
+  LEGACY_TEAMS_BOT_SECRET_REF,
+  LEGACY_TEAMS_BOT_SLUG,
+  legacyTeamsBotFromScalars,
+  parseTeamsBotsConfig,
+  TeamsBotsConfigError,
+  type LegacyTeamsBotScalars,
+} from './teamsBotsConfig.js';
+
+// ---------------------------------------------------------------------------
 // Channels-directory contribution + Graph name/member resolution
 // (re-exported for the tests under tests/)
 // ---------------------------------------------------------------------------
@@ -95,7 +122,12 @@ export {
 // exported here for the kernel bootstrap call-site while the intermediate
 // state persists)
 // ---------------------------------------------------------------------------
-export { createTeamsRouter, type TeamsRouterDeps } from './messagesRouter.js';
+export {
+  createTeamsRouter,
+  type TeamsProactiveSend,
+  type TeamsRouterBotCredentials,
+  type TeamsRouterDeps,
+} from './messagesRouter.js';
 export { createAttachmentsRouter } from './attachmentsRouter.js';
 
 // ---------------------------------------------------------------------------
