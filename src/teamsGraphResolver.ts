@@ -134,6 +134,12 @@ export class TeamsGraphResolver {
     if (conv.conversationType !== 'groupChat' && !conv.teamAadGroupId) {
       return; // personal / unknown — nothing Graph can add in v1
     }
+    if (conv.conversationType === 'groupChat' && !isGraphChatId(id)) {
+      // Bot-Framework group chats (`19:…@thread.skype`) are not Graph
+      // chat threads — `/chats/{id}` answers 400 for them. Their members
+      // come from the Bot-Framework roster via the observer instead.
+      return;
+    }
     this.inflight.add(id);
     void this.resolve(conv)
       .then((value) => {
@@ -312,6 +318,16 @@ export class TeamsGraphResolver {
       `[teams] graph ${what} resolution unavailable (${detail}) — directory keeps Bot-Framework labels; check Graph application permissions`,
     );
   }
+}
+
+/** Graph's /chats/{id} only accepts Teams-native thread ids. Classic
+ *  Bot-Framework group chats end in `@thread.skype` and are rejected
+ *  with 400 — they must never reach Graph. */
+function isGraphChatId(conversationId: string): boolean {
+  return (
+    conversationId.endsWith('@thread.v2') ||
+    conversationId.endsWith('@unq.gbl.spaces')
+  );
 }
 
 function memberDisplayNames(json: Record<string, unknown>): string[] {
