@@ -646,6 +646,7 @@ export class TeamsBot extends TeamsActivityHandler {
       console.error(
         `[teams] inbound-meta conv=${conversationId} ` +
           `conversationType=${conv?.conversationType ?? '-'} ` +
+          `convName=${conv?.name ?? '-'} ` +
           `team=${channelData?.team?.id?.slice(0, 12) ?? '-'}(${channelData?.team?.name ?? '-'}) ` +
           `channel=${channelData?.channel?.id?.slice(0, 12) ?? '-'}(${channelData?.channel?.name ?? '-'}) ` +
           `tenant=${channelData?.tenant?.id?.slice(0, 12) ?? '-'} ` +

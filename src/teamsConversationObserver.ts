@@ -90,25 +90,44 @@ export class TeamsConversationObserver {
     const teamName = channelData?.team?.name;
     const teamAadGroupId = channelData?.team?.aadGroupId;
     const conversationType = context.activity.conversation?.conversationType;
+    // Named group chats sometimes carry their topic as
+    // `conversation.name` on the activity — the only Bot-Framework
+    // source for it, since `@thread.skype` threads are invisible to
+    // Graph. Unnamed groups leave it empty.
+    const groupName =
+      conversationType === 'groupChat'
+        ? context.activity.conversation?.name?.trim() || undefined
+        : undefined;
     const peerName =
       conversationType === 'personal'
         ? context.activity.from?.name?.trim() || undefined
         : undefined;
 
-    const label = buildLabel({
+    const previousEntry = this.seen.get(conversationId);
+    let label = buildLabel({
       channelName,
       teamName,
       conversationType,
+      groupName,
       peerName,
       fallbackId: conversationId,
     });
+    // A re-observe of an unnamed group chat must not regress a
+    // roster-derived label back to the opaque-id fallback while the
+    // async roster refresh is still in flight.
+    if (
+      previousEntry &&
+      isGroupIdFallbackLabel(label) &&
+      !isGroupIdFallbackLabel(previousEntry.label)
+    ) {
+      label = previousEntry.label;
+    }
 
     const tenantId =
       channelData?.tenant?.id ??
       context.activity.conversation?.tenantId ??
       undefined;
 
-    const previous = this.seen.get(conversationId);
     const entry: TeamsConversation = {
       conversationId,
       ...(conversationType ? { conversationType } : {}),
@@ -118,9 +137,11 @@ export class TeamsConversationObserver {
       ...(peerName ? { peerName } : {}),
       // Keep the last known roster across re-observes — it refreshes
       // asynchronously below and must not flicker away in between.
-      ...(previous?.members !== undefined ? { members: previous.members } : {}),
-      ...(previous?.memberCount !== undefined
-        ? { memberCount: previous.memberCount }
+      ...(previousEntry?.members !== undefined
+        ? { members: previousEntry.members }
+        : {}),
+      ...(previousEntry?.memberCount !== undefined
+        ? { memberCount: previousEntry.memberCount }
         : {}),
       lastSeenAt: Date.now(),
     };
@@ -146,12 +167,21 @@ export class TeamsConversationObserver {
     }
   }
 
-  /** Merge roster names into an already-observed conversation. */
+  /** Merge roster names into an already-observed conversation. When the
+   *  label is still the opaque-id fallback (unnamed group chat), derive
+   *  a human-readable one from the members — mirroring how Teams itself
+   *  titles unnamed groups by their participant list. */
   noteMembers(conversationId: string, members: ObservedMembers): void {
     const current = this.seen.get(conversationId);
     if (!current) return;
+    const label =
+      current.conversationType === 'groupChat' &&
+      isGroupIdFallbackLabel(current.label)
+        ? buildGroupMembersLabel(members)
+        : current.label;
     this.seen.set(conversationId, {
       ...current,
+      label,
       members: members.names,
       memberCount: members.count,
     });
@@ -173,11 +203,18 @@ function buildLabel(input: {
   channelName?: string;
   teamName?: string;
   conversationType?: string;
+  groupName?: string;
   peerName?: string;
   fallbackId: string;
 }): string {
-  const { channelName, teamName, conversationType, peerName, fallbackId } =
-    input;
+  const {
+    channelName,
+    teamName,
+    conversationType,
+    groupName,
+    peerName,
+    fallbackId,
+  } = input;
   if (channelName && teamName) {
     return `Teams · #${channelName} in ${teamName}`;
   }
@@ -188,7 +225,26 @@ function buildLabel(input: {
     return `Teams · DM (${fallbackId.slice(0, 12)}…)`;
   }
   if (conversationType === 'groupChat') {
+    if (groupName) return `Teams · ${groupName}`;
     return `Teams · Group chat (${fallbackId.slice(0, 12)}…)`;
   }
   return `Teams · ${fallbackId.slice(0, 16)}…`;
+}
+
+/** Label for an unnamed group chat: first names of up to three members,
+ *  "+N" for the rest — e.g. "Teams · Group chat: Teresita, Christian +2".
+ *  Mirrors how Teams itself titles unnamed groups by participant list. */
+function buildGroupMembersLabel(members: ObservedMembers): string {
+  const firstNames = members.names
+    .map((n) => n.split(/[\s,-]+/)[0] ?? n)
+    .filter((n) => n.length > 0);
+  const shown = firstNames.slice(0, 3);
+  const rest = members.count - shown.length;
+  const suffix = rest > 0 ? ` +${String(rest)}` : '';
+  return `Teams · Group chat: ${shown.join(', ')}${suffix}`;
+}
+
+/** True for the opaque-id fallback label of an unnamed group chat. */
+function isGroupIdFallbackLabel(label: string): boolean {
+  return label.startsWith('Teams · Group chat (');
 }
