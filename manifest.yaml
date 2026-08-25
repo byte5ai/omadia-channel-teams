@@ -59,6 +59,31 @@ setup:
          `<your-public-base-url>/api/teams/messages`.
       4. **Channels** → enable **Microsoft Teams**.
 
+      ### Multiple bots (optional)
+      One plugin install can run **several Teams bots** — one Entra app
+      registration / Azure bot per omadia agent. Configure them as a JSON
+      array in **Teams Bots (JSON)**:
+
+      ```json
+      [{"botSlug": "default", "appId": "<entra-app-id>",
+        "tenantId": "<entra-tenant-id>",
+        "appPasswordSecretRef": "microsoft_app_password",
+        "appType": "SingleTenant", "displayName": "Omadia"}]
+      ```
+
+      - `appPasswordSecretRef` names the **vault secret** holding that bot's
+        app password — never put the password itself into config.
+      - `appType` defaults to `SingleTenant` (Azure deprecated creating
+        MultiTenant registrations 07/2025); legacy bots may set `MultiTenant`.
+      - Each bot's Azure **messaging endpoint** is
+        `<your-public-base-url>/api/teams/<botSlug>/messages`. The first
+        entry is the **default bot** — it also serves the legacy
+        `/api/teams/messages` and `/api/messages` endpoints, so existing
+        Azure bot registrations keep working.
+      - Leave the field empty to keep the classic single-bot setup: the
+        Microsoft 365 integration's app credentials are used as bot
+        `default` (app type from `MICROSOFT_APP_TYPE`, default MultiTenant).
+
       ### 2. Upload the Teams app
       Upload the Teams app package (manifest.json + icons as a ZIP) in Teams under
       **Apps → Manage your apps → Upload a custom app**.
@@ -88,6 +113,32 @@ setup:
          `<deine-public-base-url>/api/teams/messages`.
       4. **Channels** → **Microsoft Teams** aktivieren.
 
+      ### Mehrere Bots (optional)
+      Eine Plugin-Installation kann **mehrere Teams-Bots** betreiben — eine
+      Entra-App-Registration / ein Azure-Bot pro omadia-Agent. Konfiguration
+      als JSON-Array im Feld **Teams Bots (JSON)**:
+
+      ```json
+      [{"botSlug": "default", "appId": "<entra-app-id>",
+        "tenantId": "<entra-tenant-id>",
+        "appPasswordSecretRef": "microsoft_app_password",
+        "appType": "SingleTenant", "displayName": "Omadia"}]
+      ```
+
+      - `appPasswordSecretRef` benennt das **Vault-Secret** mit dem
+        App-Passwort des Bots — niemals das Passwort selbst in die Config.
+      - `appType` defaultet auf `SingleTenant` (Azure hat das Anlegen von
+        MultiTenant-Registrations 07/2025 deprecated); Bestands-Bots dürfen
+        `MultiTenant` setzen.
+      - Der Azure-**Messaging endpoint** je Bot ist
+        `<deine-public-base-url>/api/teams/<botSlug>/messages`. Der erste
+        Eintrag ist der **Default-Bot** — er bedient zusätzlich die
+        Legacy-Endpoints `/api/teams/messages` und `/api/messages`,
+        bestehende Azure-Bot-Registrierungen funktionieren also weiter.
+      - Feld leer lassen → klassisches Single-Bot-Setup: die App-Credentials
+        der Microsoft-365-Integration werden als Bot `default` verwendet
+        (App-Typ aus `MICROSOFT_APP_TYPE`, Default MultiTenant).
+
       ### 2. Teams-App hochladen
       Teams-App-Paket (manifest.json + Icons als ZIP) in Teams unter
       **Apps → Manage your apps → Upload a custom app** hochladen.
@@ -101,6 +152,11 @@ setup:
         (groupId-Parameter) oder Graph Explorer (`/teams`). Leer → nur Log.
       - Attachment-Präfix, Topic-URL und Directory-Label haben sichere Defaults.
   fields:
+    - key: "teams_bots"
+      type: "string"
+      label: "Teams Bots (JSON)"
+      help: "Optionale Multi-Bot-Konfiguration (#860): JSON-Array von Bot-Identitäten [{botSlug, appId, tenantId, appPasswordSecretRef, appType?, displayName?}]. appPasswordSecretRef referenziert das Vault-Secret mit dem App-Passwort des Bots (niemals das Passwort inline). appType: MultiTenant | SingleTenant | UserAssignedMSI, Default SingleTenant. Eintrag 0 ist der Default-Bot (bedient auch /api/messages + /api/teams/messages); jeder Bot empfängt unter /api/teams/<botSlug>/messages. Leer lassen → Single-Bot-Betrieb über die Credentials der Microsoft-365-Integration (microsoft_app_id / microsoft_tenant_id / microsoft_app_password, App-Typ aus MICROSOFT_APP_TYPE, Default MultiTenant)."
+      required: false
     - key: "teams_sso_connection_name"
       type: "string"
       label: "Bot Framework OAuth Connection Name"
@@ -132,11 +188,13 @@ setup:
 playbook:
   when_to_use: |
     Der Teams-Channel wird aktiviert, sobald die Microsoft-365-Integration
-    (app_id + tenant_id + app_password) konfiguriert ist. Endanwender
+    (app_id + tenant_id + app_password) konfiguriert ist — oder eine
+    explizite Multi-Bot-Liste in `teams_bots` steht. Endanwender
     interagieren mit dem Bot über Microsoft Teams; der Channel ownt die
-    Bot-Framework-Runtime unter /api/messages sowie den signierten
-    Attachment-Proxy unter /attachments/<key>. Der Bot delegiert jeden
-    User-Turn an den zentralen Orchestrator; Adaptive-Card-Rendering +
+    Bot-Framework-Runtime unter /api/teams/<botSlug>/messages (plus die
+    Default-Bot-Aliasse /api/messages und /api/teams/messages) sowie den
+    signierten Attachment-Proxy unter /attachments/<key>. Der Bot delegiert
+    jeden User-Turn an den zentralen Orchestrator; Adaptive-Card-Rendering +
     Roster-Resolution bleiben Channel-intern.
 
 permissions:

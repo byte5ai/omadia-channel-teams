@@ -1,0 +1,111 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "{{VERSION}}",
+  "id": "{{APP_ID}}",
+  "developer": {
+    "name": "{{DEVELOPER_NAME}}",
+    "websiteUrl": "{{DEVELOPER_WEBSITE_URL}}",
+    "privacyUrl": "{{DEVELOPER_PRIVACY_URL}}",
+    "termsOfUseUrl": "{{DEVELOPER_TERMS_URL}}"
+  },
+  "name": {
+    "short": "{{NAME_SHORT}}",
+    "full": "{{NAME_FULL}}"
+  },
+  "description": {
+    "short": "{{DESCRIPTION}}",
+    "full": "{{DESCRIPTION_FULL}}"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "{{ACCENT_COLOR}}",
+  "bots": [
+    {
+      "botId": "{{BOT_ID}}",
+      "scopes": [
+        "personal",
+        "team",
+        "groupChat"
+      ],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": {{COMMAND_LISTS}}
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "staticTabs": [
+    {
+      "entityId": "omadia-hub",
+      "name": "Omadia Hub",
+      "contentUrl": "{{TAB_BASE_URL}}/hub",
+      "websiteUrl": "{{TAB_BASE_URL}}/hub",
+      "scopes": [
+        "personal"
+      ]
+    }
+  ],
+  "configurableTabs": [
+    {
+      "configurationUrl": "{{TAB_BASE_URL}}/tab-config",
+      "canUpdateConfiguration": true,
+      "scopes": [
+        "team",
+        "groupChat"
+      ]
+    }
+  ],
+  "validDomains": {{VALID_DOMAINS}},
+  "webApplicationInfo": {
+    "id": "{{BOT_ID}}",
+    "resource": "api://{{MIDDLEWARE_HOST}}/{{BOT_ID}}"
+  },
+  "activities": {
+    "activityTypes": [
+      {
+        "type": "pluginEvent",
+        "description": "Notification from an Omadia plugin",
+        "templateText": "{pluginId}: {title}"
+      }
+    ]
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        {
+          "type": "Application",
+          "name": "ChannelMessage.Read.Group"
+        },
+        {
+          "type": "Application",
+          "name": "ChatMessage.Read.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "TeamsActivity.Send.Group"
+        },
+        {
+          "type": "Application",
+          "name": "TeamsActivity.Send.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "FileStorageContainer.Selected.Group"
+        },
+        {
+          "type": "Application",
+          "name": "ChatMember.Read.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "ChannelMember.Read.Group"
+        }
+      ]
+    }
+  }
+}

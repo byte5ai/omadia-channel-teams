@@ -17,6 +17,7 @@ import {
   type ChannelBindingResolver,
   type ChannelHandle,
   type ChannelKeyDirectory,
+  type ChannelKeyEntry,
   type ChatAgent,
   type CoreApi,
 } from '@omadia/channel-sdk';
@@ -58,7 +59,17 @@ import {
   TeamsConversationReferenceCache,
 } from './teamsGroupPrimitives.js';
 import { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
-import { createTeamsRouter } from './messagesRouter.js';
+import {
+  getDefaultTeamsBot,
+  teamsBotKey,
+  teamsBotLogLabel,
+  type TeamsBotIdentity,
+} from './teamsBotIdentity.js';
+import {
+  legacyTeamsBotFromScalars,
+  parseTeamsBotsConfig,
+} from './teamsBotsConfig.js';
+import { createTeamsRouter, type TeamsRouterBotCredentials } from './messagesRouter.js';
 import { createTeamsUiRouter } from './uiRouter.js';
 
 /**
@@ -100,10 +111,45 @@ export async function activate(
   ctx: PluginContext,
   core: CoreApi,
 ): Promise<ChannelHandle> {
-  // --- Credentials: MS App registration comes from MS365 integration ----
-  const appId = ctx.config.require<string>('microsoft_app_id');
-  const tenantId = ctx.config.require<string>('microsoft_tenant_id');
-  const appPassword = await ctx.secrets.require('microsoft_app_password');
+  // --- Bot identities: teams_bots[] with legacy scalar shim (#860 W0a) --
+  // Multi-bot deployments configure a `teams_bots` list (see manifest.yaml
+  // and teamsBotsConfig.ts). Without one, the legacy scalar credentials
+  // from the MS365 integration chain (`microsoft_app_id` /
+  // `microsoft_tenant_id` / vault `microsoft_app_password`, app type from
+  // the process-global MICROSOFT_APP_TYPE env knob) map onto teams_bots[0]
+  // — existing single-bot deployments keep working with zero changes.
+  // `ctx.config.require` keeps the historical MissingConfigError when
+  // neither surface is configured.
+  const channelDirectoryDisplayLabel = ctx.config.get<string>(
+    'teams_directory_label',
+  );
+  const configuredBots = parseTeamsBotsConfig(ctx.config.get('teams_bots'));
+  const teamsBots: readonly TeamsBotIdentity[] =
+    configuredBots.length > 0
+      ? configuredBots
+      : [
+          legacyTeamsBotFromScalars({
+            appId: ctx.config.require<string>('microsoft_app_id'),
+            tenantId: ctx.config.require<string>('microsoft_tenant_id'),
+            appTypeEnv: process.env['MICROSOFT_APP_TYPE'],
+            displayName: channelDirectoryDisplayLabel,
+          }),
+        ];
+  // Resolve each bot's app password through the vault — config only ever
+  // carries the secret NAME (`appPasswordSecretRef`), never the value.
+  const botCredentials: TeamsRouterBotCredentials[] = [];
+  for (const identity of teamsBots) {
+    botCredentials.push({
+      identity,
+      appPassword: await ctx.secrets.require(identity.appPasswordSecretRef),
+    });
+  }
+  const defaultBot = getDefaultTeamsBot(teamsBots);
+  const defaultBotCredentials = botCredentials[0];
+  if (defaultBot === undefined || defaultBotCredentials === undefined) {
+    // Unreachable (the shim guarantees one entry) — narrows indexed access.
+    throw new Error('channel-teams: no Teams bot identity configured');
+  }
 
   // --- Channel-specific config (own registry entry) --------------------
   const config = readTeamsConfigFromEnv();
@@ -127,15 +173,23 @@ export async function activate(
   // every Teams channel the bot has been messaged in as a bindable
   // target, alongside the bot-level catch-all.
   // Graph resolver for human-readable directory rows: group-chat topics,
-  // member display names, tenant org name. Same App Registration as the
-  // bot; degrades to Bot-Framework labels when the tenant has not granted
-  // the Graph application permissions (see teamsGraphResolver.ts).
-  const graphResolver = new TeamsGraphResolver({
-    tenantId,
-    clientId: appId,
-    clientSecret: appPassword,
-    log: (m: string) => core.log('info', m),
-  });
+  // member display names, tenant org name. Per-bot credentials (#860 W0a):
+  // each resolver authenticates under its OWN bot's app registration —
+  // bot B's Graph lookups must never run under bot A's registration. The
+  // shared surfaces below (conversation observer, directory row
+  // enrichment) are default-bot-scoped today, so they consume the default
+  // bot's resolver; per-bot directory/observer fan-out is the bot-aware
+  // call-sites slice (issue #18). Degrades to Bot-Framework labels when
+  // the tenant has not granted the Graph application permissions (see
+  // teamsGraphResolver.ts).
+  const graphResolverForBot = (credentials: TeamsRouterBotCredentials): TeamsGraphResolver =>
+    new TeamsGraphResolver({
+      tenantId: credentials.identity.tenantId,
+      clientId: credentials.identity.appId,
+      clientSecret: credentials.appPassword,
+      log: (m: string) => core.log('info', m),
+    });
+  const graphResolver = graphResolverForBot(defaultBotCredentials);
   // Shared roster cache — constructed here (before the observer) because
   // the observer's member enrichment reads it: Bot-Framework group chats
   // (`19:…@thread.skype`) are invisible to Graph `/chats/{id}`, their
@@ -153,18 +207,46 @@ export async function activate(
         : undefined;
     },
   );
-  const channelDirectoryDisplayLabel = ctx.config.get<string>(
-    'teams_directory_label',
-  );
-  const channelDirectory = buildTeamsChannelKeyDirectory({
-    microsoftAppId: appId,
-    microsoftTenantId: tenantId,
-    ...(channelDirectoryDisplayLabel
-      ? { displayLabel: channelDirectoryDisplayLabel }
+  // Default bot's directory: catch-all row + observed conversations.
+  // Label precedence for its catch-all row: operator override, else (for
+  // list-configured bots) the bot's displayName, else the generated /
+  // Graph-org label (legacy behaviour for the shimmed bot).
+  const defaultBotDisplayLabel =
+    channelDirectoryDisplayLabel ??
+    (configuredBots.length > 0 ? defaultBot.displayName : undefined);
+  const defaultBotDirectory = buildTeamsChannelKeyDirectory({
+    microsoftAppId: defaultBot.appId,
+    microsoftTenantId: defaultBot.tenantId,
+    ...(defaultBotDisplayLabel
+      ? { displayLabel: defaultBotDisplayLabel }
       : {}),
     conversationObserver,
     graphResolver,
   });
+  // #860 W0a — one catch-all row PER BOT: every configured bot must be a
+  // bindable `/operator/channels` target under its own `28:<appId>` key,
+  // labelled with its displayName. The non-default bots contribute their
+  // catch-all rows only (conversation discovery is observer-based and the
+  // observer is default-bot-scoped until issue #18 lands).
+  const additionalBots = teamsBots.slice(1);
+  const channelDirectory: ChannelKeyDirectory =
+    additionalBots.length === 0
+      ? defaultBotDirectory
+      : {
+          channelType: defaultBotDirectory.channelType,
+          originPluginId: defaultBotDirectory.originPluginId,
+          async listKeys(): Promise<readonly ChannelKeyEntry[]> {
+            const base = await defaultBotDirectory.listKeys();
+            const perBotCatchAlls: ChannelKeyEntry[] = additionalBots.map(
+              (bot) => ({
+                key: teamsBotKey(bot.appId),
+                label: bot.displayName,
+                hint: `tenant ${bot.tenantId.length > 12 ? `${bot.tenantId.slice(0, 8)}…` : bot.tenantId} · catch-all`,
+              }),
+            );
+            return [...base, ...perBotCatchAlls];
+          },
+        };
   const channelDirectoryRegistry =
     ctx.services.get<ChannelDirectoryRegistryShim>(
       'channelDirectoryRegistry',
@@ -173,7 +255,7 @@ export async function activate(
     channelDirectoryRegistry.register(channelDirectory);
     core.log(
       'info',
-      `channel-key directory contributed: teams · 28:${appId.slice(0, 8)}…`,
+      `channel-key directory contributed: teams · ${String(teamsBots.length)} bot catch-all row(s)`,
     );
   } else {
     core.log(
@@ -290,12 +372,49 @@ export async function activate(
   // CoreApi method below is undefined and this plugin behaves exactly as
   // before.
   const conversationRefs = new TeamsConversationReferenceCache();
+  // #860 W0a — which bot an unattributed lookup means: teams_bots[0].
+  conversationRefs.setDefaultBotAppId(defaultBot.appId);
   // #330 field report — restart-proof proactive delivery: write the refs
   // through to the kernel's `teams_conversation_refs` table when a pool is
   // available. Pre-migration kernels degrade to cache-only (load fails soft).
   if (graphPool) {
-    conversationRefs.attachPersistence(
-      new PgTeamsConversationRefStore(graphPool, (m) => core.log('info', m)),
+    const refStore = new PgTeamsConversationRefStore(
+      graphPool,
+      (m) => core.log('info', m),
+      { defaultBotAppId: defaultBot.appId },
+    );
+    conversationRefs.attachPersistence(refStore);
+    // #860 W0a — one-shot, idempotent, NON-destructive backfill: rows
+    // written before kernel migration 0010 carry the `''` sentinel and
+    // belong to the bot that ACTUALLY captured them — that is the legacy
+    // scalar `microsoft_app_id` identity when one is configured (it was the
+    // only bot that could have written pre-multi-bot rows), NOT whatever
+    // the operator happened to list first in teams_bots[]. Falls back to
+    // teams_bots[0] when no scalar identity exists. Best-effort by
+    // contract (the store logs + swallows every failure mode); awaited so
+    // the keying is settled before the first proactive read.
+    const legacyScalarAppId = ctx.config.get<string>('microsoft_app_id');
+    const backfillTarget =
+      typeof legacyScalarAppId === 'string' && legacyScalarAppId.trim().length > 0
+        ? legacyScalarAppId
+        : defaultBot.appId;
+    await refStore.backfillLegacyBotAppId(backfillTarget);
+    // #860 W0a guardrail — cross-bot conversation-ref isolation needs the
+    // kernel's bot_app_id column (migration 0010, ships in the monorepo).
+    // On a pre-migration kernel the store degrades to ONE shared row per
+    // conversation for all bots: proactive sends can then continue another
+    // bot's conversation. Refuse silence — warn loudly per activation.
+    if (teamsBots.length > 1 && refStore.knownSchemaMode !== 'per-bot') {
+      core.log(
+        'warn',
+        `teams: ${String(teamsBots.length)} bots configured but the kernel's teams_conversation_refs table has no bot_app_id column (migration 0010 pending) — conversation references are NOT isolated per bot; proactive sends may cross bots until the kernel is upgraded`,
+      );
+    }
+  }
+  if (!graphPool && teamsBots.length > 1) {
+    core.log(
+      'warn',
+      `teams: ${String(teamsBots.length)} bots configured without a graph pool — conversation references are cache-only and not isolated across restarts`,
     );
   }
   const groupPrimitives = {
@@ -452,12 +571,15 @@ export async function activate(
   // args above (topicDetector) or stay undefined-tracked for diagnostics.
   void embeddingClient;
 
+  // #860 W0a — one CloudAdapter + BF credential factory PER BOT; the
+  // returned `sendProactive` dispatches on the reference's owning bot
+  // (explicit botAppId → reference.bot.id → default bot). Routes:
+  // `/api/messages` + `/api/teams/messages` alias the default bot
+  // (teams_bots[0], i.e. the shimmed legacy bot on scalar deployments);
+  // `/api/teams/:botSlug/messages` hits exactly that bot's credentials.
   const { router, sendProactive } = createTeamsRouter({
     bot,
-    appId,
-    appPassword,
-    appType: config.MICROSOFT_APP_TYPE,
-    appTenantId: tenantId,
+    bots: botCredentials,
   });
 
   // Card-click early-ack (#330 field report): the bot needs the proactive
@@ -483,9 +605,17 @@ export async function activate(
     'info',
     `group primitives (#330): roster=${typeof core.registerRosterProvider === 'function' ? 'on' : 'kernel<B1'}, targetedSend=${typeof core.registerTargetedSendProvider === 'function' ? 'on' : 'kernel<B1'}, membershipEvents=${typeof core.emitConversationEvent === 'function' ? 'on' : 'kernel<B1'}, conversationSend=${typeof core.registerConversationSendProvider === 'function' ? 'on' : 'kernel<C3'}`,
   );
+  // Endpoint-active lines: one per bot, secret-free by construction —
+  // slug + display name only (teamsBotLogLabel), never appId or secrets.
+  for (const identity of teamsBots) {
+    core.log(
+      'info',
+      `Teams endpoint active at /api/teams/${identity.botSlug}/messages (bot=${teamsBotLogLabel(identity)}, type=${identity.appType}, credentials=vault)`,
+    );
+  }
   core.log(
     'info',
-    `Teams endpoint active at /api/messages (app=${appId}, type=${config.MICROSOFT_APP_TYPE}, credentials=vault)`,
+    `Teams default-bot aliases active at /api/messages + /api/teams/messages (bot=${teamsBotLogLabel(defaultBot)})`,
   );
 
   // Hand the long-lived CloudAdapter back to the kernel so the routines
@@ -717,12 +847,9 @@ export async function activate(
 // ---------------------------------------------------------------------------
 
 function readTeamsConfigFromEnv(): TeamsConfigShim {
-  const appType = process.env['MICROSOFT_APP_TYPE'];
-  const microsoftAppType: TeamsConfigShim['MICROSOFT_APP_TYPE'] =
-    appType === 'SingleTenant' || appType === 'UserAssignedMSI'
-      ? appType
-      : 'MultiTenant';
-
+  // #860 W0a — MICROSOFT_APP_TYPE is no longer read here: the app type is
+  // per-bot (TeamsBotIdentity.appType). The legacy env knob only feeds the
+  // scalar-credential shim (legacyTeamsBotFromScalars) for teams_bots[0].
   const storageEnabled =
     String(process.env['TEAMS_ATTACHMENT_STORAGE_ENABLED'] ?? '')
       .trim()
@@ -744,7 +871,6 @@ function readTeamsConfigFromEnv(): TeamsConfigShim {
   const publicBaseUrl = process.env['ATTACHMENT_PUBLIC_BASE_URL'];
 
   return {
-    MICROSOFT_APP_TYPE: microsoftAppType,
     TEAMS_ATTACHMENT_KEY_PREFIX: keyPrefix,
     TEAMS_ATTACHMENT_STORAGE_ENABLED: storageEnabled,
     TEAMS_ATTACHMENT_MAX_BYTES: maxBytes,

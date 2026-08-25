@@ -14,6 +14,7 @@ import {
 } from '@omadia/channel-sdk';
 import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
+import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
@@ -504,10 +505,18 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
     const conversationId = activity.conversation?.id;
-    const recipientId =
+    // Normalize the bot-identity key through the canonical helper: the
+    // directory publishes `teamsBotKey(appId)` (lowercase-normalized), so
+    // the runtime lookup must use the exact same normalization or a
+    // mixed-casing `recipient.id` could miss the operator's binding.
+    const rawRecipientId =
       typeof activity.recipient?.id === 'string'
         ? activity.recipient.id
         : undefined;
+    const recipientAppId =
+      rawRecipientId !== undefined ? parseTeamsBotKey(rawRecipientId) : undefined;
+    const recipientId =
+      recipientAppId !== undefined ? teamsBotKey(recipientAppId) : rawRecipientId;
     if (!conversationId && !recipientId) {
       this.currentChatAgent = undefined;
       return;

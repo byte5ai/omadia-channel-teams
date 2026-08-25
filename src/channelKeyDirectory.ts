@@ -3,6 +3,7 @@ import type {
   ChannelKeyEntry,
 } from '@omadia/channel-sdk';
 
+import { teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
 import type { TeamsGraphResolver } from './teamsGraphResolver.js';
 
@@ -47,7 +48,10 @@ export function buildTeamsChannelKeyDirectory(opts: {
    *  Bot-Framework-derived, exactly as before. */
   readonly graphResolver?: TeamsGraphResolver;
 }): ChannelKeyDirectory {
-  const botKey = `28:${opts.microsoftAppId}`;
+  // Single source of the `28:<appId>` key (lowercase-normalized) — the same
+  // helper the runtime resolver uses, so directory rows and routing can
+  // never drift apart on appId casing.
+  const botKey = teamsBotKey(opts.microsoftAppId);
   const shortApp =
     opts.microsoftAppId.length > 12
       ? `${opts.microsoftAppId.slice(0, 8)}…`

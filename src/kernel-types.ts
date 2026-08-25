@@ -232,7 +232,10 @@ export interface ChatAgent {
  * here is an intentional act.
  */
 export interface TeamsConfigShim {
-  MICROSOFT_APP_TYPE: 'MultiTenant' | 'SingleTenant' | 'UserAssignedMSI';
+  // #860 W0a — MICROSOFT_APP_TYPE left this shim: the app registration
+  // type is per-bot now (`TeamsBotIdentity.appType`), never process-global.
+  // The legacy env knob is consumed only by the scalar-credential shim
+  // (`legacyTeamsBotFromScalars`) when no `teams_bots[]` list is set.
   TEAMS_ATTACHMENT_KEY_PREFIX: string;
   TEAMS_ATTACHMENT_STORAGE_ENABLED: boolean;
   TEAMS_ATTACHMENT_MAX_BYTES: number;
