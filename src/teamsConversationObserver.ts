@@ -34,18 +34,37 @@ export interface TeamsConversation {
   /** `activity.from.name` for 1:1 chats — the human on the other side.
    *  Makes the DM label self-describing without any Graph call. */
   readonly peerName?: string;
+  /** Member display names from the Bot-Framework roster (uncapped here;
+   *  the directory caps for the payload). Filled asynchronously after
+   *  observe() for group conversations — `19:…@thread.skype` group chats
+   *  are NOT addressable via Graph `/chats/{id}` (Graph only knows
+   *  `@thread.v2` threads and answers 400), so the roster the bot
+   *  already fetches per turn is the only member source for them. */
+  readonly members?: readonly string[];
+  readonly memberCount?: number;
   /** ms since epoch of the most recent inbound. Useful for sorting + for
    *  a future "drop stale entries after N days" sweep. */
   readonly lastSeenAt: number;
+}
+
+export interface ObservedMembers {
+  readonly names: readonly string[];
+  readonly count: number;
 }
 
 export class TeamsConversationObserver {
   private readonly seen = new Map<string, TeamsConversation>();
 
   /** Optional hook fired after every observe() — the plugin wires the
-   *  Graph resolver's fire-and-forget prime() here. Must never throw. */
+   *  Graph resolver's fire-and-forget prime() here. Must never throw.
+   *  `fetchMembers` is called fire-and-forget for group conversations
+   *  (roster lookup via the turn's context) — the result is merged into
+   *  the stored entry via noteMembers(). */
   constructor(
     private readonly onObserved?: (conv: TeamsConversation) => void,
+    private readonly fetchMembers?: (
+      context: TurnContext,
+    ) => Promise<ObservedMembers | undefined>,
   ) {}
 
   /**
@@ -89,6 +108,7 @@ export class TeamsConversationObserver {
       context.activity.conversation?.tenantId ??
       undefined;
 
+    const previous = this.seen.get(conversationId);
     const entry: TeamsConversation = {
       conversationId,
       ...(conversationType ? { conversationType } : {}),
@@ -96,6 +116,12 @@ export class TeamsConversationObserver {
       ...(tenantId ? { tenantId } : {}),
       ...(teamAadGroupId ? { teamAadGroupId } : {}),
       ...(peerName ? { peerName } : {}),
+      // Keep the last known roster across re-observes — it refreshes
+      // asynchronously below and must not flicker away in between.
+      ...(previous?.members !== undefined ? { members: previous.members } : {}),
+      ...(previous?.memberCount !== undefined
+        ? { memberCount: previous.memberCount }
+        : {}),
       lastSeenAt: Date.now(),
     };
     this.seen.set(conversationId, entry);
@@ -104,6 +130,31 @@ export class TeamsConversationObserver {
     } catch {
       // The hook is best-effort enrichment — it must never break a turn.
     }
+    if (
+      this.fetchMembers &&
+      (conversationType === 'groupChat' || conversationType === 'channel')
+    ) {
+      void this.fetchMembers(context)
+        .then((members) => {
+          if (members && members.names.length > 0) {
+            this.noteMembers(conversationId, members);
+          }
+        })
+        .catch(() => {
+          // Roster enrichment is best-effort; keep the entry as-is.
+        });
+    }
+  }
+
+  /** Merge roster names into an already-observed conversation. */
+  noteMembers(conversationId: string, members: ObservedMembers): void {
+    const current = this.seen.get(conversationId);
+    if (!current) return;
+    this.seen.set(conversationId, {
+      ...current,
+      members: members.names,
+      memberCount: members.count,
+    });
   }
 
   list(): readonly TeamsConversation[] {

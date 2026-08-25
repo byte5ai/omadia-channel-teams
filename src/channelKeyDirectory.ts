@@ -8,6 +8,9 @@ import type { TeamsGraphResolver } from './teamsGraphResolver.js';
 
 const PLUGIN_ID = '@omadia/channel-teams';
 
+/** Names carried per directory entry — the SDK asks plugins to cap. */
+const MEMBER_CAP = 8;
+
 /**
  * Build the directory contribution for the operator `/operator/channels`
  * dashboard. Composes:
@@ -77,6 +80,13 @@ export function buildTeamsChannelKeyDirectory(opts: {
       for (const conv of opts.conversationObserver.list()) {
         resolver?.prime(conv);
         const resolved = resolver?.get(conv.conversationId);
+        // Member precedence: Graph (topic-aware, uncached-fresh) wins,
+        // then the Bot-Framework roster captured by the observer — the
+        // only source for `@thread.skype` group chats, which Graph
+        // cannot address.
+        const members =
+          resolved?.members ?? conv.members?.slice(0, MEMBER_CAP);
+        const memberCount = resolved?.memberCount ?? conv.memberCount;
         entries.push({
           key: conv.conversationId,
           label: resolved?.label ?? conv.label,
@@ -88,12 +98,8 @@ export function buildTeamsChannelKeyDirectory(opts: {
                 : conv.conversationType === 'groupChat'
                   ? 'Group chat'
                   : 'conversation',
-          ...(resolved?.members !== undefined
-            ? { members: resolved.members }
-            : {}),
-          ...(resolved?.memberCount !== undefined
-            ? { memberCount: resolved.memberCount }
-            : {}),
+          ...(members !== undefined && members.length > 0 ? { members } : {}),
+          ...(memberCount !== undefined ? { memberCount } : {}),
         });
       }
       return entries;

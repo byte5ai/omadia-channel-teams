@@ -136,8 +136,22 @@ export async function activate(
     clientSecret: appPassword,
     log: (m: string) => core.log('info', m),
   });
-  const conversationObserver = new TeamsConversationObserver((conv) =>
-    graphResolver.prime(conv),
+  // Shared roster cache — constructed here (before the observer) because
+  // the observer's member enrichment reads it: Bot-Framework group chats
+  // (`19:…@thread.skype`) are invisible to Graph `/chats/{id}`, their
+  // member names only exist in the Bot-Framework roster.
+  const teamsRosterProvider = new TeamsRosterProvider();
+  const conversationObserver = new TeamsConversationObserver(
+    (conv) => graphResolver.prime(conv),
+    async (context) => {
+      const participants = await teamsRosterProvider.list(context);
+      const names = participants
+        .map((p) => p.displayName)
+        .filter((n) => n.length > 0);
+      return names.length > 0
+        ? { names, count: names.length }
+        : undefined;
+    },
   );
   const channelDirectoryDisplayLabel = ctx.config.get<string>(
     'teams_directory_label',
@@ -267,7 +281,7 @@ export async function activate(
   }
 
   // --- Roster provider -------------------------------------------------
-  const teamsRosterProvider = new TeamsRosterProvider();
+  // (constructed earlier, next to the conversation observer that shares it)
   core.log('info', 'teams roster provider ready (ttl=5min)');
 
   // --- #330 B2 — group-conversation primitives --------------------------
