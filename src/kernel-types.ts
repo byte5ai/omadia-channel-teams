@@ -222,6 +222,132 @@ export interface ChatAgent {
 }
 
 // ---------------------------------------------------------------------------
+// teamsProvisioner@1 — mirror of @omadia/integration-microsoft365
+// src/teamsProvisioner (structural)
+// ---------------------------------------------------------------------------
+//
+// #860 W2 — the auto-invite installer (`teamsAgentInstaller.ts`) consumes the
+// M365 connector's `teamsProvisioner@1` service. The connector is a
+// peerDependency ('*', not in node_modules), so — like every other
+// kernel/plugin type in this file — its contract is mirrored STRUCTURALLY,
+// never imported. Source of truth: connector `src/teamsProvisioner/`
+// (types.ts / catalog.ts / install.ts / errors.ts / index.ts).
+//
+// The accessor shim is intentionally NARROWER than the real
+// `TeamsProvisionerAccessor` (precedent: the `ChatAgent` shim above): only
+// the two chain steps the installer calls are mirrored. Resolving the
+// service object still typechecks because TypeScript matches structurally.
+
+/**
+ * Idempotency signal of provisioner write steps — Graph 409 "already exists"
+ * paths are NOT errors; callers branch on `outcome` instead of
+ * string-matching error bodies.
+ */
+export type IdempotentOutcome = 'created' | 'already-existed';
+
+/** Result wrapper carrying the {@link IdempotentOutcome} alongside the value. */
+export interface Idempotent<T> {
+  readonly outcome: IdempotentOutcome;
+  readonly value: T;
+}
+
+/** An app installation into one team (`POST /teams/{id}/installedApps`). */
+export interface TeamAppInstallation {
+  readonly teamId: string;
+  readonly teamsAppId: string;
+  /** Graph installation id when the API returned/located one. */
+  readonly installationId?: string;
+}
+
+/**
+ * Install request for the team-install step. Mirror of the connector's
+ * `InstallToTeamRequest` minus the optional `consentedPermissionSet` (RSC
+ * consent) — the installer never sends one, and an absent optional field
+ * keeps this narrow shape assignable to the real request type.
+ */
+export interface InstallToTeamRequest {
+  readonly teamId: string;
+  /** Catalog id (`CatalogTeamsApp.teamsAppId`). */
+  readonly teamsAppId: string;
+}
+
+/** Input for the catalog-lookup probe (`getCatalogApp`, connector >= 0.3.1). */
+export interface GetCatalogAppInput {
+  /** Manifest id (`externalId`) of the catalog app to resolve. */
+  readonly teamsAppExternalId: string;
+}
+
+/** Lookup miss — no catalog app carries the requested `externalId`. */
+export interface CatalogAppNotFound {
+  readonly found: false;
+}
+
+/** Lookup hit. `displayName`/`publishedVersion` are optional on purpose —
+ *  Graph can omit either on a thin-but-installable catalog entry. */
+export interface CatalogAppFound {
+  readonly found: true;
+  /** Catalog id (`teamsApp.id`) — what installs reference. */
+  readonly teamsAppId: string;
+  readonly displayName?: string;
+  readonly publishedVersion?: string;
+}
+
+/** Result of the catalog-lookup probe — `{ found: false }` is a plain
+ *  outcome, never an exception. */
+export type GetCatalogAppResult = CatalogAppNotFound | CatalogAppFound;
+
+/**
+ * Structural shim of the `teamsProvisioner@1` service object (published
+ * under the ServiceRegistry key `teamsProvisioner`). Narrowed to the chain
+ * steps the Teams plugin calls; the real accessor also exposes
+ * createAppRegistration/createBot/uploadToCatalog/… for the middleware
+ * agent factory.
+ *
+ * `getCatalogApp` ships with connector 0.3.1 — it is OPTIONAL here and the
+ * installer feature-detects it. Never require the method: a 0.3.0 connector
+ * without it must degrade to the fallback-card outcome, not crash.
+ */
+export interface TeamsProvisionerAccessor {
+  /**
+   * Lookup probe — resolve an EXISTING catalog app by manifest id
+   * (`externalId`) without uploading a package (connector >= 0.3.1).
+   */
+  getCatalogApp?(input: GetCatalogAppInput): Promise<GetCatalogAppResult>;
+  /** Chain step 5 — install the catalog app into one team. */
+  installToTeam(
+    input: InstallToTeamRequest,
+  ): Promise<Idempotent<TeamAppInstallation>>;
+}
+
+/**
+ * Structural shape of the connector's `ConsentMissingError` (Graph/ARM 403:
+ * application permission or admin consent missing). The class itself is not
+ * importable here, and cross-package `instanceof` would be unreliable
+ * anyway — the connector sets `this.name` explicitly, so consumers branch
+ * on `name` (see `isConsentMissingError` in `teamsAgentInstaller.ts`).
+ */
+export interface ConsentMissingErrorShape extends Error {
+  readonly name: 'ConsentMissingError';
+  /** The scopes/app roles the caller must have granted. */
+  readonly missingScopes: readonly string[];
+  /** Which API rejected the call. */
+  readonly resource: 'graph' | 'arm';
+}
+
+/**
+ * Structural shape of the connector's `ProvisioningThrottledError` (thrown
+ * after ITS 429 retry/backoff budget is exhausted). Carries the last
+ * `Retry-After` hint, when the API sent one.
+ */
+export interface ProvisioningThrottledErrorShape extends Error {
+  readonly name: 'ProvisioningThrottledError';
+  /** Seconds from the final `Retry-After` header, if the API provided it. */
+  readonly retryAfterSeconds?: number;
+  /** Which API throttled the call. */
+  readonly resource: 'graph' | 'arm';
+}
+
+// ---------------------------------------------------------------------------
 // Config — narrow subset the Teams plugin consumes from kernel `Config`
 // ---------------------------------------------------------------------------
 
