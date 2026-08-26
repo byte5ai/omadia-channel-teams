@@ -63,9 +63,15 @@ describe('parseTeamsAgentAppsConfig — valid input shapes', () => {
     assert.equal(apps[0]!.teamsAppId, undefined);
   });
 
-  it('treats empty-string and null teamsAppId as not configured', () => {
+  it('treats empty-string, blank and null teamsAppId as not configured', () => {
     assert.equal(
       parseTeamsAgentAppsConfig([{ ...FULL_ENTRY, teamsAppId: '' }])[0]!.teamsAppId,
+      undefined,
+    );
+    // Whitespace-only follows the same trim-as-absent policy as '' —
+    // every sibling field already behaves that way (review finding).
+    assert.equal(
+      parseTeamsAgentAppsConfig([{ ...FULL_ENTRY, teamsAppId: '   ' }])[0]!.teamsAppId,
       undefined,
     );
     assert.equal(
@@ -114,6 +120,27 @@ describe('parseTeamsAgentAppsConfig — validation failures are loud, never sile
       assert.throws(() => parseTeamsAgentAppsConfig(raw), TeamsAgentAppsConfigError);
     });
   }
+
+  it('rejects inline credentials — the teams_bots paste mistake fails identically here', () => {
+    // teams_agent_apps[] sits directly beside teams_bots[] in the manifest
+    // with near-identical entry syntax; a credential pasted into the wrong
+    // list must never be silently persisted (teamsBotsConfig.ts precedent).
+    for (const credentialKey of [
+      'appPassword',
+      'app_password',
+      'clientSecret',
+      'client_secret',
+    ]) {
+      assert.throws(
+        () =>
+          parseTeamsAgentAppsConfig([
+            { ...FULL_ENTRY, [credentialKey]: 'hunter2' },
+          ]),
+        /inline credential/,
+        `expected ${credentialKey} to be rejected`,
+      );
+    }
+  });
 
   it('rejects duplicate agentSlugs', () => {
     assert.throws(

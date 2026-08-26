@@ -21,8 +21,12 @@
  *     hammered on every `membersAdded` (no retry storm),
  *   * `Idempotent.outcome === 'already-existed'` (409) → success,
  *   * `ProvisioningThrottledError` (429 budget exhausted connector-side) →
- *     bounded retry honouring `retryAfterSeconds`, then a typed `'failed'`
- *     outcome,
+ *     bounded retry honouring `retryAfterSeconds` (hints above
+ *     `MAX_THROTTLE_WAIT_MS` are non-retryable — reschedule, don't deepen
+ *     the window), then a typed `'failed'` outcome. Like the 403 path, a
+ *     throttled app SHORT-CIRCUITS the rest of the run (a 429 is
+ *     tenant-wide), and total installer-owned sleep per run is capped by
+ *     `MAX_RUN_SLEEP_BUDGET_MS`,
  *   * anything else → typed `'failed'` outcome, logged without ids.
  *
  * INTRO THROTTLE — freshly installed agent bots each receive `membersAdded`,
@@ -160,6 +164,23 @@ function normalizeIdKey(id: string | undefined): string | undefined {
   return normalized ? normalized : undefined;
 }
 
+/** Both TTL maps evict lazily on same-key access; without a sweep, keys
+ *  never touched again would be retained for the process lifetime — a slow
+ *  leak in a process designed to run indefinitely. Swept on WRITE once the
+ *  map crosses the threshold (cheap, no timer). */
+const TTL_MAP_SWEEP_THRESHOLD = 256;
+
+function sweepExpiredEntries<V>(
+  entries: Map<string, V>,
+  now: number,
+  expiresAt: (value: V) => number,
+): void {
+  if (entries.size < TTL_MAP_SWEEP_THRESHOLD) return;
+  for (const [key, value] of entries) {
+    if (expiresAt(value) <= now) entries.delete(key);
+  }
+}
+
 /** Default consent negative-cache TTL — long enough to absorb a burst of
  *  `membersAdded` events, short enough that granted consent is picked up
  *  without a restart. */
@@ -182,15 +203,27 @@ export class TeamsConsentNegativeCache {
     this.now = options?.now ?? Date.now;
   }
 
-  /** Record a 403 for the tenant. Blank tenant ids are ignored. */
+  /**
+   * Record a 403 for the tenant. Blank tenant ids are ignored.
+   *
+   * Scope sets are UNIONED with any live entry (expiry refreshed): the
+   * catalog lookup and the install step 403 with DIFFERENT scopes
+   * (`AppCatalog.ReadWrite.All` vs `TeamsAppInstallation.ReadWriteForTeam.All`),
+   * and the consent card must name every grant the run needs — replacing
+   * would under-report and cost the admin a second consent round trip.
+   */
   markConsentMissing(
     tenantId: string,
     missingScopes: readonly string[],
   ): void {
     const key = normalizeIdKey(tenantId);
     if (!key) return;
+    sweepExpiredEntries(this.entries, this.now(), (e) => e.expiresAt);
+    const live = this.entries.get(key);
+    const liveScopes =
+      live && live.expiresAt > this.now() ? live.missingScopes : [];
     this.entries.set(key, {
-      missingScopes,
+      missingScopes: [...new Set([...liveScopes, ...missingScopes])],
       expiresAt: this.now() + this.ttlMs,
     });
   }
@@ -234,6 +267,7 @@ export class TeamsAutoInstallMarker {
   mark(teamId: string): void {
     const key = normalizeIdKey(teamId);
     if (!key) return;
+    sweepExpiredEntries(this.expiries, this.now(), (expiresAt) => expiresAt);
     this.expiries.set(key, this.now() + this.ttlMs);
   }
 
@@ -255,10 +289,28 @@ export class TeamsAutoInstallMarker {
  *  its own 429 backoff budget per call — this is a second, outer bound). */
 export const MAX_THROTTLE_RETRIES = 2;
 /** Wait when the throttle carried no `Retry-After` hint. */
-const DEFAULT_THROTTLE_WAIT_MS = 2000;
-/** Upper bound on honoured `Retry-After` hints — the message path must not
- *  hang for minutes on an aggressive hint. */
-const MAX_THROTTLE_WAIT_MS = 30_000;
+export const DEFAULT_THROTTLE_WAIT_MS = 2000;
+/**
+ * Upper bound on honoured `Retry-After` hints. A hint ABOVE this cap is
+ * treated as non-retryable (the connector's own backpressure contract:
+ * a long throttle window means "reschedule", not "retry now") — the outer
+ * retry is skipped entirely and the full hint survives into the typed
+ * `'failed'` outcome's `retryAfterSeconds` for the caller to act on.
+ */
+export const MAX_THROTTLE_WAIT_MS = 30_000;
+/**
+ * Run-level cap on TOTAL installer-owned sleep across one
+ * {@link TeamsAgentInstaller.installAgentApps} call, regardless of app
+ * count. Per-wait caps alone do not deliver the "must not hang for
+ *  minutes" promise in aggregate: N apps x retries x 30s adds up. Once
+ * the budget is exhausted, further throttles fail fast (typed outcome).
+ */
+export const MAX_RUN_SLEEP_BUDGET_MS = 60_000;
+
+/** Mutable per-run sleep account shared by every retry loop of one run. */
+interface RunSleepBudget {
+  remainingMs: number;
+}
 
 export interface TeamsAgentInstallerOptions {
   /** The resolved `teamsProvisioner@1` service object. */
@@ -275,6 +327,9 @@ export interface TeamsAgentInstallerOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   /** Bounded throttle retries per app (default {@link MAX_THROTTLE_RETRIES}). */
   readonly maxThrottleRetries?: number;
+  /** Run-level cap on total installer-owned sleep
+   *  (default {@link MAX_RUN_SLEEP_BUDGET_MS}). */
+  readonly maxRunSleepBudgetMs?: number;
 }
 
 /** Install request — one team in one tenant. */
@@ -299,6 +354,7 @@ export class TeamsAgentInstaller {
   private readonly log: (msg: string) => void;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxThrottleRetries: number;
+  private readonly maxRunSleepBudgetMs: number;
 
   constructor(options: TeamsAgentInstallerOptions) {
     this.provisioner = options.provisioner;
@@ -310,6 +366,8 @@ export class TeamsAgentInstaller {
       options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.maxThrottleRetries =
       options.maxThrottleRetries ?? MAX_THROTTLE_RETRIES;
+    this.maxRunSleepBudgetMs =
+      options.maxRunSleepBudgetMs ?? MAX_RUN_SLEEP_BUDGET_MS;
   }
 
   /** The shared marker — the wiring layer hands this to the onboarding
@@ -329,7 +387,16 @@ export class TeamsAgentInstaller {
   ): Promise<TeamsAgentInstallResult> {
     const outcomes: AgentAppInstallOutcome[] = [];
     let consentBlocked = this.consentCache.get(request.tenantId);
+    let throttleBlocked:
+      | { readonly retryAfterSeconds?: number }
+      | undefined;
     let freshInstall = false;
+    // ONE sleep account for the whole run — the per-wait cap alone would
+    // still let N apps x retries x 30s of sleep accumulate on the message
+    // path (review finding, #860 W2 integration).
+    const sleepBudget: RunSleepBudget = {
+      remainingMs: this.maxRunSleepBudgetMs,
+    };
 
     for (const app of this.apps) {
       if (consentBlocked) {
@@ -346,8 +413,24 @@ export class TeamsAgentInstaller {
         });
         continue;
       }
+      if (throttleBlocked) {
+        // A 429 is tenant-wide like the 403 — once one app exhausted the
+        // throttle path, calling on for the rest of the run only deepens
+        // the same throttle window. Same short-circuit as consentBlocked.
+        outcomes.push({
+          kind: 'failed',
+          agentSlug: app.agentSlug,
+          displayName: app.displayName,
+          reason: 'throttled',
+          ...(throttleBlocked.retryAfterSeconds !== undefined
+            ? { retryAfterSeconds: throttleBlocked.retryAfterSeconds }
+            : {}),
+          message: 'provisioning_throttled_run_short_circuit',
+        });
+        continue;
+      }
 
-      const outcome = await this.installOne(request, app);
+      const outcome = await this.installOne(request, app, sleepBudget);
       outcomes.push(outcome);
       if (outcome.kind === 'installed' && outcome.outcome === 'created') {
         freshInstall = true;
@@ -357,6 +440,13 @@ export class TeamsAgentInstaller {
         // the remaining apps of this run through the cache branch above.
         consentBlocked = this.consentCache.get(request.tenantId) ?? {
           missingScopes: outcome.missingScopes ?? [],
+        };
+      }
+      if (outcome.kind === 'failed' && outcome.reason === 'throttled') {
+        throttleBlocked = {
+          ...(outcome.retryAfterSeconds !== undefined
+            ? { retryAfterSeconds: outcome.retryAfterSeconds }
+            : {}),
         };
       }
     }
@@ -369,10 +459,11 @@ export class TeamsAgentInstaller {
   private async installOne(
     request: InstallAgentAppsRequest,
     app: TeamsAgentAppTarget,
+    sleepBudget: RunSleepBudget,
   ): Promise<AgentAppInstallOutcome> {
     const label = teamsAgentAppLogLabel(app);
     try {
-      const teamsAppId = await this.resolveCatalogAppId(app);
+      const teamsAppId = await this.resolveCatalogAppId(app, sleepBudget);
       if (teamsAppId === undefined) {
         this.log(`teamsAgentInstaller: ${label} not in catalog → fallback card`);
         return {
@@ -383,7 +474,7 @@ export class TeamsAgentInstaller {
           teamsAppExternalId: app.teamsAppExternalId,
         };
       }
-      const installed = await this.withThrottleRetry(label, () =>
+      const installed = await this.withThrottleRetry(label, sleepBudget, () =>
         this.provisioner.installToTeam({ teamId: request.teamId, teamsAppId }),
       );
       this.log(
@@ -409,12 +500,14 @@ export class TeamsAgentInstaller {
    */
   private async resolveCatalogAppId(
     app: TeamsAgentAppTarget,
+    sleepBudget: RunSleepBudget,
   ): Promise<string | undefined> {
     if (app.teamsAppId !== undefined) return app.teamsAppId;
     if (typeof this.provisioner.getCatalogApp !== 'function') return undefined;
     const label = teamsAgentAppLogLabel(app);
     const result: GetCatalogAppResult = await this.withThrottleRetry(
       label,
+      sleepBudget,
       () =>
         this.provisioner.getCatalogApp!({
           teamsAppExternalId: app.teamsAppExternalId,
@@ -423,9 +516,20 @@ export class TeamsAgentInstaller {
     return result.found ? result.teamsAppId : undefined;
   }
 
-  /** Bounded outer retry over the connector's throttle signal. */
+  /**
+   * Bounded outer retry over the connector's throttle signal. Two guards
+   * beyond the per-app attempt count (review findings, #860 W2 integration):
+   *   * a hint ABOVE {@link MAX_THROTTLE_WAIT_MS} is non-retryable — the
+   *     connector deliberately declined to wait on such hints itself
+   *     ("reschedule, don't retry"); sleeping a clamped fraction and firing
+   *     more requests into a long throttle window would invert that
+   *     contract. The error propagates with its full `retryAfterSeconds`.
+   *   * every sleep draws down the shared per-run {@link RunSleepBudget};
+   *     an exhausted budget also stops retrying.
+   */
   private async withThrottleRetry<T>(
     label: string,
+    sleepBudget: RunSleepBudget,
     step: () => Promise<T>,
   ): Promise<T> {
     for (let attempt = 0; ; attempt += 1) {
@@ -439,7 +543,20 @@ export class TeamsAgentInstaller {
           err.retryAfterSeconds !== undefined
             ? err.retryAfterSeconds * 1000
             : DEFAULT_THROTTLE_WAIT_MS;
-        const waitMs = Math.min(Math.max(hintedMs, 0), MAX_THROTTLE_WAIT_MS);
+        if (hintedMs > MAX_THROTTLE_WAIT_MS) {
+          this.log(
+            `teamsAgentInstaller: ${label} throttled with a long Retry-After hint — not retrying (reschedule)`,
+          );
+          throw err;
+        }
+        const waitMs = Math.max(hintedMs, 0);
+        if (waitMs > sleepBudget.remainingMs) {
+          this.log(
+            `teamsAgentInstaller: ${label} throttled — run sleep budget exhausted, not retrying`,
+          );
+          throw err;
+        }
+        sleepBudget.remainingMs -= waitMs;
         this.log(
           `teamsAgentInstaller: ${label} throttled — retry ${String(attempt + 1)}/${String(this.maxThrottleRetries)} in ${String(waitMs)}ms`,
         );

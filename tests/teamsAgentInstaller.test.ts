@@ -8,9 +8,11 @@ import { strict as assert } from 'node:assert';
 import {
   AUTO_INSTALL_MARKER_TTL_MS,
   CONSENT_NEGATIVE_CACHE_TTL_MS,
+  DEFAULT_THROTTLE_WAIT_MS,
   isConsentMissingError,
   isProvisioningThrottledError,
   MAX_THROTTLE_RETRIES,
+  MAX_THROTTLE_WAIT_MS,
   TeamsAgentInstaller,
   TeamsAutoInstallMarker,
   TeamsConsentNegativeCache,
@@ -118,6 +120,7 @@ function makeInstaller(
     sleeps?: number[];
     consentCache?: TeamsConsentNegativeCache;
     marker?: TeamsAutoInstallMarker;
+    maxRunSleepBudgetMs?: number;
   },
 ): TeamsAgentInstaller {
   return new TeamsAgentInstaller({
@@ -125,6 +128,9 @@ function makeInstaller(
     apps,
     ...(extra?.consentCache ? { consentCache: extra.consentCache } : {}),
     ...(extra?.marker ? { marker: extra.marker } : {}),
+    ...(extra?.maxRunSleepBudgetMs !== undefined
+      ? { maxRunSleepBudgetMs: extra.maxRunSleepBudgetMs }
+      : {}),
     sleep: async (ms) => {
       extra?.sleeps?.push(ms);
     },
@@ -269,6 +275,116 @@ describe('teamsAgentInstaller error mapping', () => {
     assert.equal(sleeps.length, MAX_THROTTLE_RETRIES);
   });
 
+  it('hintless throttle → DEFAULT_THROTTLE_WAIT_MS between retries', async () => {
+    const { provisioner } = fakeProvisioner({
+      install: async () => {
+        throw new FakeProvisioningThrottledError();
+      },
+    });
+    const sleeps: number[] = [];
+    const result = await run(
+      makeInstaller(provisioner, [APP_ACCOUNTING], { sleeps }),
+    );
+
+    const outcome = expectKind(result.outcomes[0], 'failed');
+    assert.equal(outcome.reason, 'throttled');
+    assert.equal(outcome.retryAfterSeconds, undefined);
+    assert.deepEqual(sleeps, [
+      DEFAULT_THROTTLE_WAIT_MS,
+      DEFAULT_THROTTLE_WAIT_MS,
+    ]);
+  });
+
+  it('a hint AT the cap is still honoured (clamp boundary)', async () => {
+    const { provisioner } = fakeProvisioner({
+      install: async () => {
+        throw new FakeProvisioningThrottledError(MAX_THROTTLE_WAIT_MS / 1000);
+      },
+    });
+    const sleeps: number[] = [];
+    const result = await run(
+      makeInstaller(provisioner, [APP_ACCOUNTING], { sleeps }),
+    );
+
+    expectKind(result.outcomes[0], 'failed');
+    assert.deepEqual(sleeps, [MAX_THROTTLE_WAIT_MS, MAX_THROTTLE_WAIT_MS]);
+  });
+
+  it('a hint ABOVE the cap is non-retryable — no sleep, full hint preserved', async () => {
+    let attempts = 0;
+    const { provisioner } = fakeProvisioner({
+      install: async () => {
+        attempts += 1;
+        throw new FakeProvisioningThrottledError(3600);
+      },
+    });
+    const sleeps: number[] = [];
+    const result = await run(
+      makeInstaller(provisioner, [APP_ACCOUNTING], { sleeps }),
+    );
+
+    const outcome = expectKind(result.outcomes[0], 'failed');
+    assert.equal(outcome.reason, 'throttled');
+    // The connector's backpressure contract: a long window means
+    // "reschedule", not "fire more requests into it".
+    assert.equal(attempts, 1);
+    assert.deepEqual(sleeps, []);
+    assert.equal(outcome.retryAfterSeconds, 3600);
+  });
+
+  it('run-level sleep budget caps total installer-owned sleep', async () => {
+    const { provisioner } = fakeProvisioner({
+      install: async () => {
+        throw new FakeProvisioningThrottledError(15);
+      },
+    });
+    const sleeps: number[] = [];
+    const result = await run(
+      makeInstaller(provisioner, [APP_ACCOUNTING], {
+        sleeps,
+        maxRunSleepBudgetMs: 25_000,
+      }),
+    );
+
+    const outcome = expectKind(result.outcomes[0], 'failed');
+    assert.equal(outcome.reason, 'throttled');
+    // First wait (15s) fits the 25s budget; the second (15s > 10s left)
+    // does not — the retry loop stops instead of sleeping.
+    assert.deepEqual(sleeps, [15_000]);
+  });
+
+  it('a throttled app short-circuits the remaining apps of the run', async () => {
+    const APP_SECOND: TeamsAgentAppTarget = {
+      agentSlug: 'odoo-hr',
+      teamsAppExternalId: '11111111-aaaa-bbbb-cccc-000000000001',
+      teamsAppId: 'catalog-hr',
+      displayName: 'Odoo HR',
+    };
+    let attempts = 0;
+    const { provisioner, installCalls } = fakeProvisioner({
+      install: async () => {
+        attempts += 1;
+        throw new FakeProvisioningThrottledError(7);
+      },
+    });
+    const sleeps: number[] = [];
+    const result = await run(
+      makeInstaller(provisioner, [APP_ACCOUNTING, APP_SECOND], { sleeps }),
+    );
+
+    const first = expectKind(result.outcomes[0], 'failed');
+    assert.equal(first.reason, 'throttled');
+    assert.equal(first.message, 'provisioning_throttled');
+    const second = expectKind(result.outcomes[1], 'failed');
+    assert.equal(second.reason, 'throttled');
+    assert.equal(second.message, 'provisioning_throttled_run_short_circuit');
+    assert.equal(second.retryAfterSeconds, 7);
+    // Only the FIRST app reached Graph — a 429 is tenant-wide; calling on
+    // for the second app would only deepen the throttle window.
+    assert.equal(attempts, 1 + MAX_THROTTLE_RETRIES);
+    assert.equal(installCalls.length, 1 + MAX_THROTTLE_RETRIES);
+  });
+
   it('unexpected error → typed failed outcome, message path never throws', async () => {
     const { provisioner } = fakeProvisioner({
       install: async () => {
@@ -327,6 +443,20 @@ describe('teamsAgentInstaller consent negative cache', () => {
     assert.equal(calls, 1);
     const outcome = expectKind(second.outcomes[0], 'fallback');
     assert.equal(outcome.reason, 'consent-cached');
+  });
+
+  it('scope sets are unioned per tenant, not replaced — the card names every grant', () => {
+    const cache = new TeamsConsentNegativeCache();
+    cache.markConsentMissing(TENANT_ID, ['AppCatalog.ReadWrite.All']);
+    cache.markConsentMissing(TENANT_ID, [
+      'TeamsAppInstallation.ReadWriteForTeam.All',
+      'AppCatalog.ReadWrite.All',
+    ]);
+
+    assert.deepEqual(cache.get(TENANT_ID)?.missingScopes, [
+      'AppCatalog.ReadWrite.All',
+      'TeamsAppInstallation.ReadWriteForTeam.All',
+    ]);
   });
 
   it('cache entries expire after the TTL — a granted consent is retried', () => {

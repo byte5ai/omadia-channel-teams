@@ -84,6 +84,24 @@ function parseEntry(raw: unknown, index: number): TeamsAgentApp {
     );
   }
 
+  // Inline-credential guard (same threat model as teamsBotsConfig.ts:
+  // teams_agent_apps[] sits directly beside teams_bots[] in the manifest
+  // with near-identical entry syntax, so a bot-credential paste into the
+  // wrong list is plausible). This shape has NO secret field — reject the
+  // paste instead of silently persisting it into the non-secret store.
+  for (const credentialKey of [
+    'appPassword',
+    'app_password',
+    'clientSecret',
+    'client_secret',
+  ]) {
+    if (entry[credentialKey] !== undefined) {
+      throw new TeamsAgentAppsConfigError(
+        `entry ${String(index)} carries an inline credential ('${credentialKey}') — teams_agent_apps holds only public app ids; bot credentials belong in teams_bots[] with a vault appPasswordSecretRef`,
+      );
+    }
+  }
+
   const teamsAppExternalId = asTrimmedString(entry['teamsAppExternalId']);
   if (!teamsAppExternalId) {
     throw new TeamsAgentAppsConfigError(
@@ -91,17 +109,20 @@ function parseEntry(raw: unknown, index: number): TeamsAgentApp {
     );
   }
 
+  // teamsAppId is optional: absent / null / blank (incl. whitespace-only)
+  // all mean "not configured" — the trim-as-absent policy every sibling
+  // field follows. Only a present non-string value is an operator error.
   const rawTeamsAppId = entry['teamsAppId'];
-  let teamsAppId: string | undefined;
-  if (rawTeamsAppId === undefined || rawTeamsAppId === null || rawTeamsAppId === '') {
-    teamsAppId = undefined;
-  } else {
-    teamsAppId = asTrimmedString(rawTeamsAppId);
-    if (!teamsAppId) {
-      throw new TeamsAgentAppsConfigError(
-        `entry '${agentSlug}' has a non-string teamsAppId — omit it or configure the Graph catalog id`,
-      );
-    }
+  const teamsAppId = asTrimmedString(rawTeamsAppId);
+  if (
+    teamsAppId === undefined &&
+    rawTeamsAppId !== undefined &&
+    rawTeamsAppId !== null &&
+    typeof rawTeamsAppId !== 'string'
+  ) {
+    throw new TeamsAgentAppsConfigError(
+      `entry '${agentSlug}' has a non-string teamsAppId — omit it or configure the Graph catalog id`,
+    );
   }
 
   return {
