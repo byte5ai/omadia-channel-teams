@@ -10,7 +10,7 @@ export { activate } from './plugin.js';
 // Bot runtime + adapters (re-exported for the kernel bootstrap call-site
 // + the answer-card tests under test/)
 // ---------------------------------------------------------------------------
-export { TeamsBot, teamsSessionScope } from './teamsBot.js';
+export { TeamsBot, teamsSessionScope, teamsTurnOrigin } from './teamsBot.js';
 
 // ---------------------------------------------------------------------------
 // #860 W2 — auto-invite agent apps (issues #20/#21/#22). Config surface,

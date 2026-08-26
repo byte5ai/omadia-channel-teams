@@ -11,9 +11,16 @@ import {
   formatSessionScope,
   isNoReply,
   logNoReplyDrop,
+  makePrincipal,
+  parseSessionScope,
   unsharedConversationScope,
 } from '@omadia/channel-sdk';
-import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
+import type {
+  ChannelUserRef,
+  ConversationMembershipEvent,
+  ScopeId,
+  TurnOrigin,
+} from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
 import { pickChatAgentForTurn } from './agentForTurn.js';
 
@@ -190,6 +197,102 @@ export function teamsSessionScope(
       uniqueSuffix: typeof activity.id === 'string' ? activity.id : undefined,
     }),
   );
+}
+
+/**
+ * `channelData.team.id` — the id of the enclosing Microsoft Team, present ONLY
+ * on activities that arrive through a team channel. A group chat, a meeting
+ * chat and a 1:1 all leave it absent, which is exactly the signal the memory
+ * ACL wants: no team, no team tier.
+ *
+ * Read defensively rather than through the `as`-cast the log lines above use,
+ * because this value decides which memory tree a turn may write to. `channelData`
+ * is untyped wire data; a non-object `team`, a numeric `id` or a whitespace-only
+ * id must all resolve to "no container" instead of to a container keyed on
+ * garbage that every malformed activity would then share.
+ */
+function teamsContainerTeamId(channelData: unknown): string | undefined {
+  if (typeof channelData !== 'object' || channelData === null) return undefined;
+  const team = (channelData as { team?: unknown }).team;
+  if (typeof team !== 'object' || team === null) return undefined;
+  const id = (team as { id?: unknown }).id;
+  return typeof id === 'string' && id.trim().length > 0 ? id : undefined;
+}
+
+/**
+ * W5 memory-ACL — the turn's `TurnOrigin` (design #870 §4, the Teams row).
+ *
+ * ## What this is
+ *
+ * A *rephrasing* of fields the turn already carries into the platform-agnostic
+ * terms the kernel's memory ACL reasons in. It reads no new Bot-Framework
+ * surface and issues no call: `sessionScope` is what `teamsSessionScope` just
+ * built, `userId` is what `handleMessage` already derived, and the team id is
+ * the `channelData.team.id` the inbound-meta log already prints. Nothing here
+ * can fail, so nothing here needs a fallback path.
+ *
+ * ## Which tier each Teams context lands in
+ *
+ * The kernel derives the tiers from this value (`memoryAxesForOrigin`); this
+ * function's only job is to state the context truthfully so that derivation
+ * comes out as the §2 table says:
+ *
+ * | Teams context                    | scope        | container | tiers reached  |
+ * |----------------------------------|--------------|-----------|----------------|
+ * | 1:1 chat (`personal`)            | `personal:`  | —         | user           |
+ * | group chat (`groupChat`)         | conversation | —         | channel        |
+ * | team channel (`channel`)         | conversation | team      | channel + team |
+ *
+ * ## Why a 1:1 chat gets a `personal` scope rather than its conversation scope
+ *
+ * The user tier is about the PERSON, not about the chat window: the same human
+ * writing to the same agent should reach one tree. `sessionScope` cannot express
+ * that — it stays `teams-<conversationId>` on purpose (#575 D7: re-spelling it
+ * would orphan every live conversation's graph partition), so the personal scope
+ * is built here instead. That costs nothing, because `origin.scope` is read ONLY
+ * by the memory-axis derivation — the transcript bucketing, the graph partition
+ * and every log line keep using `input.sessionScope` untouched.
+ *
+ * A 1:1 turn we cannot name a user for keeps the conversation scope and lands in
+ * the channel tier. That is not a hole — a Teams 1:1 conversation id is already
+ * per-person — it just cannot be recognised as the same person from a second
+ * chat window.
+ *
+ * ## Why the principal comes from `userId` and not from `from.aadObjectId`
+ *
+ * The design writes `principal = user:<aadObjectId>`, and in the normal case
+ * that is precisely what this is: `handleMessage` derives `userId` as
+ * `from.aadObjectId ?? from.id`. Deriving it a second time from the activity
+ * would buy nothing and risk the two disagreeing — and the principal is carried
+ * for audit and for the promote action's actor, never for the tier derivation
+ * (the SDK reads the scope's own `userId` for that, deliberately).
+ *
+ * Exported so the mapping is testable without standing up a Bot Framework
+ * adapter; the parameter is structurally typed for the same reason.
+ */
+export function teamsTurnOrigin(
+  activity: {
+    readonly conversation?: { readonly conversationType?: string | undefined } | undefined;
+    readonly channelData?: unknown;
+  },
+  sessionScope: string,
+  userId: string | undefined,
+): TurnOrigin {
+  const isPersonal = activity.conversation?.conversationType === 'personal';
+  // A blank `userId` would build `personal:` — a scope every anonymous 1:1 turn
+  // would share. Fall back to the conversation scope instead.
+  const scope: ScopeId =
+    isPersonal && userId && userId.trim().length > 0
+      ? { kind: 'personal', userId }
+      : parseSessionScope(sessionScope);
+  const teamId = teamsContainerTeamId(activity.channelData);
+  const principal = userId ? makePrincipal('user', userId) : undefined;
+  return {
+    channelType: 'teams',
+    scope,
+    ...(teamId ? { container: { kind: 'team' as const, id: teamId } } : {}),
+    ...(principal ? { principal } : {}),
+  };
 }
 
 /** Honest confirmation for an approve/reject click, worded by the kernel's resolution outcome so we
@@ -1665,10 +1768,17 @@ export class TeamsBot extends TeamsActivityHandler {
       ? await extractSsoAssertion(context, this.ssoConnectionName)
       : undefined;
     const presetSenderName = context.activity.from?.name;
+    // W5 — capture the origin here for the same reason the two presets above are
+    // captured here: a proactive continuation runs on an activity rebuilt from a
+    // `ConversationReference`, which carries no `channelData`. Recomputing it
+    // over there would silently drop the team container and quietly demote every
+    // detached card click in a team channel to the channel tier alone.
+    const origin = teamsTurnOrigin(context.activity, input.sessionScope, input.userId);
     const reference = TurnContext.getConversationReference(context.activity);
     void this.proactiveSend(reference, async (proactive) => {
       await this.runOrchestratorTurn(proactive, {
         ...input,
+        origin,
         ...(presetSsoAssertion ? { presetSsoAssertion } : {}),
         ...(presetSenderName ? { presetSenderName } : {}),
       });
@@ -1706,6 +1816,10 @@ export class TeamsBot extends TeamsActivityHandler {
        * allowed.
        */
       chatAgent?: ChatAgent;
+      /** W5 memory-ACL — context origin captured on the ORIGINAL inbound turn.
+       *  Set only by `runOrchestratorTurnDetached`; the inline path derives it
+       *  from the live activity below. */
+      origin?: TurnOrigin;
     },
   ): Promise<void> {
     // Scope-local binding so the ALS wrapper can forward the roster accessor
@@ -1768,6 +1882,13 @@ export class TeamsBot extends TeamsActivityHandler {
           isGroup: isGroupConversation,
           senderName: input.presetSenderName ?? context.activity.from?.name,
         });
+        // W5 memory-ACL (#870 §4) — state WHERE this turn came from so the
+        // kernel can scope `/memories/` to this chat context. Additive: a
+        // kernel that does not know the field ignores it, and one that does
+        // treats a missing field as context-free, i.e. exactly today.
+        const origin =
+          input.origin ??
+          teamsTurnOrigin(context.activity, input.sessionScope, input.userId);
         const result = await chatAgent.chat({
           userMessage: attributedMessage,
           sessionScope: input.sessionScope,
@@ -1776,6 +1897,7 @@ export class TeamsBot extends TeamsActivityHandler {
           ...(input.freshCheck ? { freshCheck: true } : {}),
           ...(ssoAssertion ? { ssoAssertion } : {}),
           userTimeZone,
+          origin,
         });
         // Post-S+7.5: ChatAgent.chat returns the SDK's SemanticAnswer. We
         // narrow the discriminated `interactive` union into the legacy
