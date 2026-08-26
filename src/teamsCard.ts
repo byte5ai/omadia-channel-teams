@@ -10,6 +10,7 @@ import type {
   VerifierBadge,
 } from './kernel-types.js';
 import type { MentionEntity } from './teamsMentions.js';
+import type { AgentAppInstallOutcome } from './teamsAgentInstaller.js';
 
 /**
  * Post-S+7.5 alias — the kernel/SemanticAnswer naming is "OutgoingAttachment",
@@ -1802,4 +1803,203 @@ export function parseRoutineListFilterValue(
     return undefined;
   }
   return { kind: ROUTINE_LIST_FILTER_VALUE_KIND, filter };
+}
+
+// -----------------------------------------------------------------------------
+// #860 W2 (issue #21) — auto-invite result / fallback card
+// -----------------------------------------------------------------------------
+// Rendered by the onboarding hook after a `teamsAgentInstaller` run: one line
+// per configured agent app, a per-reason hint block (consent missing vs. app
+// not in catalog), install deep links for apps that could not be installed,
+// and a "Prüfen" re-check Action.Submit that re-runs the installer and
+// UPDATES this card in place (DIRECT_LINE_VALUE_TYPE precedent for the
+// submit-value round trip). Deep links carry ONLY public Teams app ids.
+
+/** Deep-link base for a published Teams app — public app id only. */
+const TEAMS_APP_DEEP_LINK_BASE = 'https://teams.microsoft.com/l/app/';
+
+export const AGENT_APPS_RECHECK_VALUE_TYPE = 'agent_apps_recheck';
+
+/**
+ * Submit payload of the "Prüfen" button. `teamId`/`tenantId` are round-
+ * tripped so the re-check can run without extra server state — BOTH are
+ * public identifiers, and the handler prefers the transport-derived
+ * `channelData.team.aadGroupId` / `channelData.tenant.id` of the submit
+ * activity over these round-tripped values (card `data` is client-editable).
+ */
+export interface AgentAppsRecheckValue {
+  type: typeof AGENT_APPS_RECHECK_VALUE_TYPE;
+  /** Graph team (group) id the installer ran against. */
+  teamId: string;
+  /** Entra tenant id — the installer's consent-cache key. */
+  tenantId: string;
+}
+
+/** Runtime guard for the re-check submit. Some Teams clients deliver the
+ *  Action.Submit `data` as a JSON STRING (parseApprovalValue precedent) —
+ *  accept both. */
+export function parseAgentAppsRecheckValue(
+  value: unknown,
+): AgentAppsRecheckValue | undefined {
+  let candidate: unknown = value;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return undefined;
+  const v = candidate as Record<string, unknown>;
+  if (v['type'] !== AGENT_APPS_RECHECK_VALUE_TYPE) return undefined;
+  const teamId = v['teamId'];
+  const tenantId = v['tenantId'];
+  if (typeof teamId !== 'string' || teamId.length === 0) return undefined;
+  if (typeof tenantId !== 'string' || tenantId.length === 0) return undefined;
+  return { type: AGENT_APPS_RECHECK_VALUE_TYPE, teamId, tenantId };
+}
+
+export interface BuildAgentAppsCardInput {
+  /** Per-app outcomes of one installer run, in configured order. */
+  readonly outcomes: readonly AgentAppInstallOutcome[];
+  /** Round-tripped into the "Prüfen" submit value (public id). */
+  readonly teamId: string;
+  /** Round-tripped into the "Prüfen" submit value (public id). */
+  readonly tenantId: string;
+}
+
+/** One status line per app — the card's scannable core. */
+function agentAppOutcomeLine(outcome: AgentAppInstallOutcome): Record<string, unknown> {
+  let text: string;
+  switch (outcome.kind) {
+    case 'installed':
+      text =
+        outcome.outcome === 'created'
+          ? `✅ **${outcome.displayName}** — installiert`
+          : `✅ **${outcome.displayName}** — war bereits installiert`;
+      break;
+    case 'fallback':
+      text =
+        outcome.reason === 'not-in-catalog'
+          ? `⚠️ **${outcome.displayName}** — nicht im Teams-App-Katalog gefunden`
+          : `⚠️ **${outcome.displayName}** — Admin-Zustimmung fehlt`;
+      break;
+    case 'failed':
+      text =
+        outcome.reason === 'throttled'
+          ? `⏳ **${outcome.displayName}** — Microsoft drosselt gerade, bitte später erneut prüfen`
+          : `❌ **${outcome.displayName}** — Installation fehlgeschlagen`;
+      break;
+  }
+  return { type: 'TextBlock', text, wrap: true, spacing: 'Small' };
+}
+
+/**
+ * Result / fallback card for one auto-invite installer run.
+ *
+ * Distinguishes the two fallback classes explicitly: CONSENT MISSING lists
+ * the Graph application permissions an admin still has to grant (scope
+ * names are card material, never log material); NOT IN CATALOG points at
+ * the org-catalog upload. Fallback apps with a known catalog id get an
+ * `Action.OpenUrl` install deep link (`https://teams.microsoft.com/l/app/
+ * <teamsAppId>` — public id only). Unless every app is already installed,
+ * a "Prüfen" Action.Submit re-runs the installer.
+ */
+export function buildAgentAppsResultCard(
+  input: BuildAgentAppsCardInput,
+): Attachment {
+  const body: Record<string, unknown>[] = [
+    {
+      type: 'TextBlock',
+      text: '🤝 Agenten-Apps für dieses Team',
+      weight: 'Bolder',
+      size: 'Medium',
+      wrap: true,
+    },
+    ...input.outcomes.map(agentAppOutcomeLine),
+  ];
+
+  const consentFallbacks = input.outcomes.filter(
+    (o): o is Extract<AgentAppInstallOutcome, { kind: 'fallback' }> =>
+      o.kind === 'fallback' && o.reason !== 'not-in-catalog',
+  );
+  const missingScopes = [
+    ...new Set(consentFallbacks.flatMap((o) => o.missingScopes ?? [])),
+  ];
+  if (consentFallbacks.length > 0) {
+    body.push({
+      type: 'Container',
+      style: 'emphasis',
+      spacing: 'Medium',
+      items: [
+        {
+          type: 'TextBlock',
+          text:
+            missingScopes.length > 0
+              ? `Ein Admin muss der App-Registrierung noch folgende Graph-Berechtigungen zustimmen: ${missingScopes.map((s) => `\`${s}\``).join(', ')} (siehe Setup-Guide, Abschnitt Auto-Invite).`
+              : 'Ein Admin muss der App-Registrierung noch die Graph-Berechtigungen für Auto-Invite zustimmen (siehe Setup-Guide).',
+          size: 'Small',
+          wrap: true,
+        },
+        {
+          type: 'TextBlock',
+          text: 'Bis dahin kannst du die Apps über die Links unten manuell hinzufügen.',
+          size: 'Small',
+          isSubtle: true,
+          wrap: true,
+          spacing: 'Small',
+        },
+      ],
+    });
+  }
+  if (input.outcomes.some((o) => o.kind === 'fallback' && o.reason === 'not-in-catalog')) {
+    body.push({
+      type: 'TextBlock',
+      text: 'ℹ️ Nicht gefundene Apps zuerst in den Teams-App-Katalog der Organisation hochladen — danach hier „Prüfen" klicken.',
+      size: 'Small',
+      isSubtle: true,
+      wrap: true,
+      spacing: 'Medium',
+    });
+  }
+
+  const actions: Record<string, unknown>[] = [];
+  for (const outcome of input.outcomes) {
+    if (outcome.kind === 'fallback' && outcome.teamsAppId !== undefined) {
+      actions.push({
+        type: 'Action.OpenUrl',
+        title: `${outcome.displayName} öffnen`,
+        url: `${TEAMS_APP_DEEP_LINK_BASE}${encodeURIComponent(outcome.teamsAppId)}`,
+      });
+    }
+  }
+  const allInstalled = input.outcomes.every((o) => o.kind === 'installed');
+  if (!allInstalled) {
+    actions.push({
+      type: 'Action.Submit',
+      title: '🔄 Prüfen',
+      data: {
+        type: AGENT_APPS_RECHECK_VALUE_TYPE,
+        teamId: input.teamId,
+        tenantId: input.tenantId,
+        // Same Teams quirk as followUpAction/choiceAsk — Action.Submit on a
+        // slow-responding bot shows "Something went wrong" unless flagged
+        // as messageBack.
+        msteams: {
+          type: 'messageBack',
+          text: 'Prüfen',
+          displayText: '🔄 Prüfen',
+        },
+      } satisfies AgentAppsRecheckValue & { msteams: Record<string, unknown> },
+    });
+  }
+
+  return CardFactory.adaptiveCard({
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    type: 'AdaptiveCard',
+    version: '1.5',
+    msteams: { width: 'Full' },
+    body,
+    ...(actions.length > 0 ? { actions } : {}),
+  });
 }

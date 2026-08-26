@@ -4,6 +4,7 @@ import {
   MessageFactory,
   TeamsActivityHandler,
   TurnContext,
+  type Activity,
   type SigninStateVerificationQuery,
 } from 'botbuilder';
 import {
@@ -38,12 +39,14 @@ import type {
 } from './teamsAttachmentStore.js';
 import {
   aiLabelEntity,
+  buildAgentAppsResultCard,
   buildAnswerCard,
   buildChoiceAskCard,
   buildDirectLineOnlyCard,
   buildFollowUpsOnlyCard,
   buildSlotPickerCard,
   buildTopicAskCard,
+  parseAgentAppsRecheckValue,
   parseApprovalValue,
   parseBookSlotValue,
   parseChoiceAskValue,
@@ -54,8 +57,13 @@ import {
   parseRoutineListFilterValue,
   parseTopicDecisionValue,
   stripFoldedAiDisclosure,
+  type AgentAppsRecheckValue,
   type ApprovalValue,
 } from './teamsCard.js';
+import type {
+  InstallAgentAppsRequest,
+  TeamsAgentInstallResult,
+} from './teamsAgentInstaller.js';
 import { buildRecalledContextCard } from './teamsRecall.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
@@ -312,6 +320,15 @@ export class TeamsBot extends TeamsActivityHandler {
       captureConversationReference: (context: TurnContext) => void;
       emitMembershipEvent: (event: ConversationMembershipEvent) => void;
     },
+    /**
+     * #860 W2 (issue #21) — auto-invite seam. Injected by plugin.ts ONLY
+     * when `teams_agent_apps[]` is configured AND the `teamsProvisioner@1`
+     * service resolved; absent → the whole auto-invite feature is off and
+     * `membersAdded` behaves exactly as before. All Graph traffic stays
+     * behind `installAgentApps` (the installer → the connector) — the bot
+     * itself never talks to Graph for installs.
+     */
+    private readonly autoInvite?: TeamsAutoInviteDeps,
   ) {
     super();
 
@@ -323,8 +340,11 @@ export class TeamsBot extends TeamsActivityHandler {
 
     // #330 B2 — membership lifecycle. Runs regardless of groupPrimitives so
     // the roster cache invalidation below stays correct on old kernels too.
+    // #860 W2 — the same membersAdded event anchors the auto-invite hook
+    // (AFTER the ref capture inside handleMembershipChange).
     this.onMembersAdded(async (context, next) => {
       this.handleMembershipChange(context, 'added');
+      await this.maybeRunAutoInvite(context);
       await next();
     });
     this.onMembersRemoved(async (context, next) => {
@@ -362,8 +382,26 @@ export class TeamsBot extends TeamsActivityHandler {
           : undefined;
 
       const conversationType = toSdkConversationType(activity.conversation?.conversationType);
+      // #860 W2 — intro suppression: when THIS bot's own membersAdded
+      // correlates with a just-run auto-install (the team's marker is
+      // fresh), it is one of the freshly installed agent apps. Downgrade
+      // `bot_added` to `members_added` so the announced entry (the default
+      // intro) fires only for the bot that ran the installer — a flock
+      // install must not post N identical intros.
+      const suppressIntro =
+        botAdded &&
+        shouldSuppressAutoInstallIntro(
+          this.autoInvite &&
+            ((teamId: string) => this.autoInvite!.probeAutoInstallMarker(teamId)),
+          activity,
+        );
       this.groupPrimitives.emitMembershipEvent({
-        kind: botAdded ? 'bot_added' : change === 'added' ? 'members_added' : 'members_removed',
+        kind:
+          botAdded && !suppressIntro
+            ? 'bot_added'
+            : change === 'added'
+              ? 'members_added'
+              : 'members_removed',
         channelId: 'de.byte5.channel.teams',
         channelType: 'teams',
         conversationId,
@@ -377,6 +415,35 @@ export class TeamsBot extends TeamsActivityHandler {
     } catch (err) {
       // A membership event must never break the conversationUpdate turn.
       console.error('[teams] membership event handling failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  /**
+   * #860 W2 (issue #21) — onboarding hook: when THIS bot was just added to
+   * a team, run the agent-app installer for that team and post the result /
+   * fallback card. Anchored on the same `membersAdded` event that captures
+   * the conversation reference. No-op unless plugin.ts injected the
+   * auto-invite seam. When the team's auto-install marker is fresh, this
+   * bot IS one of the freshly installed agent apps — it stays silent
+   * (no second installer run, no second summary card).
+   */
+  private async maybeRunAutoInvite(context: TurnContext): Promise<void> {
+    if (!this.autoInvite) return;
+    try {
+      const outcome = await runTeamsAutoInviteHook(this.autoInvite, context);
+      if (outcome !== 'skipped') {
+        const conversationIdShort =
+          (context.activity.conversation?.id ?? '-').slice(0, 24);
+        console.error(
+          `[teams] auto-invite hook ${outcome} conv=${conversationIdShort}…`,
+        );
+      }
+    } catch (err) {
+      // Auto-invite must never break the conversationUpdate turn.
+      console.error(
+        '[teams] auto-invite hook failed:',
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
@@ -756,6 +823,36 @@ export class TeamsBot extends TeamsActivityHandler {
     const approval = parseApprovalValue(context.activity.value);
     if (approval) {
       await this.handleApprovalDecision(context, approval);
+      return;
+    }
+
+    // #860 W2 (issue #21) — "🔄 Prüfen" click on the auto-invite result
+    // card: re-run the installer and update the card in place (fresh post
+    // when the update is rejected). Out-of-band like the routine action —
+    // a lifecycle decision, never an orchestrator turn.
+    const agentAppsRecheck = parseAgentAppsRecheckValue(context.activity.value);
+    if (agentAppsRecheck) {
+      if (!this.autoInvite) {
+        await context.sendActivity(
+          'Auto-Invite ist auf dieser Installation nicht (mehr) konfiguriert — bitte `teams_agent_apps` und den M365-Connector prüfen.',
+        );
+        return;
+      }
+      try {
+        await handleTeamsAgentAppsRecheck(
+          this.autoInvite,
+          context,
+          agentAppsRecheck,
+        );
+      } catch (err) {
+        console.error(
+          '[teams] agent-apps re-check failed:',
+          err instanceof Error ? err.message : err,
+        );
+        await context.sendActivity(
+          'Die Prüfung ist fehlgeschlagen — bitte später erneut versuchen.',
+        );
+      }
       return;
     }
 
@@ -2123,4 +2220,169 @@ function* collectStringsDeep(value: unknown): Iterable<string> {
   if (value && typeof value === 'object') {
     for (const v of Object.values(value)) yield* collectStringsDeep(v);
   }
+}
+
+// ---------------------------------------------------------------------------
+// #860 W2 (issue #21) — auto-invite onboarding hook
+// ---------------------------------------------------------------------------
+// Module-level (exported) so tests drive the hook logic directly with fake
+// contexts — instantiating a full TeamsBot needs the whole dependency fan-in.
+// The class methods above are thin delegates onto these functions.
+
+/**
+ * The seam the wiring layer (plugin.ts) injects: the installer run plus the
+ * non-consuming auto-install marker probe — BOTH backed by the same
+ * `TeamsAgentInstaller` instance so hook and installer correlate on the
+ * same in-memory marker. No Graph call happens outside this seam.
+ */
+export interface TeamsAutoInviteDeps {
+  installAgentApps(
+    request: InstallAgentAppsRequest,
+  ): Promise<TeamsAgentInstallResult>;
+  probeAutoInstallMarker(teamId: string): boolean;
+}
+
+/** Minimal structural slice of `TurnContext` the hook needs — lets tests
+ *  drive it without a Bot-Framework adapter (the real `TurnContext`
+ *  satisfies it structurally). */
+export interface TeamsAutoInviteTurnContext {
+  readonly activity: Activity;
+  sendActivity(activity: Partial<Activity>): Promise<unknown>;
+  updateActivity(activity: Partial<Activity>): Promise<unknown>;
+}
+
+/**
+ * Graph team (group) id + tenant id of a TEAM-scope activity, from Teams
+ * `channelData`. `undefined` for personal / group-chat scopes — and also
+ * when the event carries no `aadGroupId`: `installToTeam` targets Graph
+ * `POST /teams/{group-id}/installedApps`, and only the AAD group id will
+ * do (the `19:…` thread id is not a Graph team id).
+ */
+export function teamsTeamScopeFromActivity(
+  activity: Activity,
+): { teamId: string; tenantId: string } | undefined {
+  const channelData = activity.channelData as
+    | {
+        team?: { id?: string; aadGroupId?: string };
+        tenant?: { id?: string };
+      }
+    | undefined;
+  const teamId = channelData?.team?.aadGroupId?.trim();
+  const tenantId = (
+    channelData?.tenant?.id ?? activity.conversation?.tenantId
+  )?.trim();
+  if (!teamId || !tenantId) return undefined;
+  return { teamId, tenantId };
+}
+
+/**
+ * `true` when a `membersAdded` activity is the ECHO of a just-run
+ * auto-install: THIS bot is among the added members, the conversation is a
+ * team scope, and the team's auto-install marker is still fresh. Consumed
+ * by `handleMembershipChange` to downgrade `bot_added` → `members_added`
+ * (suppressing the announced-entry intro) and by the hook to skip a second
+ * installer run. The probe is non-consuming — every bot of the flock can
+ * correlate the same event.
+ */
+export function shouldSuppressAutoInstallIntro(
+  probeAutoInstallMarker: ((teamId: string) => boolean) | undefined,
+  activity: Activity,
+): boolean {
+  if (!probeAutoInstallMarker) return false;
+  const recipientId = activity.recipient?.id;
+  if (!recipientId) return false;
+  if (!(activity.membersAdded ?? []).some((m) => m.id === recipientId)) {
+    return false;
+  }
+  const team = teamsTeamScopeFromActivity(activity);
+  if (!team) return false;
+  return probeAutoInstallMarker(team.teamId);
+}
+
+/** What one hook invocation did — surfaced for logging + tests. */
+export type TeamsAutoInviteHookResult =
+  | 'skipped'
+  | 'suppressed'
+  | 'posted-result-card';
+
+/**
+ * The onboarding hook body: run the installer for the team THIS bot was
+ * just added to and post the result / fallback card into the conversation.
+ * Trigger conditions (all must hold, otherwise `'skipped'`):
+ *   * the added member IS this bot (`recipient` id match) — a human
+ *     joining the team must never trigger installs,
+ *   * the conversation is a team scope with a Graph group id,
+ *   * the team's auto-install marker is NOT fresh (else `'suppressed'` —
+ *     this bot is itself a freshly auto-installed agent app, and only the
+ *     bot that ran the installer posts the summary).
+ */
+export async function runTeamsAutoInviteHook(
+  deps: TeamsAutoInviteDeps,
+  context: TeamsAutoInviteTurnContext,
+): Promise<TeamsAutoInviteHookResult> {
+  const activity = context.activity;
+  const recipientId = activity.recipient?.id;
+  const accounts = activity.membersAdded ?? [];
+  if (!recipientId || !accounts.some((m) => m.id === recipientId)) {
+    return 'skipped';
+  }
+  const team = teamsTeamScopeFromActivity(activity);
+  if (!team) return 'skipped';
+  if (deps.probeAutoInstallMarker(team.teamId)) return 'suppressed';
+
+  const result = await deps.installAgentApps(team);
+  if (result.outcomes.length === 0) return 'skipped';
+  const card = buildAgentAppsResultCard({
+    outcomes: result.outcomes,
+    teamId: team.teamId,
+    tenantId: team.tenantId,
+  });
+  await context.sendActivity({
+    type: ActivityTypes.Message,
+    attachments: [card],
+  });
+  return 'posted-result-card';
+}
+
+/**
+ * "🔄 Prüfen" re-check: re-run the installer and UPDATE the existing card
+ * (the submit's `replyToId` names the card activity); falls back to a
+ * fresh post when the channel rejects the update. Card `data` is
+ * client-editable, so the transport-derived team/tenant of the submit
+ * activity wins over the round-tripped values whenever present.
+ */
+export async function handleTeamsAgentAppsRecheck(
+  deps: TeamsAutoInviteDeps,
+  context: TeamsAutoInviteTurnContext,
+  submitted: AgentAppsRecheckValue,
+): Promise<void> {
+  const transport = teamsTeamScopeFromActivity(context.activity);
+  const request: InstallAgentAppsRequest = transport ?? {
+    teamId: submitted.teamId,
+    tenantId: submitted.tenantId,
+  };
+  const result = await deps.installAgentApps(request);
+  const card = buildAgentAppsResultCard({
+    outcomes: result.outcomes,
+    teamId: request.teamId,
+    tenantId: request.tenantId,
+  });
+  const cardActivityId = context.activity.replyToId;
+  if (cardActivityId) {
+    try {
+      await context.updateActivity({
+        type: ActivityTypes.Message,
+        id: cardActivityId,
+        conversation: context.activity.conversation,
+        attachments: [card],
+      });
+      return;
+    } catch {
+      // Some contexts reject activity updates — fall through to a fresh post.
+    }
+  }
+  await context.sendActivity({
+    type: ActivityTypes.Message,
+    attachments: [card],
+  });
 }
