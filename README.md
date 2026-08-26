@@ -70,7 +70,11 @@ the channel installs the listed omadia agent apps into a team automatically
 when one of its bots is added there. The install path goes through the
 `teamsProvisioner@1` service of the M365 connector and needs two additional
 Graph **application permissions** on the shared app registration (admin
-consent required):
+consent required — and note that previously granted consent does **not**
+stretch to cover newly added scopes: extending an existing app
+registration's permissions requires admin consent to be **re-granted** on
+that registration, otherwise `/appCatalogs/teamsApps` keeps answering `403`
+no matter how often the middleware restarts):
 
 - `AppCatalog.ReadWrite.All` — resolve the agent app in the tenant app
   catalog (`/appCatalogs/teamsApps`)
@@ -86,8 +90,10 @@ URL (contains only the public client id, never a secret):
 https://login.microsoftonline.com/<tenant-id>/adminconsent?client_id=<application-client-id>
 ```
 
-Two field-tested gotchas (from the M365 connector's provisioning work — see
-its `docs/teams-provisioner.md`):
+Two field-tested gotchas (from the M365 connector's provisioning work — the
+consent lessons live in the connector's `README.md`, section "Renewed admin
+consent"; its `docs/teams-provisioner.md` documents the capability contract
+itself):
 
 - **Portal/CLI consent sometimes silently fails to apply** (observed with
   `az ad app permission admin-consent`: the command succeeds, Graph keeps

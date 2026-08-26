@@ -11,6 +11,48 @@ export { activate } from './plugin.js';
 // + the answer-card tests under test/)
 // ---------------------------------------------------------------------------
 export { TeamsBot, teamsSessionScope } from './teamsBot.js';
+
+// ---------------------------------------------------------------------------
+// #860 W2 — auto-invite agent apps (issues #20/#21/#22). Config surface,
+// installer + state primitives, onboarding hook and card builders —
+// re-exported for the kernel/provisioner call-sites and the tests under
+// tests/ (scripts/test.mjs runs them against the built dist/).
+// ---------------------------------------------------------------------------
+export {
+  parseTeamsAgentAppsConfig,
+  TeamsAgentAppsConfigError,
+  type TeamsAgentApp,
+} from './teamsAgentApps.js';
+export {
+  AUTO_INSTALL_MARKER_TTL_MS,
+  CONSENT_NEGATIVE_CACHE_TTL_MS,
+  DEFAULT_THROTTLE_WAIT_MS,
+  isConsentMissingError,
+  isProvisioningThrottledError,
+  MAX_RUN_SLEEP_BUDGET_MS,
+  MAX_THROTTLE_RETRIES,
+  MAX_THROTTLE_WAIT_MS,
+  TeamsAgentInstaller,
+  TeamsAutoInstallMarker,
+  TeamsConsentNegativeCache,
+  teamsAgentAppLogLabel,
+  type AgentAppFallbackReason,
+  type AgentAppFailureReason,
+  type AgentAppInstallOutcome,
+  type InstallAgentAppsRequest,
+  type TeamsAgentAppTarget,
+  type TeamsAgentInstallerOptions,
+  type TeamsAgentInstallResult,
+} from './teamsAgentInstaller.js';
+export {
+  handleTeamsAgentAppsRecheck,
+  runTeamsAutoInviteHook,
+  shouldSuppressAutoInstallIntro,
+  teamsTeamScopeFromActivity,
+  type TeamsAutoInviteDeps,
+  type TeamsAutoInviteHookResult,
+  type TeamsAutoInviteTurnContext,
+} from './teamsBot.js';
 export {
   TeamsAttachmentStore,
   type TeamsAttachmentStoreOptions,
@@ -89,17 +131,22 @@ export {
 // ---------------------------------------------------------------------------
 export {
   aiLabelEntity,
+  buildAgentAppsResultCard,
   buildAnswerCard,
   buildChoiceAskCard,
   buildFollowUpsOnlyCard,
   buildSlotPickerCard,
   buildTopicAskCard,
+  parseAgentAppsRecheckValue,
   parseBookSlotValue,
   parseChoiceAskValue,
   parseFollowUpValue,
   parseFreshCheckValue,
   parseTopicDecisionValue,
   stripFoldedAiDisclosure,
+  AGENT_APPS_RECHECK_VALUE_TYPE,
+  type AgentAppsRecheckValue,
+  type BuildAgentAppsCardInput,
   type BuildAnswerCardInput,
   type BuildChoiceAskCardInput,
   type FreshCheckValue,

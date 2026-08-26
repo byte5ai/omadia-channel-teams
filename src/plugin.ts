@@ -44,6 +44,7 @@ import type { ChatAgentBundle } from '@omadia/orchestrator';
 import type {
   EmbeddingClient,
   TeamsConfigShim,
+  TeamsProvisionerAccessor,
   TopicDetector,
   TurnContextModule,
 } from './kernel-types.js';
@@ -71,6 +72,9 @@ import {
 } from './teamsBotsConfig.js';
 import { createTeamsRouter, type TeamsRouterBotCredentials } from './messagesRouter.js';
 import { createTeamsUiRouter } from './uiRouter.js';
+import { parseTeamsAgentAppsConfig } from './teamsAgentApps.js';
+import { TeamsAgentInstaller } from './teamsAgentInstaller.js';
+import type { TeamsAutoInviteDeps } from './teamsBot.js';
 
 /**
  * Minimal shape of the kernel's UiRouteCatalog service. Declared here
@@ -520,6 +524,49 @@ export async function activate(
         conductorAwaitResolver.resolve(awaitId, responderId, approved)
     : undefined;
 
+  // --- #860 W2 — auto-invite agent apps (issue #20/#21/#22) -----------
+  // Late-resolved teamsProvisioner@1 (same pattern as CHANNEL_RESOLVER_SERVICE
+  // above): resolve with the BARE registry key — 'teamsProvisioner@1' is the
+  // CAPABILITY name for the manifest, never a lookup key. Feature is
+  // completely OFF when teams_agent_apps is empty/absent; when it is
+  // configured but the service is not published (older / no M365 connector),
+  // degrade gracefully with a log line instead of blocking activation.
+  // A malformed teams_agent_apps value throws here (TeamsAgentAppsConfigError)
+  // — loud at activate() like teams_bots, never a silently-empty list.
+  const teamsAgentApps = parseTeamsAgentAppsConfig(
+    ctx.config.get('teams_agent_apps'),
+  );
+  let autoInvite: TeamsAutoInviteDeps | undefined;
+  if (teamsAgentApps.length > 0) {
+    const teamsProvisioner = ctx.services.get<TeamsProvisionerAccessor>(
+      'teamsProvisioner',
+    );
+    if (teamsProvisioner) {
+      const agentInstaller = new TeamsAgentInstaller({
+        provisioner: teamsProvisioner,
+        apps: teamsAgentApps,
+        // Installer log lines carry slug/displayName labels only — never
+        // app ids or scope names (teamsBotLogLabel policy).
+        log: (msg) => core.log('info', msg),
+      });
+      autoInvite = {
+        installAgentApps: (request) =>
+          agentInstaller.installAgentApps(request),
+        probeAutoInstallMarker: (teamId) =>
+          agentInstaller.autoInstallMarker.probe(teamId),
+      };
+      core.log(
+        'info',
+        `Teams auto-invite active for ${String(teamsAgentApps.length)} agent app(s) via teamsProvisioner@1`,
+      );
+    } else {
+      core.log(
+        'info',
+        'teams_agent_apps configured but teamsProvisioner@1 not published — auto-invite disabled (needs the M365 connector with the Teams provisioner)',
+      );
+    }
+  }
+
   const bot = new TeamsBot(
     chatAgent,
     conversationHistoryStore,
@@ -538,6 +585,7 @@ export async function activate(
     resolveEmailByAad,
     resolveConductorAwait,
     groupPrimitives,
+    autoInvite,
   );
 
   if (resolveChatAgentForActivity) {
