@@ -63,6 +63,66 @@ degrades silently to the Bot-Framework-derived labels (one log line per
 failure class explains what is missing). Resolution is cached (10 min
 TTL) and never blocks the dashboard render.
 
+### Optional: auto-invite agent apps into a team (Graph consent)
+
+With `teams_agent_apps` configured (see [`manifest.yaml`](manifest.yaml)),
+the channel installs the listed omadia agent apps into a team automatically
+when one of its bots is added there. The install path goes through the
+`teamsProvisioner@1` service of the M365 connector and needs two additional
+Graph **application permissions** on the shared app registration (admin
+consent required — and note that previously granted consent does **not**
+stretch to cover newly added scopes: extending an existing app
+registration's permissions requires admin consent to be **re-granted** on
+that registration, otherwise `/appCatalogs/teamsApps` keeps answering `403`
+no matter how often the middleware restarts):
+
+- `AppCatalog.ReadWrite.All` — resolve the agent app in the tenant app
+  catalog (`/appCatalogs/teamsApps`)
+- `TeamsAppInstallation.ReadWriteForTeam.All` — install the catalog app into
+  the target team (`POST /teams/{team-id}/installedApps`)
+
+Grant them in the Azure Portal (**API permissions → Add a permission →
+Microsoft Graph → Application permissions**, then **Grant admin consent
+for &lt;Tenant&gt;**) or send an admin through the tenant-wide admin-consent
+URL (contains only the public client id, never a secret):
+
+```
+https://login.microsoftonline.com/<tenant-id>/adminconsent?client_id=<application-client-id>
+```
+
+Two field-tested gotchas (from the M365 connector's provisioning work — the
+consent lessons live in the connector's `README.md`, section "Renewed admin
+consent"; its `docs/teams-provisioner.md` documents the capability contract
+itself):
+
+- **Portal/CLI consent sometimes silently fails to apply** (observed with
+  `az ad app permission admin-consent`: the command succeeds, Graph keeps
+  answering `403`). In that case grant the app roles directly via REST
+  `appRoleAssignments`, one call per missing permission, on the app's own
+  service principal:
+
+  ```
+  POST /servicePrincipals/{app-sp-object-id}/appRoleAssignments
+  {
+    "principalId": "{app-sp-object-id}",
+    "resourceId":  "{graph-sp-object-id}",
+    "appRoleId":   "{app-role-id-of-the-missing-permission}"
+  }
+  ```
+
+  Resolve the Microsoft Graph service principal's object id (`resourceId`)
+  via `GET /servicePrincipals(appId='00000003-0000-0000-c000-000000000000')`;
+  verify with `GET /servicePrincipals/{app-sp-object-id}/appRoleAssignments`.
+- **Restart after consent.** Acquired tokens are cached; newly consented app
+  roles only appear in a *fresh* token. Restart the middleware (or wait for
+  token expiry) after granting consent — otherwise the `403`s persist even
+  though consent is in place.
+
+Without consent the feature degrades gracefully: nothing throws on the
+message path — the bot posts a fallback card with per-agent install deep
+links (`https://teams.microsoft.com/l/app/<teamsAppId>`). Deep links carry
+only public Teams app ids, never credentials.
+
 ## Build, typecheck & test
 
 ```bash

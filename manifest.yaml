@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.20.0"
+  version: "0.21.0"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für Omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -96,6 +96,37 @@ setup:
         appear — get it via Teams → Team settings → **Get link to team** (groupId
         query param) or Graph Explorer (`/teams`). Empty → log-only.
       - Attachment prefix, topic URL and directory label have safe defaults.
+
+      ### 4. Auto-invite agent apps (optional Graph consent)
+      With **Agent Apps (JSON)** (`teams_agent_apps`) configured, the channel
+      auto-installs the listed omadia agent apps into a team when one of its
+      bots is added there. That needs two extra Graph **application
+      permissions** on the shared app registration (admin consent required —
+      note that previously granted consent does **not** stretch to newly
+      added scopes: re-grant admin consent on the existing registration,
+      otherwise Graph keeps answering 403):
+
+      - `AppCatalog.ReadWrite.All` — resolve the agent app in the tenant
+        app catalog (`/appCatalogs/teamsApps`)
+      - `TeamsAppInstallation.ReadWriteForTeam.All` — install the catalog
+        app into the target team (`POST /teams/{team-id}/installedApps`)
+
+      Grant them under **API permissions → Add a permission → Microsoft
+      Graph → Application permissions**, then **Grant admin consent for
+      <Tenant>** — or send an admin through the tenant-wide admin-consent
+      URL (public client id only, never a secret):
+      `https://login.microsoftonline.com/<tenant-id>/adminconsent?client_id=<application-client-id>`
+
+      Two field-tested gotchas: portal/CLI consent sometimes silently fails
+      to apply (command succeeds, Graph keeps answering 403) — then grant
+      the app roles directly via REST `POST
+      /servicePrincipals/{app-sp-object-id}/appRoleAssignments`, one call
+      per missing permission. And acquired tokens are cached: **restart the
+      middleware after granting consent**, or the 403s persist even though
+      consent is in place. Without consent the feature degrades gracefully —
+      the bot posts a fallback card with per-agent install deep links
+      (`https://teams.microsoft.com/l/app/<teamsAppId>`, public app ids
+      only).
     de: |
       ## Microsoft Teams verbinden
 
@@ -151,11 +182,49 @@ setup:
         erscheinen — via Teams → Team-Einstellungen → **Link zum Team abrufen**
         (groupId-Parameter) oder Graph Explorer (`/teams`). Leer → nur Log.
       - Attachment-Präfix, Topic-URL und Directory-Label haben sichere Defaults.
+
+      ### 4. Agent-Apps automatisch einladen (optionaler Graph-Consent)
+      Mit konfiguriertem **Agent Apps (JSON)** (`teams_agent_apps`)
+      installiert der Channel die gelisteten omadia-Agent-Apps automatisch
+      in ein Team, sobald einer seiner Bots dort hinzugefügt wird. Dafür
+      braucht die geteilte App-Registration zwei zusätzliche
+      Graph-**Application-Permissions** (Admin-Consent erforderlich —
+      Achtung: bereits erteilter Consent deckt neu hinzugefügte Scopes
+      **nicht** ab; der Admin-Consent muss auf der bestehenden Registration
+      erneut erteilt werden, sonst antwortet Graph weiter 403):
+
+      - `AppCatalog.ReadWrite.All` — Agent-App im Tenant-App-Katalog
+        auflösen (`/appCatalogs/teamsApps`)
+      - `TeamsAppInstallation.ReadWriteForTeam.All` — Katalog-App ins
+        Ziel-Team installieren (`POST /teams/{team-id}/installedApps`)
+
+      Vergabe unter **API permissions → Add a permission → Microsoft Graph
+      → Application permissions**, danach **Grant admin consent for
+      <Tenant>** — oder einen Admin über die tenant-weite Admin-Consent-URL
+      schicken (nur die öffentliche Client-ID, nie ein Secret):
+      `https://login.microsoftonline.com/<tenant-id>/adminconsent?client_id=<application-client-id>`
+
+      Zwei Praxis-Fallen: Portal-/CLI-Consent greift manchmal
+      stillschweigend nicht (Kommando meldet Erfolg, Graph antwortet weiter
+      403) — dann die App-Roles direkt via REST `POST
+      /servicePrincipals/{app-sp-object-id}/appRoleAssignments` vergeben,
+      ein Call pro fehlender Permission. Und: Tokens werden gecacht —
+      **nach dem Consent die Middleware neu starten**, sonst bleiben die
+      403s trotz erteiltem Consent bestehen. Ohne Consent degradiert das
+      Feature sauber — der Bot postet eine Fallback-Card mit
+      Install-Deep-Links pro Agent
+      (`https://teams.microsoft.com/l/app/<teamsAppId>`, nur öffentliche
+      App-IDs).
   fields:
     - key: "teams_bots"
       type: "string"
       label: "Teams Bots (JSON)"
       help: "Optionale Multi-Bot-Konfiguration (#860): JSON-Array von Bot-Identitäten [{botSlug, appId, tenantId, appPasswordSecretRef, appType?, displayName?}]. appPasswordSecretRef referenziert das Vault-Secret mit dem App-Passwort des Bots (niemals das Passwort inline). appType: MultiTenant | SingleTenant | UserAssignedMSI, Default SingleTenant. Eintrag 0 ist der Default-Bot (bedient auch /api/messages + /api/teams/messages); jeder Bot empfängt unter /api/teams/<botSlug>/messages. Leer lassen → Single-Bot-Betrieb über die Credentials der Microsoft-365-Integration (microsoft_app_id / microsoft_tenant_id / microsoft_app_password, App-Typ aus MICROSOFT_APP_TYPE, Default MultiTenant)."
+      required: false
+    - key: "teams_agent_apps"
+      type: "string"
+      label: "Auto-Invite Agenten-Apps (JSON)"
+      help: "Optionale Auto-Invite-Konfiguration (#860 W2): JSON-Array [{agentSlug, teamsAppExternalId, teamsAppId?, displayName?}]. Wird einer unserer Bots in ein Team eingeladen, installiert er die gelisteten Agenten-Apps automatisch über die teamsProvisioner@1-Capability des M365-Connectors (Graph-Consent siehe Setup-Guide Abschnitt 4). agentSlug ist der Omadia-Conductor-Slug (nur Label/Status, kein Routing). teamsAppId (Graph-Katalog-ID) überspringt den Katalog-Lookup; ohne sie wird getCatalogApp des Connectors (>= 0.3.1) genutzt, sofern vorhanden. Alle IDs sind öffentliche App-IDs — niemals Secrets. Leer lassen → Feature komplett aus."
       required: false
     - key: "teams_sso_connection_name"
       type: "string"
@@ -269,6 +338,12 @@ requires:
 #                                    without MS365 setup (the long-standing
 #                                    S+11 note this block replaces).
 #   - `routinesIntegration@1`      — routine cards are simply not rendered.
+#   - `teamsProvisioner@1`         — #860 W2 auto-invite: published by the M365
+#                                    connector's Teams provisioner. Resolved
+#                                    with the BARE key 'teamsProvisioner'
+#                                    (declaredServiceNames() strips the
+#                                    version); absent → auto-invite disabled
+#                                    with a log line, activation unaffected.
 #   - `topicDetector@1`            — history passes through undetected.
 #
 # NOT DEGRADABLE, BUT KERNEL-PUBLISHED — `anthropicClient@1`, `turnContext@1`
@@ -292,6 +367,7 @@ optional_requires:
   - "graphTenantId@1"
   - "microsoft365.graph@1"
   - "routinesIntegration@1"
+  - "teamsProvisioner@1"
   - "tigrisStore@1"
   - "topicDetector@1"
   - "turnContext@1"

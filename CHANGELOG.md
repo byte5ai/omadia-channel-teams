@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.21.0
+
+Auto-Invite für Agenten-Apps (epic byte5ai/omadia#860, Wave W2 — Refs #20 #21
+#22):
+
+- **`teams_agent_apps[]` config surface** (`teamsAgentApps.ts`): JSON-Array
+  `{agentSlug, teamsAppExternalId, teamsAppId?, displayName?}` — als echtes
+  Array (Install-Registry) oder JSON-String (Setup-Wizard). Nur öffentliche
+  App-IDs, Inline-Credentials werden hart abgelehnt (teams_bots-Präzedenz).
+  Leeres/fehlendes Feld → Feature komplett aus, null Verhaltensänderung für
+  Bestandsdeployments.
+- **`TeamsAgentInstaller`** (`teamsAgentInstaller.ts`): installiert die
+  gelisteten Agenten-Apps via `teamsProvisioner@1` (M365-Connector) in ein
+  Team — nie eigene Graph-Calls. Katalog-Auflösung: konfigurierte
+  `teamsAppId` → feature-detektiertes `getCatalogApp` (Connector >= 0.3.1,
+  nie vorausgesetzt) → typisiertes `not-in-catalog`-Fallback. Fehler-Mapping
+  ohne Throw auf dem Message-Pfad: 403 → Fallback mit `missingScopes` +
+  Tenant-Negative-Cache (15 min TTL, Scope-Union), 409 `already-existed` →
+  Erfolg, 429 → begrenzter Retry mit `Retry-After`-Hint; lange Hints
+  (> 30 s) sind non-retryable (Backpressure-Vertrag des Connectors), ein
+  gedrosselter Run short-circuitet die restlichen Apps (429 ist
+  tenant-weit), Gesamt-Sleep pro Run gedeckelt (60 s Budget).
+- **Onboarding-Hook** (`teamsBot.ts`): wird einer unserer Bots in ein Team
+  eingeladen (`membersAdded`, Team-Scope mit `aadGroupId`), läuft der
+  Installer und postet eine Ergebnis-Card. Frisch installierte Agenten-Bots
+  unterdrücken ihr Default-Intro über den In-Memory-Marker (2 min TTL) —
+  nur der installierende Bot postet die Summary (`bot_added` wird zu
+  `members_added` herabgestuft).
+- **Ergebnis-/Fallback-Card** (`teamsCard.ts`): pro App eine Statuszeile,
+  unterscheidet explizit „Admin-Zustimmung fehlt" (mit Scope-Liste) von
+  „nicht im App-Katalog"; Install-Deep-Links
+  `https://teams.microsoft.com/l/app/<teamsAppId>` (nur öffentliche IDs)
+  und „🔄 Prüfen"-Re-Check, der den Installer erneut ausführt und die Card
+  in-place aktualisiert. Team/Tenant der Prüfung kommen transportseitig aus
+  `channelData` — Card-Daten sind client-editierbar und zählen nur als
+  Fallback.
+- **Wiring** (`plugin.ts`/`manifest.yaml`): `teamsProvisioner@1` wird spät
+  über die Service-Registry aufgelöst (bare key, CHANNEL_RESOLVER-Muster)
+  und unter `optional_requires:` deklariert — ohne Connector degradiert das
+  Feature mit einer Log-Zeile, die Aktivierung bleibt unberührt. Neues
+  Setup-Feld `teams_agent_apps` (type string, wie `teams_bots`).
+- **Setup-Guide/README**: Consent-Abschnitt für `AppCatalog.ReadWrite.All`
+  + `TeamsAppInstallation.ReadWriteForTeam.All` (Admin-Consent-URL, REST-
+  `appRoleAssignments`-Fallback, Restart-nach-Consent, Renewed-Consent-
+  Regel) in beiden Sprachvarianten.
+- Deploy-Hinweis: Katalog-Lookup ohne konfigurierte `teamsAppId` braucht
+  den M365-Connector >= 0.3.1 (`getCatalogApp`, feature-detected); ältere
+  Connector-Versionen degradieren sauber auf die Fallback-Card.
+
 ## 0.20.0
 
 Multi-Bot-Fundament (epic byte5ai/omadia#860, Wave W0a — Refs #15 #16 #17 #18 #19):
