@@ -15,6 +15,7 @@ import {
 } from '@omadia/channel-sdk';
 import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
+import { pickChatAgentForTurn } from './agentForTurn.js';
 import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
@@ -262,14 +263,16 @@ export class TeamsBot extends TeamsActivityHandler {
      * contract.
      */
     /**
-     * Resolves a key to a ChatAgent. Returns `decision: 'bound'` ONLY
-     * when an explicit binding exists for the given key — `'fallback'`
-     * means "no specific binding, the platform fallback Agent would
-     * answer", `'reject'` means "no binding and no fallback configured".
-     * The bot tries conversation-id first; on 'bound' it uses that
-     * agent; on 'fallback' / 'reject' it tries recipient-id; if still
-     * not 'bound', accepts the 'fallback' decision from any of the
-     * tried keys.
+     * Resolves a key to a ChatAgent. Returns `decision: 'bound'` when an
+     * explicit binding OR the agent's own provisioned identity matches the
+     * key — `'fallback'` means "nothing matched, the platform fallback
+     * Agent would answer", `'reject'` means "nothing matched and no
+     * fallback configured".
+     *
+     * `exclusive` marks the one case that outranks everything: the key IS
+     * this agent's provisioned bot. See {@link pickChatAgentForTurn} for the
+     * full precedence order — this callback answers about a single key and
+     * has no opinion about which key wins.
      */
     private readonly resolveChatAgentForActivity?: (input: {
       readonly channelType: 'teams';
@@ -278,6 +281,7 @@ export class TeamsBot extends TeamsActivityHandler {
     }) => {
       readonly decision: 'bound' | 'fallback' | 'reject';
       readonly chatAgent?: ChatAgent;
+      readonly exclusive?: boolean;
     },
     /**
      * Observer that records every inbound conversation so the
@@ -560,11 +564,17 @@ export class TeamsBot extends TeamsActivityHandler {
    * changes (binding edit mid-turn). Called once at the top of
    * handleMessage.
    *
-   * `channelKey` is the Teams bot's identity (`activity.recipient.id`,
-   * typically `28:<bot-app-id>`). This matches what the Teams plugin
-   * publishes via its `ChannelKeyDirectory` contribution, so what the
-   * operator picked in `/operator/channels` IS what the resolver
-   * matches at runtime.
+   * TWO keys are probed, and probing order is deliberately NOT precedence
+   * order. The bot identity (`activity.recipient.id`, `28:<bot-app-id>`) goes
+   * first because it is the only key that can come back exclusive — a bot
+   * the platform provisioned to BE one agent. Failing that, the conversation
+   * binding wins, then the bot-level catch-all, then the platform fallback.
+   * {@link pickChatAgentForTurn} owns that rule and its tests.
+   *
+   * Both keys are matched by exact string equality, so they are normalized
+   * through `teamsBotKey()` — the same helper the `ChannelKeyDirectory`
+   * contribution publishes with, so what the operator picked in
+   * `/operator/channels` IS what the resolver matches at runtime.
    */
   private resolveChatAgentForTurn(activity: TurnContext['activity']): void {
     if (!this.resolveChatAgentForActivity) {
@@ -573,9 +583,10 @@ export class TeamsBot extends TeamsActivityHandler {
     }
     const conversationId = activity.conversation?.id;
     // Normalize the bot-identity key through the canonical helper: the
-    // directory publishes `teamsBotKey(appId)` (lowercase-normalized), so
-    // the runtime lookup must use the exact same normalization or a
-    // mixed-casing `recipient.id` could miss the operator's binding.
+    // directory publishes `teamsBotKey(appId)` (lowercase-normalized) and the
+    // platform projects provisioned identities the same way, so the runtime
+    // lookup must use the exact same normalization or a mixed-casing
+    // `recipient.id` could miss both the binding and the identity.
     const rawRecipientId =
       typeof activity.recipient?.id === 'string'
         ? activity.recipient.id
@@ -588,35 +599,18 @@ export class TeamsBot extends TeamsActivityHandler {
       this.currentChatAgent = undefined;
       return;
     }
-    // Precedence: conversation-scoped binding wins over bot-level
-    // catch-all. Operator binds a specific Teams channel to an Agent;
-    // every other channel falls through to the recipient.id binding;
-    // if neither has an explicit binding we accept the registry's
-    // platform fallback Agent (still better than the legacy default).
-    const keysToTry: string[] = [];
-    if (conversationId) keysToTry.push(conversationId);
-    if (recipientId && recipientId !== conversationId)
-      keysToTry.push(recipientId);
-
-    let fallbackCandidate: ChatAgent | undefined;
+    const resolveForActivity = this.resolveChatAgentForActivity;
     try {
-      for (const key of keysToTry) {
-        const decision = this.resolveChatAgentForActivity({
-          channelType: 'teams',
-          channelKey: key,
-          conversationId: conversationId ?? 'unknown',
-        });
-        if (decision.decision === 'bound' && decision.chatAgent) {
-          this.currentChatAgent = decision.chatAgent;
-          return;
-        }
-        if (decision.decision === 'fallback' && decision.chatAgent) {
-          // Remember the platform fallback but keep checking less-specific
-          // keys — recipient.id might still be explicitly bound.
-          fallbackCandidate ??= decision.chatAgent;
-        }
-      }
-      this.currentChatAgent = fallbackCandidate;
+      this.currentChatAgent = pickChatAgentForTurn({
+        ...(conversationId ? { conversationId } : {}),
+        ...(recipientId ? { botKey: recipientId } : {}),
+        resolve: (channelKey) =>
+          resolveForActivity({
+            channelType: 'teams',
+            channelKey,
+            conversationId: conversationId ?? 'unknown',
+          }),
+      });
     } catch (err) {
       console.error(
         `[teams] channelResolver threw (conv=${conversationId?.slice(0, 16) ?? '-'}, recipient=${recipientId?.slice(0, 16) ?? '-'}…) — falling back to default agent:`,

@@ -514,11 +514,12 @@ export async function activate(
     : undefined;
 
   // --- Per-turn Agent resolution (Phase A) -----------------------------
-  // Late-resolved channelResolver@1: when the multi-orchestrator
-  // registry is active AND the operator bound this Teams bot to an
-  // Agent in /operator/channels, each inbound turn is routed to that
-  // Agent. Without the resolver service the bot falls back to the
-  // legacy chatAgent@1 (the `chatAgent` constant captured above).
+  // Late-resolved channelResolver@1: when the multi-orchestrator registry
+  // is active, each inbound turn is routed to the Agent that owns the key —
+  // either because the operator bound it in /operator/channels, or because
+  // the bot IS that Agent (provisioned identity, reported as `exclusive`).
+  // Without the resolver service the bot falls back to the legacy
+  // chatAgent@1 (the `chatAgent` constant captured above).
   const channelResolver = ctx.services.get<ChannelBindingResolver>(
     CHANNEL_RESOLVER_SERVICE,
   );
@@ -526,14 +527,23 @@ export async function activate(
     ? (input: { channelType: 'teams'; channelKey: string }): {
         decision: 'bound' | 'fallback' | 'reject';
         chatAgent?: ChatAgent;
+        exclusive?: boolean;
       } => {
         const decision = channelResolver.resolve(
           input.channelType,
           input.channelKey,
         );
+        // `exclusive` is additive on the platform side and this plugin is
+        // built against whichever @omadia/channel-sdk the host tree ships,
+        // which may predate the field. Read it structurally so an older SDK
+        // typing degrades to "not exclusive" (the pre-existing behaviour)
+        // instead of failing the build.
+        const exclusive =
+          (decision as { exclusive?: boolean }).exclusive === true;
         return {
           decision: decision.decision,
           ...(decision.chatAgent ? { chatAgent: decision.chatAgent } : {}),
+          ...(exclusive ? { exclusive: true } : {}),
         };
       }
     : undefined;
