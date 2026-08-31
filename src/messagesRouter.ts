@@ -302,6 +302,37 @@ export function createTeamsRouter(deps: TeamsRouterDeps): TeamsRouterArtifacts {
     runtime.adapter.process(req, res, (context) => deps.bot.run(context));
   };
 
+  /**
+   * Which bot's credentials authenticate a turn that arrived on a no-slug
+   * alias (`/messages`, `/teams/messages`).
+   *
+   * The alias carries no slug, so the only attribution available is the
+   * activity's `recipient.id` (`28:<appId>`) — the bot Teams addressed. In a
+   * multi-bot deployment every Azure registration still pointed at the legacy
+   * URL would otherwise be authenticated with `teams_bots[0]`'s credential
+   * set and fail with `Invalid AppId passed on token` on every single turn.
+   *
+   * SAFETY: the body is unauthenticated at this point, so this only SELECTS
+   * which credential set validates the request — it never grants anything.
+   * `adapter.process` still runs full Bot-Framework JWT validation against
+   * the chosen bot's own appId/password, so a forged `recipient.id` can at
+   * most route the turn to a bot whose credentials will reject it (401).
+   *
+   * Falls back to the default bot when the attribution is absent (legacy
+   * callers, health probes) or names a bot that is not configured — an
+   * app-registration rotation window must yield the Bot Framework's own 401
+   * rather than a silent black hole.
+   */
+  const runtimeForAliasRequest = (req: Request): TeamsBotRuntime => {
+    const recipientId = (
+      req.body as { recipient?: { id?: unknown } } | undefined
+    )?.recipient?.id;
+    if (typeof recipientId !== 'string') return defaultBotRuntime;
+    const appId = parseTeamsBotKey(recipientId);
+    if (appId === undefined) return defaultBotRuntime;
+    return getBotRuntimeByAppId(appId) ?? defaultBotRuntime;
+  };
+
   const router = Router();
 
   // Route surface (#860 W0a). The kernel mounts this router at EXACTLY the
@@ -317,14 +348,17 @@ export function createTeamsRouter(deps: TeamsRouterDeps): TeamsRouterArtifacts {
   //   /teams/:botSlug/messages   → that bot's OWN adapter/credentials,
   //                                404 for unknown slugs
   //
-  // Both no-slug paths are aliases of the default bot so no messaging
-  // endpoint registered on an existing Azure bot breaks, whichever of the
-  // two documented spellings its operator followed.
+  // Both no-slug paths exist so no messaging endpoint registered on an
+  // existing Azure bot breaks, whichever of the two documented spellings its
+  // operator followed. Several Azure bot registrations may legitimately point
+  // at the SAME no-slug URL (that is what "the endpoint existing bots point
+  // at today" means), so these two cannot serve one fixed bot: they dispatch
+  // on the activity's own bot attribution — see `runtimeForAliasRequest`.
   router.post('/messages', (req: Request, res: Response) => {
-    processTurn(defaultBotRuntime, req, res);
+    processTurn(runtimeForAliasRequest(req), req, res);
   });
   router.post('/teams/messages', (req: Request, res: Response) => {
-    processTurn(defaultBotRuntime, req, res);
+    processTurn(runtimeForAliasRequest(req), req, res);
   });
   router.post('/teams/:botSlug/messages', (req: Request, res: Response) => {
     // Express 5 types params as string | string[] (repeatable patterns);

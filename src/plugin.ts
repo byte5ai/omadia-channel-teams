@@ -68,6 +68,7 @@ import {
 } from './teamsBotIdentity.js';
 import {
   legacyTeamsBotFromScalars,
+  mergeLegacyTeamsBot,
   parseTeamsBotsConfig,
 } from './teamsBotsConfig.js';
 import { createTeamsRouter, type TeamsRouterBotCredentials } from './messagesRouter.js';
@@ -128,26 +129,57 @@ export async function activate(
     'teams_directory_label',
   );
   const configuredBots = parseTeamsBotsConfig(ctx.config.get('teams_bots'));
-  const teamsBots: readonly TeamsBotIdentity[] =
+  // The deployment's ORIGINAL bot, from the microsoft365 integration chain.
+  // With no `teams_bots[]` it IS the deployment, so the scalars are REQUIRED
+  // (unchanged MissingConfigError). Alongside `teams_bots[]` it is optional
+  // and MERGED IN rather than discarded: dropping it is what orphaned the
+  // bot already serving `/api/messages` the moment the first agent was
+  // provisioned, leaving every one of its turns to fail Bot-Framework
+  // authentication with `Invalid AppId passed on token`.
+  const legacyScalarBot =
     configuredBots.length > 0
-      ? configuredBots
-      : [
-          legacyTeamsBotFromScalars({
-            appId: ctx.config.require<string>('microsoft_app_id'),
-            tenantId: ctx.config.require<string>('microsoft_tenant_id'),
-            appTypeEnv: process.env['MICROSOFT_APP_TYPE'],
-            displayName: channelDirectoryDisplayLabel,
-          }),
-        ];
+      ? optionalLegacyTeamsBot(ctx, channelDirectoryDisplayLabel)
+      : legacyTeamsBotFromScalars({
+          appId: ctx.config.require<string>('microsoft_app_id'),
+          tenantId: ctx.config.require<string>('microsoft_tenant_id'),
+          appTypeEnv: process.env['MICROSOFT_APP_TYPE'],
+          displayName: channelDirectoryDisplayLabel,
+        });
+  const candidateBots = mergeLegacyTeamsBot(configuredBots, legacyScalarBot);
   // Resolve each bot's app password through the vault — config only ever
   // carries the secret NAME (`appPasswordSecretRef`), never the value.
+  //
+  // The MERGED legacy bot is best-effort: it is inferred from integration
+  // config rather than named by the operator, so a deployment that has no
+  // Teams bot password under that name must keep activating (it simply has
+  // no legacy bot). Every operator-listed bot stays strict — a missing
+  // secret there is a real misconfiguration and must still fail loudly.
   const botCredentials: TeamsRouterBotCredentials[] = [];
-  for (const identity of teamsBots) {
+  for (const identity of candidateBots) {
+    const isMergedLegacyBot =
+      configuredBots.length > 0 && identity === legacyScalarBot;
+    if (isMergedLegacyBot) {
+      const appPassword = await ctx.secrets.get(identity.appPasswordSecretRef);
+      if (appPassword === undefined) {
+        core.log(
+          'info',
+          `[channels] no vault secret '${identity.appPasswordSecretRef}' — the pre-provisioning Teams bot is not served (its Azure registration, if any, will 401 on /api/messages)`,
+        );
+        continue;
+      }
+      botCredentials.push({ identity, appPassword });
+      continue;
+    }
     botCredentials.push({
       identity,
       appPassword: await ctx.secrets.require(identity.appPasswordSecretRef),
     });
   }
+  // Identities the channel actually serves — a legacy bot dropped just above
+  // must not linger in the directory or the router's slug table.
+  const teamsBots: readonly TeamsBotIdentity[] = botCredentials.map(
+    (credentials) => credentials.identity,
+  );
   const defaultBot = getDefaultTeamsBot(teamsBots);
   const defaultBotCredentials = botCredentials[0];
   if (defaultBot === undefined || defaultBotCredentials === undefined) {
@@ -893,6 +925,30 @@ export async function activate(
 // ---------------------------------------------------------------------------
 // TeamsConfigShim — read narrow process.env subset
 // ---------------------------------------------------------------------------
+
+/**
+ * The legacy scalar identity as an OPTIONAL bot — used when `teams_bots[]` is
+ * already populated, so the microsoft365 integration's scalars must not be
+ * mandatory. Returns undefined unless BOTH scalars are present; a half-set
+ * pair cannot describe a bot.
+ *
+ * `mergeLegacyTeamsBot` decides whether the result is actually adopted (it is
+ * skipped when the operator already lists that appId or took the slug).
+ */
+function optionalLegacyTeamsBot(
+  ctx: PluginContext,
+  displayName: string | undefined,
+): TeamsBotIdentity | undefined {
+  const appId = ctx.config.get<string>('microsoft_app_id')?.trim();
+  const tenantId = ctx.config.get<string>('microsoft_tenant_id')?.trim();
+  if (!appId || !tenantId) return undefined;
+  return legacyTeamsBotFromScalars({
+    appId,
+    tenantId,
+    appTypeEnv: process.env['MICROSOFT_APP_TYPE'],
+    displayName,
+  });
+}
 
 function readTeamsConfigFromEnv(): TeamsConfigShim {
   // #860 W0a — MICROSOFT_APP_TYPE is no longer read here: the app type is
