@@ -238,3 +238,48 @@ export function legacyTeamsBotFromScalars(
       asTrimmedString(scalars.displayName) ?? LEGACY_TEAMS_BOT_DISPLAY_NAME,
   };
 }
+
+/**
+ * Fold the legacy scalar identity INTO the configured `teams_bots[]` list.
+ *
+ * Before this existed the two surfaces were mutually exclusive: a non-empty
+ * `teams_bots[]` discarded the scalar identity outright. That silently broke
+ * every deployment whose ORIGINAL Azure bot predates provisioning — the first
+ * provisioned agent filled `teams_bots[]`, the legacy bot lost its credential
+ * set, and each of its turns died in Bot-Framework authentication with
+ * `Invalid AppId passed on token: <legacy appId>` (byte5 tenant, 2026-08-31).
+ * The scalar identity is a REAL bot, not a fallback: the ref-store backfill
+ * already treats it as "the only bot that could have written pre-multi-bot
+ * rows".
+ *
+ * APPENDED, never prepended — `teams_bots[0]` stays the documented default
+ * bot (channel-directory label, proactive-send fallback for unattributed
+ * references), so merging changes no existing routing decision. It only adds
+ * an adapter that was previously missing.
+ *
+ * Skipped (list returned unchanged) when the legacy bot would collide with
+ * operator config, because the operator's explicit list always wins:
+ *   - the same `appId` is already configured (the operator listed it), or
+ *   - the legacy `botSlug` is already taken — appending would throw
+ *     `duplicate botSlug` at router construction and take the channel down.
+ */
+export function mergeLegacyTeamsBot(
+  configured: readonly TeamsBotIdentity[],
+  legacy: TeamsBotIdentity | undefined,
+): TeamsBotIdentity[] {
+  if (legacy === undefined) return [...configured];
+  if (configured.length === 0) return [legacy];
+
+  // Case-insensitive: Azure serialises app ids lowercase, operator-pasted
+  // config may differ. Same normalization the bot keys use.
+  const legacyAppId = legacy.appId.trim().toLowerCase();
+  const alreadyConfigured = configured.some(
+    (bot) => bot.appId.trim().toLowerCase() === legacyAppId,
+  );
+  if (alreadyConfigured) return [...configured];
+
+  const slugTaken = configured.some((bot) => bot.botSlug === legacy.botSlug);
+  if (slugTaken) return [...configured];
+
+  return [...configured, legacy];
+}

@@ -95,6 +95,7 @@ export {
   LEGACY_TEAMS_BOT_SECRET_REF,
   LEGACY_TEAMS_BOT_SLUG,
   legacyTeamsBotFromScalars,
+  mergeLegacyTeamsBot,
   parseTeamsBotsConfig,
   TeamsBotsConfigError,
   type LegacyTeamsBotScalars,
