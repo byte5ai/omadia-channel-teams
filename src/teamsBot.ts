@@ -124,14 +124,57 @@ const TYPING_INTERVAL_MS = 5_000;
  * Exported so the behaviour is testable without standing up a Bot Framework
  * adapter; the parameter is structurally typed for the same reason.
  */
-export function teamsSessionScope(activity: {
-  readonly conversation?: { readonly id?: string } | undefined;
-  readonly id?: string | undefined;
-}): string {
+export function teamsSessionScope(
+  activity: {
+    readonly conversation?: { readonly id?: string } | undefined;
+    readonly id?: string | undefined;
+  },
+  /**
+   * The provisioned-bot key this turn resolved through (`28:<appId>`), or
+   * `undefined` when it did not resolve through one.
+   *
+   * ## Why the scope has to carry it
+   *
+   * The scope keys the conversation HISTORY, and the history was shared by
+   * every bot in the chat. Each bot therefore received the OTHER bots' replies
+   * as its own prior assistant turns — and continued them. Measured, not
+   * theorised: a bot that had just joined a chat reported `pool=0` (no memory
+   * of its own) and `history=9` in the same turn, and answered "I am Karen",
+   * the name of the bot that had been speaking there. The mirror image
+   * followed minutes later, with Karen quoting the other bot's scripture.
+   *
+   * An identity line in the system prompt cannot win that argument: one
+   * sentence against nine turns of transcript is not a fair fight, and making
+   * it fairer would still leave it a matter of persuasion. Splitting the
+   * history is the structural answer — each bot sees what IT said, and nothing
+   * it can mistake for its own voice.
+   *
+   * ## Why only when a provisioned identity resolved
+   *
+   * Re-spelling a scope moves every live partition behind it (history AND the
+   * knowledge-graph tree), so it is not something to do to deployments that do
+   * not need it. `undefined` covers exactly those: a single-bot deployment, a
+   * binding-routed turn, an unattributable one. All three keep
+   * `teams-<conversationId>` byte-identical and lose nothing.
+   *
+   * A deployment that DOES run several bots per chat pays a one-off: each bot
+   * starts fresh in chats it has already been in. That is the intended
+   * outcome — the histories it would otherwise inherit are the contaminated
+   * ones this fixes.
+   */
+  identityBotKey?: string,
+): string {
   const rawConversationId = activity.conversation?.id;
+  // The bot key first, so the conversation id stays the trailing, most
+  // variable segment — the shape existing readers already scan for.
+  const scope = rawConversationId
+    ? identityBotKey
+      ? `teams-${identityBotKey}-${rawConversationId}`
+      : `teams-${rawConversationId}`
+    : undefined;
   return formatSessionScope(
     unsharedConversationScope({
-      scope: rawConversationId ? `teams-${rawConversationId}` : undefined,
+      scope,
       uniqueSuffix: typeof activity.id === 'string' ? activity.id : undefined,
     }),
   );
@@ -576,6 +619,14 @@ export class TeamsBot extends TeamsActivityHandler {
    * contribution publishes with, so what the operator picked in
    * `/operator/channels` IS what the resolver matches at runtime.
    */
+  /**
+   * The provisioned-bot key this turn resolved through, when it resolved
+   * through one. `undefined` on a legacy single-bot deployment, on a
+   * binding-routed turn, and on every turn the platform could not attribute —
+   * all three keep the historical conversation scope unchanged.
+   */
+  private currentIdentityBotKey: string | undefined;
+
   private resolveChatAgentForTurn(activity: TurnContext['activity']): void {
     if (!this.resolveChatAgentForActivity) {
       this.currentChatAgent = undefined;
@@ -600,16 +651,31 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
     const resolveForActivity = this.resolveChatAgentForActivity;
+    // Reset per turn — a remembered key outliving the activity it described
+    // would scope the NEXT conversation by the previous bot.
+    this.currentIdentityBotKey = undefined;
     try {
       this.currentChatAgent = pickChatAgentForTurn({
         ...(conversationId ? { conversationId } : {}),
         ...(recipientId ? { botKey: recipientId } : {}),
-        resolve: (channelKey) =>
-          resolveForActivity({
+        resolve: (channelKey) => {
+          const decision = resolveForActivity({
             channelType: 'teams',
             channelKey,
             conversationId: conversationId ?? 'unknown',
-          }),
+          });
+          // `exclusive` means the key IS this agent's own provisioned bot —
+          // the platform's own word for "this deployment runs per-bot
+          // agents". That is exactly the condition under which the shared
+          // conversation history has to be split, and the only one: a legacy
+          // single-bot deployment never sees it and keeps its scopes byte-
+          // identical. Recorded here rather than derived later because this
+          // is the one place the platform's verdict is visible.
+          if (decision.exclusive === true && channelKey === recipientId) {
+            this.currentIdentityBotKey = channelKey;
+          }
+          return decision;
+        },
       });
     } catch (err) {
       console.error(
@@ -687,7 +753,12 @@ export class TeamsBot extends TeamsActivityHandler {
     // read by the attachment store (`conversationId !== 'unknown'`) and a dozen
     // log lines. Only the SCOPE changes; the reasoning is on `teamsSessionScope`.
     const conversationId = context.activity.conversation?.id ?? 'unknown';
-    const sessionScope = teamsSessionScope(context.activity);
+    // Bot-qualified in a multi-bot deployment — see `teamsSessionScope`. The
+    // agent was resolved a few lines up, so the key is already known here.
+    const sessionScope = teamsSessionScope(
+      context.activity,
+      this.currentIdentityBotKey,
+    );
     const from = context.activity.from;
     const userId =
       from?.aadObjectId ??
@@ -1009,6 +1080,22 @@ export class TeamsBot extends TeamsActivityHandler {
         userName: from?.name ?? null,
         text: userMessage,
         mentioned,
+        // WHICH BOT THE PERSON ADDRESSED — the same `28:<appId>` key routing
+        // resolves an Agent from (`activity.recipient.id`).
+        //
+        // Without it a workflow triggered by this event cannot be bound to the
+        // permissions of the bot that was actually spoken to. That is not
+        // hypothetical: a run configured to execute as the platform fallback
+        // agent — which is granted every installed plugin — answered a message
+        // addressed to an agent holding no grants at all, under that agent's
+        // name and avatar. The kernel now refuses such a run when it cannot
+        // attribute it, so this field is what lets a legitimate workflow keep
+        // working rather than being refused.
+        //
+        // Null rather than omitted when the activity carries no recipient, so
+        // a consumer reads "no bot identified" as data instead of inferring it
+        // from an absent key.
+        botId: context.activity.recipient?.id ?? null,
         // The inbound AAD tenant (not the kernel graph tenant) so workflows can route/isolate by tenant.
         tenantId: channelData?.tenant?.id ?? context.activity.conversation?.tenantId ?? null,
       };
