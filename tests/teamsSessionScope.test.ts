@@ -77,3 +77,64 @@ describe('#575 D7 — teamsSessionScope', () => {
     assert.notEqual(teamsSessionScope({}), teamsSessionScope({}));
   });
 });
+
+/**
+ * Several bots in one chat must not share one history.
+ *
+ * The scope keys the conversation history, and the history was per
+ * CONVERSATION. Every bot in a group chat therefore received the other bots'
+ * replies as its own prior assistant turns — and continued them. Measured in
+ * production: a bot that had just joined a chat logged `pool=0` (no memory of
+ * its own) and `history=9` in the same turn, then answered "I am Karen" — the
+ * name of the bot that had been speaking there. Minutes later the mirror
+ * image, with Karen quoting the other bot's scripture.
+ *
+ * An identity line in the system prompt cannot win that: one sentence against
+ * nine turns of transcript is persuasion, not structure.
+ */
+describe('per-bot conversation scope', () => {
+  const CONV = '19:abc@thread.tacv2';
+  const MESSIAS = '28:19ad2729-f7d3-4099-9d2a-7da1230c9533';
+  const KAREN = '28:3d78d742-eefb-4fb2-bae5-3687f24c46fc';
+
+  it('two provisioned bots in ONE chat get two different scopes', () => {
+    const a = teamsSessionScope({ conversation: { id: CONV }, id: 'act-1' }, MESSIAS);
+    const b = teamsSessionScope({ conversation: { id: CONV }, id: 'act-1' }, KAREN);
+    assert.notEqual(a, b);
+    assert.equal(a, `teams-${MESSIAS}-${CONV}`);
+    assert.equal(b, `teams-${KAREN}-${CONV}`);
+  });
+
+  it('the same bot in the same chat is stable across turns', () => {
+    // Isolation must not cost continuity: a bot still has to recognise its own
+    // conversation on the next message.
+    assert.equal(
+      teamsSessionScope({ conversation: { id: CONV }, id: 'act-1' }, MESSIAS),
+      teamsSessionScope({ conversation: { id: CONV }, id: 'act-9' }, MESSIAS),
+    );
+  });
+
+  it('NOTHING moves when no provisioned identity resolved', () => {
+    // The load-bearing half. Re-spelling a scope moves every partition behind
+    // it, so a single-bot deployment — and any turn the platform could not
+    // attribute to a provisioned bot — has to keep the byte-identical string
+    // it had before this existed.
+    assert.equal(
+      teamsSessionScope({ conversation: { id: CONV }, id: 'act-1' }),
+      'teams-19:abc@thread.tacv2',
+    );
+    assert.equal(
+      teamsSessionScope({ conversation: { id: CONV }, id: 'act-1' }, undefined),
+      'teams-19:abc@thread.tacv2',
+    );
+  });
+
+  it('a bot key cannot rescue a conversation with no id', () => {
+    // The unshared-scope guarantee outranks the qualification: without a
+    // conversation there is nothing to be continuous with, and two such turns
+    // must still not share a bucket.
+    const a = teamsSessionScope({ conversation: { id: '' }, id: 'act-1' }, MESSIAS);
+    const b = teamsSessionScope({ conversation: { id: '' }, id: 'act-2' }, MESSIAS);
+    assert.notEqual(a, b);
+  });
+});
