@@ -16,6 +16,19 @@ import {
 import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
 import { pickChatAgentForTurn } from './agentForTurn.js';
+
+/**
+ * What resolving an activity yields: the agent that must answer it, and the
+ * provisioned-bot key it resolved through (when it resolved through one).
+ *
+ * Returned rather than stored, because several bots in one group chat receive
+ * the SAME message and their turns overlap on this single instance — see the
+ * note on `agentResolutionIsPerTurn`.
+ */
+interface TurnAgentResolution {
+  readonly chatAgent?: ChatAgent;
+  readonly identityBotKey?: string;
+}
 import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
@@ -209,17 +222,27 @@ function approvalAckText(
  */
 export class TeamsBot extends TeamsActivityHandler {
   /**
-   * Per-turn resolved ChatAgent for the current handleMessage(). Set once
-   * at the top of handleMessage from `resolveChatAgentForActivity` (or
-   * `defaultOrchestrator` if no resolver is wired); read by the chat
-   * invocation later in the same turn. Stored on the instance because
-   * handleMessage delegates to several private helpers that all need it
-   * and threading another argument through every one of them adds noise.
-   * Per-turn means concurrent turns won't trample each other under
-   * normal load (one event-loop tick per Bot Framework invocation) —
-   * a future hot-concurrent harness would need an AsyncLocalStorage.
+   * THE RESOLVED AGENT IS NO LONGER INSTANCE STATE.
+   *
+   * It used to be, with the reasoning that "concurrent turns won't trample
+   * each other under normal load (one event-loop tick per Bot Framework
+   * invocation)". A group chat with several provisioned bots is precisely the
+   * load that breaks that: Teams delivers the SAME message to EVERY bot in the
+   * chat, so several `handleMessage` calls overlap on this one instance —
+   * there is exactly one `TeamsBot` for all of them — and they interleave
+   * across every `await`. The second resolution overwrote the first before it
+   * was read, and whichever bot resolved last answered for both.
+   *
+   * That is not a subtle drift. It is impersonation: the reply carried one
+   * bot's name and another agent's permissions, and the routing log said the
+   * right thing while the turn did the wrong one.
+   *
+   * So the decision now travels WITH the turn — returned by
+   * {@link resolveChatAgentForTurn}, carried in the turn input, read where it
+   * is used. Threading one value through is the noise the old comment wanted
+   * to avoid; it is much cheaper than the bug.
    */
-  private currentChatAgent: ChatAgent | undefined;
+  private readonly agentResolutionIsPerTurn = true;
 
   constructor(
     /** Default / legacy chatAgent. Used when no per-Agent resolver returns
@@ -619,19 +642,10 @@ export class TeamsBot extends TeamsActivityHandler {
    * contribution publishes with, so what the operator picked in
    * `/operator/channels` IS what the resolver matches at runtime.
    */
-  /**
-   * The provisioned-bot key this turn resolved through, when it resolved
-   * through one. `undefined` on a legacy single-bot deployment, on a
-   * binding-routed turn, and on every turn the platform could not attribute —
-   * all three keep the historical conversation scope unchanged.
-   */
-  private currentIdentityBotKey: string | undefined;
-
-  private resolveChatAgentForTurn(activity: TurnContext['activity']): void {
-    if (!this.resolveChatAgentForActivity) {
-      this.currentChatAgent = undefined;
-      return;
-    }
+  private resolveChatAgentForTurn(
+    activity: TurnContext['activity'],
+  ): TurnAgentResolution {
+    if (!this.resolveChatAgentForActivity) return {};
     const conversationId = activity.conversation?.id;
     // Normalize the bot-identity key through the canonical helper: the
     // directory publishes `teamsBotKey(appId)` (lowercase-normalized) and the
@@ -646,16 +660,12 @@ export class TeamsBot extends TeamsActivityHandler {
       rawRecipientId !== undefined ? parseTeamsBotKey(rawRecipientId) : undefined;
     const recipientId =
       recipientAppId !== undefined ? teamsBotKey(recipientAppId) : rawRecipientId;
-    if (!conversationId && !recipientId) {
-      this.currentChatAgent = undefined;
-      return;
-    }
+    if (!conversationId && !recipientId) return {};
     const resolveForActivity = this.resolveChatAgentForActivity;
-    // Reset per turn — a remembered key outliving the activity it described
-    // would scope the NEXT conversation by the previous bot.
-    this.currentIdentityBotKey = undefined;
+    // Local to this call — nothing about this turn touches the instance.
+    let identityBotKey: string | undefined;
     try {
-      this.currentChatAgent = pickChatAgentForTurn({
+      const chatAgent = pickChatAgentForTurn({
         ...(conversationId ? { conversationId } : {}),
         ...(recipientId ? { botKey: recipientId } : {}),
         resolve: (channelKey) => {
@@ -672,17 +682,21 @@ export class TeamsBot extends TeamsActivityHandler {
           // identical. Recorded here rather than derived later because this
           // is the one place the platform's verdict is visible.
           if (decision.exclusive === true && channelKey === recipientId) {
-            this.currentIdentityBotKey = channelKey;
+            identityBotKey = channelKey;
           }
           return decision;
         },
       });
+      return {
+        ...(chatAgent ? { chatAgent } : {}),
+        ...(identityBotKey ? { identityBotKey } : {}),
+      };
     } catch (err) {
       console.error(
         `[teams] channelResolver threw (conv=${conversationId?.slice(0, 16) ?? '-'}, recipient=${recipientId?.slice(0, 16) ?? '-'}…) — falling back to default agent:`,
         err,
       );
-      this.currentChatAgent = undefined;
+      return {};
     }
   }
 
@@ -722,7 +736,7 @@ export class TeamsBot extends TeamsActivityHandler {
     this.conversationObserver?.observe(context);
     // Phase A+B follow-up — pick the ChatAgent for THIS turn before any
     // chat work runs. Falls back to defaultOrchestrator on miss / error.
-    this.resolveChatAgentForTurn(context.activity);
+    const turnAgent = this.resolveChatAgentForTurn(context.activity);
 
     // Mention-only policy: in any non-personal context (group chat,
     // channel thread, meeting chat) drop the turn unless the bot was
@@ -757,7 +771,7 @@ export class TeamsBot extends TeamsActivityHandler {
     // agent was resolved a few lines up, so the key is already known here.
     const sessionScope = teamsSessionScope(
       context.activity,
-      this.currentIdentityBotKey,
+      turnAgent.identityBotKey,
     );
     const from = context.activity.from;
     const userId =
@@ -1108,6 +1122,7 @@ export class TeamsBot extends TeamsActivityHandler {
       userId,
       userMessage,
       priorTurns: effectiveHistory,
+      ...(turnAgent.chatAgent ? { chatAgent: turnAgent.chatAgent } : {}),
     });
   }
 
@@ -1647,6 +1662,16 @@ export class TeamsBot extends TeamsActivityHandler {
       /** Verified sender name captured on the original inbound turn — the
        *  proactive continuation's `from` is the bot, not the user. */
       presetSenderName?: string;
+      /**
+       * The agent this turn resolved to, carried rather than looked up again.
+       *
+       * Absent means "no per-agent resolver answered for this activity", which
+       * is the same thing the instance field used to mean when it was
+       * `undefined` — the default orchestrator answers. What is NOT the same
+       * is another turn's agent arriving here, which is what a shared field
+       * allowed.
+       */
+      chatAgent?: ChatAgent;
     },
   ): Promise<void> {
     // Scope-local binding so the ALS wrapper can forward the roster accessor
@@ -1698,7 +1723,10 @@ export class TeamsBot extends TeamsActivityHandler {
             console.error('[teams] routines turn-context capture failed:', refErr);
           }
         }
-        const chatAgent = this.currentChatAgent ?? this.defaultOrchestrator;
+        const chatAgent =
+          input.chatAgent ??
+          this.resolveChatAgentForTurn(context.activity).chatAgent ??
+          this.defaultOrchestrator;
         // #330 field report — the attributed form is what the agent sees AND
         // what lands in history; sendAnswer keeps the raw text for mention
         // resolution. See attributeGroupMessage for the why.
