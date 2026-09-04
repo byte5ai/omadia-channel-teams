@@ -298,6 +298,26 @@ export class TeamsBot extends TeamsActivityHandler {
     private readonly handleRoutineAction?: (input: {
       action: 'pause' | 'resume' | 'trigger_now' | 'delete';
       id: string;
+      /**
+       * byte5ai/omadia#1029 — the principal this click belongs to, so the
+       * kernel can scope the mutation instead of trusting the card's id.
+       *
+       * The card path is dispatched out-of-band and never reaches
+       * `runOrchestratorTurn`, which is the only place that installs the
+       * routines per-turn ALS. So the kernel has no context to read here and
+       * falls back to acting UNSCOPED — the card carries the routine id, so a
+       * replayed payload would otherwise reach pause/resume/trigger/delete for
+       * any row, and `trigger_now` delivers into the routine's own
+       * `conversationRef` (a message pushed into someone else's conversation).
+       *
+       * Same id space as `captureRoutineTurn` on the orchestrator path: the
+       * tenant from the kernel's `GRAPH_TENANT_ID`, the user from the shared
+       * `userId` derivation in `handleMessage` (`from.aadObjectId`, falling
+       * back to `from.id`). Omitted entirely when either half is missing —
+       * a half-filled principal is worse than none, because the kernel would
+       * scope to it.
+       */
+      actor?: { tenant: string; userId: string };
     }) => Promise<string>,
     /**
      * Builder for the routine LIST smart card sidecar (rendered after the
@@ -874,9 +894,20 @@ export class TeamsBot extends TeamsActivityHandler {
     const routineAction = parseRoutineCardActionValue(context.activity.value);
     if (routineAction && this.handleRoutineAction) {
       try {
+        // #1029 — hand the principal along. `userId` is the value this same
+        // function already computed for every other branch, and the one the
+        // orchestrator path passes to `captureRoutineTurn`, so both doors onto
+        // `manage_routine`'s mutations agree on who the caller is. Both halves
+        // or neither: an `actor` missing its tenant would scope to a partial
+        // principal, which is worse than the documented unscoped fallback.
+        const actor =
+          this.tenantId && userId
+            ? { actor: { tenant: this.tenantId, userId } }
+            : {};
         const ack = await this.handleRoutineAction({
           action: routineAction.action,
           id: routineAction.id,
+          ...actor,
         });
         await context.sendActivity(ack);
       } catch (err) {
