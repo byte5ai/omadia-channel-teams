@@ -307,7 +307,15 @@ export function createTeamsTargetedSendAdapter(deps: {
 export function createTeamsConversationSendAdapter(deps: {
   refs: TeamsConversationReferenceCache;
   sendProactive: TeamsProactiveSend;
-}): ConversationSendProvider {
+  // The declared return type is a SUPERSET of the SDK interface, for the same
+  // reason the send method takes a rest tuple: this plugin ships independently
+  // and is compiled against whatever `@omadia/channel-sdk` is installed, which
+  // may predate `sendTyping`. Declaring the extra method here keeps the object
+  // assignable to the narrower contract without a cast and without a version
+  // floor; a kernel that does not know about it simply never calls it.
+}): ConversationSendProvider & {
+  sendTyping(conversationId: string, opts?: { asChannelKey?: string }): Promise<void>;
+} {
   return {
     channelType: 'teams',
     // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
@@ -383,6 +391,36 @@ export function createTeamsConversationSendAdapter(deps: {
           code: 'channel_error',
           message: err instanceof Error ? err.message : String(err),
         };
+      }
+    },
+
+    // Best-effort by contract, and silent by design: an activity indicator that
+    // fails must never disturb — let alone fail — the work it was announcing.
+    // Resolved through the same per-bot path as a message, so the dots appear
+    // next to the bot that is actually thinking rather than next to whichever
+    // bot happens to hold the reference.
+    async sendTyping(
+      ...args: [conversationId: string, opts?: { asChannelKey?: string }]
+    ): Promise<void> {
+      const [conversationId, opts] = args;
+      const botAppId = opts?.asChannelKey ? parseTeamsBotKey(opts.asChannelKey) : undefined;
+      // A named-but-unresolvable sender shows nothing rather than showing the
+      // wrong bot as busy — the same refusal the message path makes.
+      if (opts?.asChannelKey !== undefined && !botAppId) return;
+      const cached = await deps.refs.getOrLoad(conversationId, botAppId).catch(() => undefined);
+      if (!cached) return;
+      const refBotAppId = cached.ref.bot?.id ? parseTeamsBotKey(cached.ref.bot.id) : undefined;
+      if (botAppId && refBotAppId && refBotAppId !== botAppId) return;
+      try {
+        await deps.sendProactive(
+          cached.ref,
+          async (turnContext) => {
+            await turnContext.sendActivity({ type: 'typing' });
+          },
+          ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
+        );
+      } catch {
+        // Deliberately swallowed — see the contract note above.
       }
     },
   };
