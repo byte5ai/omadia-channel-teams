@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.26.1
+
+Routine-Smart-Card-Klicks tragen ihren Principal (byte5ai/omadia#1029):
+
+- **`actor` am `handleRoutineAction`-Aufruf** (`teamsBot.ts`, `plugin.ts`):
+  Der Karten-Pfad wird out-of-band abgearbeitet und erreicht
+  `runOrchestratorTurn` nie — also installiert nichts die Routinen-ALS, aus der
+  der Kernel sonst `(tenant, userId)` liest, und er handelte ungescoped. Da die
+  Karte die Routine-ID trägt, erreichte ein wiedergespielter Payload
+  `pause`/`resume`/`trigger_now`/`delete` für jede Zeile; `trigger_now`
+  liefert in die `conversationRef` der Routine, konnte also eine Nachricht in
+  die Konversation eines fremden Tenants schieben.
+  Übergeben wird jetzt derselbe Wert, den `captureRoutineTurn` auf dem
+  Orchestrator-Pfad bekommt: Tenant aus `GRAPH_TENANT_ID`, User aus der
+  gemeinsamen `userId`-Ableitung in `handleMessage` (`from.aadObjectId`, sonst
+  `from.id`). Fehlt eine der beiden Hälften, entfällt `actor` komplett — ein
+  halb gefüllter Principal wäre schlechter als der dokumentierte Fallback.
+- Optional im Contract (`plugin-api >= 1.11.0`): ein älterer Kernel ignoriert
+  den Zusatzschlüssel, ein neuerer bevorzugt ihn gegenüber der ALS. Damit
+  bleibt dieses Release auf beiden Kernel-Ständen lauffähig.
+
 ## 0.21.0
 
 Auto-Invite für Agenten-Apps (epic byte5ai/omadia#860, Wave W2 — Refs #20 #21
