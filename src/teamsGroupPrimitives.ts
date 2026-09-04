@@ -11,11 +11,13 @@ import type {
   ConversationRosterProvider,
   ConversationSendProvider,
   ConversationType,
+  TargetedDeliveryOutcome,
+  TargetedMessage,
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
 
 import type { TeamsProactiveSend } from './messagesRouter.js';
-import { parseTeamsBotKey } from './teamsBotIdentity.js';
+import { parseTeamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
@@ -308,19 +310,72 @@ export function createTeamsConversationSendAdapter(deps: {
 }): ConversationSendProvider {
   return {
     channelType: 'teams',
-    async sendToConversation(conversationId, message) {
-      const cached = await deps.refs.getOrLoad(conversationId);
+    // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
+    // independently of the kernel and is compiled against whatever
+    // `@omadia/channel-sdk` is installed. On an SDK that predates
+    // `ConversationSendOptions` a three-parameter method is not assignable to
+    // the two-parameter contract, while this shape is — so the plugin
+    // implements the superset without a cast and without a version floor. On
+    // an older kernel the third argument simply never arrives and delivery
+    // behaves exactly as before.
+    async sendToConversation(
+      ...args: [conversationId: string, message: TargetedMessage, opts?: { asChannelKey?: string }]
+    ): Promise<TargetedDeliveryOutcome> {
+      const [conversationId, message, opts] = args;
+      // WHICH BOT SAYS IT.
+      //
+      // Several provisioned bots share one group chat. Without an explicit
+      // identity this falls to the reference's owning bot, and for the kernel's
+      // agent dialogue that would put one agent's words under another bot's
+      // name and avatar — indistinguishable, in the chat, from that agent
+      // having said them. `asChannelKey` is the caller stating the sender, and
+      // an unresolvable one is REFUSED rather than silently substituted: a
+      // wrong sender is worse than no message.
+      const asChannelKey = opts?.asChannelKey;
+      let botAppId: string | undefined;
+      if (asChannelKey !== undefined) {
+        botAppId = parseTeamsBotKey(asChannelKey);
+        if (!botAppId) {
+          return {
+            outcome: 'unreachable',
+            code: 'not_permitted',
+            message: `'${asChannelKey}' is not a Teams bot identity key (expected '${TEAMS_BOT_KEY_PREFIX}<appId>') - refusing to send under an unresolved sender`,
+          };
+        }
+      }
+
+      const cached = await deps.refs.getOrLoad(conversationId, botAppId);
       if (!cached) {
         return {
           outcome: 'unreachable',
           code: 'no_binding',
-          message: `no Teams conversation reference cached for '${conversationId}' - no inbound activity seen yet`,
+          message: botAppId
+            ? `bot '${botAppId}' has no Teams conversation reference for '${conversationId}' - it has not been added to that chat yet`
+            : `no Teams conversation reference cached for '${conversationId}' - no inbound activity seen yet`,
         };
       }
+
+      // A reference served for another bot must not be sent through the
+      // requested one: the Bot-Framework would deliver it under whichever
+      // identity the reference carries, which is exactly the substitution the
+      // caller asked us to prevent.
+      const refBotAppId = cached.ref.bot?.id ? parseTeamsBotKey(cached.ref.bot.id) : undefined;
+      if (botAppId && refBotAppId && refBotAppId !== botAppId) {
+        return {
+          outcome: 'unreachable',
+          code: 'not_permitted',
+          message: `the cached reference for '${conversationId}' belongs to bot '${refBotAppId}', not '${botAppId}' - refusing to speak under another bot's identity`,
+        };
+      }
+
       try {
-        await deps.sendProactive(cached.ref, async (turnContext) => {
-          await turnContext.sendActivity({ type: 'message', text: message.text });
-        });
+        await deps.sendProactive(
+          cached.ref,
+          async (turnContext) => {
+            await turnContext.sendActivity({ type: 'message', text: message.text });
+          },
+          ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
+        );
         return { outcome: 'delivered' };
       } catch (err) {
         return {

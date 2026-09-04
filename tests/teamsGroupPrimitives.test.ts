@@ -170,6 +170,93 @@ describe('createTeamsConversationSendAdapter (#330 C3b)', () => {
   });
 });
 
+// The agent-dialogue requirement: in a group chat holding several provisioned
+// bots, each agent's turn must appear under ITS OWN bot. Posting through a
+// different identity is indistinguishable, in the chat, from that agent having
+// said it — so an identity that cannot be honoured is refused, never swapped.
+describe('createTeamsConversationSendAdapter — speaking as a named bot', () => {
+  const HR_BOT = '11111111-1111-1111-1111-111111111111';
+  const FIBU_BOT = '22222222-2222-2222-2222-222222222222';
+
+  /** A reference captured by a specific bot (what `capture()` persists). */
+  function refFor(conversationId: string, botAppId: string): TurnContext {
+    return {
+      activity: {
+        type: 'message',
+        channelId: 'msteams',
+        serviceUrl: 'https://smba.example',
+        conversation: { id: conversationId, conversationType: 'groupChat' },
+        from: { id: '29:user', name: 'User' },
+        recipient: { id: `28:${botAppId}`, name: 'Bot' },
+      },
+    } as unknown as TurnContext;
+  }
+
+  function harness() {
+    const cache = new TeamsConversationReferenceCache();
+    const calls: Array<{ text: string; botAppId?: string | undefined }> = [];
+    const sendProactive: TeamsProactiveSend = async (_ref, build, opts) => {
+      await build({
+        sendActivity: async (activity: { text?: string }) => {
+          calls.push({ text: activity.text ?? '', botAppId: opts?.botAppId });
+          return undefined;
+        },
+      } as unknown as TurnContext);
+    };
+    return { cache, calls, adapter: createTeamsConversationSendAdapter({ refs: cache, sendProactive }) };
+  }
+
+  it('routes the send through the NAMED bot’s adapter', async () => {
+    const { cache, calls, adapter } = harness();
+    cache.capture(refFor('conv-1', HR_BOT));
+    const out = await adapter.sendToConversation('conv-1', { text: 'Aus HR-Sicht …' }, { asChannelKey: `28:${HR_BOT}` });
+    assert.deepEqual(out, { outcome: 'delivered' });
+    assert.deepEqual(calls, [{ text: 'Aus HR-Sicht …', botAppId: HR_BOT }]);
+  });
+
+  it('two agents in one chat reach the chat as two different bots', async () => {
+    const { cache, calls, adapter } = harness();
+    cache.capture(refFor('conv-1', HR_BOT));
+    cache.capture(refFor('conv-1', FIBU_BOT));
+    await adapter.sendToConversation('conv-1', { text: 'HR sagt A.' }, { asChannelKey: `28:${HR_BOT}` });
+    await adapter.sendToConversation('conv-1', { text: 'FiBu sagt B.' }, { asChannelKey: `28:${FIBU_BOT}` });
+    assert.deepEqual(
+      calls.map((c) => c.botAppId),
+      [HR_BOT, FIBU_BOT],
+    );
+    // And the text is the agent's words alone — the SENDER carries the name.
+    assert.deepEqual(
+      calls.map((c) => c.text),
+      ['HR sagt A.', 'FiBu sagt B.'],
+    );
+  });
+
+  it("REFUSES with 'no_binding' when the named bot was never added to that chat", async () => {
+    const { cache, calls, adapter } = harness();
+    cache.capture(refFor('conv-1', HR_BOT));
+    const out = await adapter.sendToConversation('conv-1', { text: 'x' }, { asChannelKey: `28:${FIBU_BOT}` });
+    assert.equal(out.outcome, 'unreachable');
+    assert.equal(out.outcome === 'unreachable' ? out.code : '', 'no_binding');
+    assert.deepEqual(calls, [], 'nothing may be delivered under a substituted identity');
+  });
+
+  it("refuses a malformed identity key rather than falling back to 'some' bot", async () => {
+    const { cache, calls, adapter } = harness();
+    cache.capture(refFor('conv-1', HR_BOT));
+    const out = await adapter.sendToConversation('conv-1', { text: 'x' }, { asChannelKey: 'not-a-bot-key' });
+    assert.equal(out.outcome === 'unreachable' ? out.code : '', 'not_permitted');
+    assert.deepEqual(calls, []);
+  });
+
+  it('keeps the old two-argument behaviour when no identity is named', async () => {
+    const { cache, calls, adapter } = harness();
+    cache.capture(refFor('conv-1', HR_BOT));
+    const out = await adapter.sendToConversation('conv-1', { text: 'nudge' });
+    assert.deepEqual(out, { outcome: 'delivered' });
+    assert.equal(calls[0]?.botAppId, undefined, 'the reference’s own bot still decides, as before');
+  });
+});
+
 describe('attributeGroupMessage (#330 field report — who is speaking?)', () => {
   it('prefixes group turns with the verified sender name', () => {
     assert.equal(
