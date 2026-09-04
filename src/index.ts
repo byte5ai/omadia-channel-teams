@@ -49,6 +49,8 @@ export {
   runTeamsAutoInviteHook,
   shouldSuppressAutoInstallIntro,
   teamsTeamScopeFromActivity,
+  AGENT_APPS_RECHECK_UNSCOPED_MESSAGE,
+  type TeamsAgentAppsRecheckResult,
   type TeamsAutoInviteDeps,
   type TeamsAutoInviteHookResult,
   type TeamsAutoInviteTurnContext,

@@ -1821,18 +1821,18 @@ const TEAMS_APP_DEEP_LINK_BASE = 'https://teams.microsoft.com/l/app/';
 export const AGENT_APPS_RECHECK_VALUE_TYPE = 'agent_apps_recheck';
 
 /**
- * Submit payload of the "Prüfen" button. `teamId`/`tenantId` are round-
- * tripped so the re-check can run without extra server state — BOTH are
- * public identifiers, and the handler prefers the transport-derived
- * `channelData.team.aadGroupId` / `channelData.tenant.id` of the submit
- * activity over these round-tripped values (card `data` is client-editable).
+ * Submit payload of the "Prüfen" button — the DISCRIMINATOR AND NOTHING
+ * ELSE (#1030). Card `data` is client-editable, so a round-tripped
+ * `teamId`/`tenantId` was an install target the clicker could choose:
+ * `handleTeamsAgentAppsRecheck` derives the scope from the submit
+ * activity's own `channelData` and refuses the click when it cannot,
+ * exactly as the Conductor approve/reject branch derives its responder
+ * from the session. Cards posted before this change still carry the two
+ * fields; the parser ignores every extra key, so old cards keep working
+ * and the values are simply never read.
  */
 export interface AgentAppsRecheckValue {
   type: typeof AGENT_APPS_RECHECK_VALUE_TYPE;
-  /** Graph team (group) id the installer ran against. */
-  teamId: string;
-  /** Entra tenant id — the installer's consent-cache key. */
-  tenantId: string;
 }
 
 /** Runtime guard for the re-check submit. Some Teams clients deliver the
@@ -1852,20 +1852,14 @@ export function parseAgentAppsRecheckValue(
   if (!candidate || typeof candidate !== 'object') return undefined;
   const v = candidate as Record<string, unknown>;
   if (v['type'] !== AGENT_APPS_RECHECK_VALUE_TYPE) return undefined;
-  const teamId = v['teamId'];
-  const tenantId = v['tenantId'];
-  if (typeof teamId !== 'string' || teamId.length === 0) return undefined;
-  if (typeof tenantId !== 'string' || tenantId.length === 0) return undefined;
-  return { type: AGENT_APPS_RECHECK_VALUE_TYPE, teamId, tenantId };
+  // Deliberately narrowing: whatever else the payload carries is dropped
+  // here, so no client-supplied value can reach an install path (#1030).
+  return { type: AGENT_APPS_RECHECK_VALUE_TYPE };
 }
 
 export interface BuildAgentAppsCardInput {
   /** Per-app outcomes of one installer run, in configured order. */
   readonly outcomes: readonly AgentAppInstallOutcome[];
-  /** Round-tripped into the "Prüfen" submit value (public id). */
-  readonly teamId: string;
-  /** Round-tripped into the "Prüfen" submit value (public id). */
-  readonly tenantId: string;
 }
 
 /** One status line per app — the card's scannable core. */
@@ -1980,8 +1974,6 @@ export function buildAgentAppsResultCard(
       title: '🔄 Prüfen',
       data: {
         type: AGENT_APPS_RECHECK_VALUE_TYPE,
-        teamId: input.teamId,
-        tenantId: input.tenantId,
         // Same Teams quirk as followUpAction/choiceAsk — Action.Submit on a
         // slow-responding bot shows "Something went wrong" unless flagged
         // as messageBack.

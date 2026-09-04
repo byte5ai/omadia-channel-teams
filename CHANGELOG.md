@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.26.2
+
+Der Recheck-Klick nimmt sein Installationsziel nicht mehr aus der Karte
+(byte5ai/omadia#1030):
+
+- **`handleTeamsAgentAppsRecheck` leitet Team + Tenant nur noch aus der
+  Submit-Activity ab** (`teamsBot.ts`). Der Zweig ist out-of-band — er
+  antwortet vor dem Orchestrator, es hat also niemand vorher einen Principal
+  etabliert — und `data` einer Adaptive Card ist client-editierbar. Der alte
+  Fallback auf die durchgeschleiften `teamId`/`tenantId` machte damit jeden
+  handgebauten oder wiedergespielten „🔄 Prüfen"-Klick zu einem frei wählbaren
+  Ziel für `installAgentApps`, über Tenant-Grenzen hinweg. Ein Klick, dessen
+  Transport kein Team-Scope trägt, wird jetzt abgelehnt (`'refused-unscoped'`
+  plus eine erklärende Nachricht statt stiller Wirkungslosigkeit) — dasselbe
+  Muster, mit dem `handleApprovalDecision` verweigert, wenn es den
+  Antwortenden nicht bestätigen kann.
+- **Das Scope steht gar nicht mehr auf der Leitung**: `AgentAppsRecheckValue`
+  ist auf den Discriminator zusammengeschrumpft, `parseAgentAppsRecheckValue`
+  verwirft jeden weiteren Schlüssel, und `buildAgentAppsResultCard` schleift
+  nichts mehr durch (`BuildAgentAppsCardInput` braucht `teamId`/`tenantId`
+  nicht länger — sie dienten ausschließlich diesem Round-Trip). Bereits in
+  Kanälen liegende Karten tragen die beiden Felder weiter; der Parser ignoriert
+  sie, alte Karten funktionieren also unverändert und die Werte werden nur
+  nirgends mehr gelesen. `satisfies AgentAppsRecheckValue` an der
+  Submit-`data` macht ein Wiedereinführen zum Compilerfehler.
+
+## 0.26.1
+
+Routine-Smart-Card-Klicks tragen ihren Principal (byte5ai/omadia#1029):
+
+- **`actor` am `handleRoutineAction`-Aufruf** (`teamsBot.ts`, `plugin.ts`):
+  Der Karten-Pfad wird out-of-band abgearbeitet und erreicht
+  `runOrchestratorTurn` nie — also installiert nichts die Routinen-ALS, aus der
+  der Kernel sonst `(tenant, userId)` liest, und er handelte ungescoped. Da die
+  Karte die Routine-ID trägt, erreichte ein wiedergespielter Payload
+  `pause`/`resume`/`trigger_now`/`delete` für jede Zeile; `trigger_now`
+  liefert in die `conversationRef` der Routine, konnte also eine Nachricht in
+  die Konversation eines fremden Tenants schieben.
+  Übergeben wird jetzt derselbe Wert, den `captureRoutineTurn` auf dem
+  Orchestrator-Pfad bekommt: Tenant aus `GRAPH_TENANT_ID`, User aus der
+  gemeinsamen `userId`-Ableitung in `handleMessage` (`from.aadObjectId`, sonst
+  `from.id`). Fehlt eine der beiden Hälften, entfällt `actor` komplett — ein
+  halb gefüllter Principal wäre schlechter als der dokumentierte Fallback.
+- Optional im Contract (`plugin-api >= 1.11.0`): ein älterer Kernel ignoriert
+  den Zusatzschlüssel, ein neuerer bevorzugt ihn gegenüber der ALS. Damit
+  bleibt dieses Release auf beiden Kernel-Ständen lauffähig.
+
 ## 0.21.0
 
 Auto-Invite für Agenten-Apps (epic byte5ai/omadia#860, Wave W2 — Refs #20 #21

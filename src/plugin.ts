@@ -495,10 +495,15 @@ export async function activate(
         }
       }
     : undefined;
+  // #1029 — `actor` rides along so the kernel can scope the mutation to the
+  // clicking principal. Optional in the contract (plugin-api >= 1.11.0): an
+  // older kernel ignores the extra key, a newer one prefers it over the
+  // per-turn ALS the card path never installs.
   const handleRoutineAction = routinesIntegration
     ? (input: {
         action: 'pause' | 'resume' | 'trigger_now' | 'delete';
         id: string;
+        actor?: { tenant: string; userId: string };
       }) => routinesIntegration.handleRoutineAction(input)
     : undefined;
   const buildRoutineSmartCardAttachment = routinesIntegration

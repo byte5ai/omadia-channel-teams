@@ -9,6 +9,7 @@ import {
   runTeamsAutoInviteHook,
   shouldSuppressAutoInstallIntro,
   teamsTeamScopeFromActivity,
+  AGENT_APPS_RECHECK_UNSCOPED_MESSAGE,
   AGENT_APPS_RECHECK_VALUE_TYPE,
 } from '@omadia/channel-teams';
 import type { Activity, Attachment } from 'botbuilder';
@@ -256,19 +257,18 @@ describe('shouldSuppressAutoInstallIntro', () => {
 });
 
 describe('handleTeamsAgentAppsRecheck', () => {
-  const submitted = {
-    type: AGENT_APPS_RECHECK_VALUE_TYPE,
-    teamId: TEAM_GROUP_ID,
-    tenantId: TENANT_ID,
-  } as const;
-
-  /** The "Prüfen" submit activity — a message carrying replyToId. */
+  /**
+   * The "Prüfen" submit activity — a message carrying replyToId. Its
+   * `value` still models what a REAL client sends, tampering included:
+   * the handler takes no payload argument at all any more (#1030), so a
+   * forged `teamId`/`tenantId` in here has no route to the installer.
+   */
   function recheckActivity(over: Record<string, unknown> = {}): Activity {
     return teamActivity({
       type: 'message',
       membersAdded: undefined,
       replyToId: 'card-activity-1',
-      value: { ...submitted },
+      value: { type: AGENT_APPS_RECHECK_VALUE_TYPE },
       ...over,
     });
   }
@@ -277,7 +277,10 @@ describe('handleTeamsAgentAppsRecheck', () => {
     const { deps, installCalls } = fakeDeps();
     const { context, sent, updated } = fakeContext(recheckActivity());
 
-    await handleTeamsAgentAppsRecheck(deps, context, { ...submitted });
+    assert.equal(
+      await handleTeamsAgentAppsRecheck(deps, context),
+      'updated-card',
+    );
 
     assert.deepEqual(installCalls, [
       { teamId: TEAM_GROUP_ID, tenantId: TENANT_ID },
@@ -288,34 +291,80 @@ describe('handleTeamsAgentAppsRecheck', () => {
     assert.deepEqual(sent, []);
   });
 
-  it('transport-derived team/tenant win over tampered submit values', async () => {
+  it('#1030 — installs into the ACTIVITY team even when the payload names a foreign team and tenant', async () => {
     const { deps, installCalls } = fakeDeps();
-    const { context } = fakeContext(recheckActivity());
+    const { context } = fakeContext(
+      recheckActivity({
+        value: {
+          type: AGENT_APPS_RECHECK_VALUE_TYPE,
+          teamId: 'ffffffff-0000-0000-0000-000000000bad',
+          tenantId: 'ffffffff-0000-0000-0000-00000000dead',
+        },
+      }),
+    );
 
-    await handleTeamsAgentAppsRecheck(deps, context, {
-      ...submitted,
-      teamId: 'ffffffff-0000-0000-0000-000000000bad',
-      tenantId: 'ffffffff-0000-0000-0000-00000000dead',
-    });
+    await handleTeamsAgentAppsRecheck(deps, context);
 
-    // Card `data` is client-editable; the channelData of the conversation
-    // the click arrived in is authoritative.
     assert.deepEqual(installCalls, [
       { teamId: TEAM_GROUP_ID, tenantId: TENANT_ID },
     ]);
   });
 
-  it('falls back to the round-tripped ids when the submit has no team channelData', async () => {
+  it('#1030 — REFUSES a click whose activity names no team scope, instead of trusting the payload', async () => {
     const { deps, installCalls } = fakeDeps();
-    const { context } = fakeContext(
-      recheckActivity({ channelData: { tenant: { id: TENANT_ID } } }),
+    const { context, sent, updated } = fakeContext(
+      recheckActivity({
+        // A replayed / hand-crafted click: personal scope on the wire,
+        // a team named only in the client-editable card data.
+        conversation: {
+          id: 'a:1personal',
+          conversationType: 'personal',
+          tenantId: TENANT_ID,
+        },
+        channelData: { tenant: { id: TENANT_ID } },
+        value: {
+          type: AGENT_APPS_RECHECK_VALUE_TYPE,
+          teamId: 'ffffffff-0000-0000-0000-000000000bad',
+          tenantId: 'ffffffff-0000-0000-0000-00000000dead',
+        },
+      }),
     );
 
-    await handleTeamsAgentAppsRecheck(deps, context, { ...submitted });
+    assert.equal(
+      await handleTeamsAgentAppsRecheck(deps, context),
+      'refused-unscoped',
+    );
 
-    assert.deepEqual(installCalls, [
-      { teamId: TEAM_GROUP_ID, tenantId: TENANT_ID },
-    ]);
+    // The whole point: no install ran, against ANY team.
+    assert.deepEqual(installCalls, []);
+    assert.deepEqual(updated, []);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.text, AGENT_APPS_RECHECK_UNSCOPED_MESSAGE);
+    assert.equal(sent[0]?.attachments, undefined);
+  });
+
+  it('#1030 — refuses a team-scope click that carries no Graph group id', async () => {
+    const { deps, installCalls } = fakeDeps();
+    const { context, sent } = fakeContext(
+      recheckActivity({
+        // `channelData.team.id` is the `19:…` thread id, which Graph's
+        // /teams/{id}/installedApps will not accept — and the payload is
+        // no longer allowed to supply the group id instead.
+        channelData: { team: { id: THREAD_ID }, tenant: { id: TENANT_ID } },
+        value: {
+          type: AGENT_APPS_RECHECK_VALUE_TYPE,
+          teamId: TEAM_GROUP_ID,
+          tenantId: TENANT_ID,
+        },
+      }),
+    );
+
+    assert.equal(
+      await handleTeamsAgentAppsRecheck(deps, context),
+      'refused-unscoped',
+    );
+    assert.deepEqual(installCalls, []);
+    assert.equal(sent[0]?.text, AGENT_APPS_RECHECK_UNSCOPED_MESSAGE);
   });
 
   it('posts a fresh card when the activity update is rejected', async () => {
@@ -323,8 +372,10 @@ describe('handleTeamsAgentAppsRecheck', () => {
     const { context, sent, failUpdates } = fakeContext(recheckActivity());
     failUpdates();
 
-    await handleTeamsAgentAppsRecheck(deps, context, { ...submitted });
-
+    assert.equal(
+      await handleTeamsAgentAppsRecheck(deps, context),
+      'posted-card',
+    );
     assert.equal(sent.length, 1);
     assert.ok(firstAttachment(sent));
   });
@@ -335,8 +386,10 @@ describe('handleTeamsAgentAppsRecheck', () => {
       recheckActivity({ replyToId: undefined }),
     );
 
-    await handleTeamsAgentAppsRecheck(deps, context, { ...submitted });
-
+    assert.equal(
+      await handleTeamsAgentAppsRecheck(deps, context),
+      'posted-card',
+    );
     assert.deepEqual(updated, []);
     assert.equal(sent.length, 1);
   });
