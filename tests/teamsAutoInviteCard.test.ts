@@ -55,11 +55,7 @@ interface CardShape {
 }
 
 function build(outcomes: readonly AgentAppInstallOutcome[]): CardShape {
-  const attachment = buildAgentAppsResultCard({
-    outcomes,
-    teamId: TEAM_ID,
-    tenantId: TENANT_ID,
-  });
+  const attachment = buildAgentAppsResultCard({ outcomes });
   assert.equal(attachment.contentType, TEAMS_CARD_CONTENT_TYPE);
   return attachment.content as CardShape;
 }
@@ -118,8 +114,13 @@ describe('buildAgentAppsResultCard — snapshot shape', () => {
     assert.equal(submit['title'], '🔄 Prüfen');
     const data = submit['data'] as Record<string, unknown>;
     assert.equal(data['type'], AGENT_APPS_RECHECK_VALUE_TYPE);
-    assert.equal(data['teamId'], TEAM_ID);
-    assert.equal(data['tenantId'], TENANT_ID);
+    // #1030 — the card must NOT round-trip an install target. Card `data`
+    // is client-editable, so anything named here is a target the clicker
+    // chooses; the handler derives team + tenant from the submit
+    // activity's channelData instead.
+    assert.equal(data['teamId'], undefined);
+    assert.equal(data['tenantId'], undefined);
+    assert.deepEqual(Object.keys(data).sort(), ['msteams', 'type']);
     // Teams quirk guard — without messageBack the client shows
     // "Something went wrong" on slow responses.
     assert.equal(
@@ -208,19 +209,26 @@ describe('buildAgentAppsResultCard — snapshot shape', () => {
 });
 
 describe('parseAgentAppsRecheckValue', () => {
-  const valid = {
-    type: AGENT_APPS_RECHECK_VALUE_TYPE,
-    teamId: TEAM_ID,
-    tenantId: TENANT_ID,
-  };
+  const valid = { type: AGENT_APPS_RECHECK_VALUE_TYPE };
 
   it('accepts the object form', () => {
     assert.deepEqual(parseAgentAppsRecheckValue({ ...valid }), valid);
   });
 
   it('accepts the JSON-string form some Teams clients deliver', () => {
+    assert.deepEqual(parseAgentAppsRecheckValue(JSON.stringify(valid)), valid);
+  });
+
+  it('#1030 — drops every payload key but the discriminator', () => {
+    // Cards posted BEFORE this change still carry teamId/tenantId, so the
+    // parser must keep accepting them — and must not carry them forward,
+    // which is what kept them out of the install path in the first place.
     assert.deepEqual(
-      parseAgentAppsRecheckValue(JSON.stringify(valid)),
+      parseAgentAppsRecheckValue({
+        type: AGENT_APPS_RECHECK_VALUE_TYPE,
+        teamId: 'ffffffff-0000-0000-0000-000000000bad',
+        tenantId: 'ffffffff-0000-0000-0000-00000000dead',
+      }),
       valid,
     );
   });
@@ -228,17 +236,11 @@ describe('parseAgentAppsRecheckValue', () => {
   it('rejects foreign submit types and malformed payloads', () => {
     assert.equal(parseAgentAppsRecheckValue(undefined), undefined);
     assert.equal(parseAgentAppsRecheckValue('not json{'), undefined);
+    assert.equal(parseAgentAppsRecheckValue(42), undefined);
     assert.equal(
       parseAgentAppsRecheckValue({ ...valid, type: 'fresh_check' }),
       undefined,
     );
-    assert.equal(
-      parseAgentAppsRecheckValue({ ...valid, teamId: '' }),
-      undefined,
-    );
-    assert.equal(
-      parseAgentAppsRecheckValue({ ...valid, tenantId: undefined }),
-      undefined,
-    );
+    assert.equal(parseAgentAppsRecheckValue({}), undefined);
   });
 });

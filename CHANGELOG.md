@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.26.2
+
+Der Recheck-Klick nimmt sein Installationsziel nicht mehr aus der Karte
+(byte5ai/omadia#1030):
+
+- **`handleTeamsAgentAppsRecheck` leitet Team + Tenant nur noch aus der
+  Submit-Activity ab** (`teamsBot.ts`). Der Zweig ist out-of-band — er
+  antwortet vor dem Orchestrator, es hat also niemand vorher einen Principal
+  etabliert — und `data` einer Adaptive Card ist client-editierbar. Der alte
+  Fallback auf die durchgeschleiften `teamId`/`tenantId` machte damit jeden
+  handgebauten oder wiedergespielten „🔄 Prüfen"-Klick zu einem frei wählbaren
+  Ziel für `installAgentApps`, über Tenant-Grenzen hinweg. Ein Klick, dessen
+  Transport kein Team-Scope trägt, wird jetzt abgelehnt (`'refused-unscoped'`
+  plus eine erklärende Nachricht statt stiller Wirkungslosigkeit) — dasselbe
+  Muster, mit dem `handleApprovalDecision` verweigert, wenn es den
+  Antwortenden nicht bestätigen kann.
+- **Das Scope steht gar nicht mehr auf der Leitung**: `AgentAppsRecheckValue`
+  ist auf den Discriminator zusammengeschrumpft, `parseAgentAppsRecheckValue`
+  verwirft jeden weiteren Schlüssel, und `buildAgentAppsResultCard` schleift
+  nichts mehr durch (`BuildAgentAppsCardInput` braucht `teamId`/`tenantId`
+  nicht länger — sie dienten ausschließlich diesem Round-Trip). Bereits in
+  Kanälen liegende Karten tragen die beiden Felder weiter; der Parser ignoriert
+  sie, alte Karten funktionieren also unverändert und die Werte werden nur
+  nirgends mehr gelesen. `satisfies AgentAppsRecheckValue` an der
+  Submit-`data` macht ein Wiedereinführen zum Compilerfehler.
+
 ## 0.26.1
 
 Routine-Smart-Card-Klicks tragen ihren Principal (byte5ai/omadia#1029):

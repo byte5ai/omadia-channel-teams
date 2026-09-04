@@ -71,7 +71,6 @@ import {
   parseRoutineListFilterValue,
   parseTopicDecisionValue,
   stripFoldedAiDisclosure,
-  type AgentAppsRecheckValue,
   type ApprovalValue,
 } from './teamsCard.js';
 import type {
@@ -949,11 +948,15 @@ export class TeamsBot extends TeamsActivityHandler {
         return;
       }
       try {
-        await handleTeamsAgentAppsRecheck(
+        const outcome = await handleTeamsAgentAppsRecheck(
           this.autoInvite,
           context,
-          agentAppsRecheck,
         );
+        if (outcome === 'refused-unscoped') {
+          console.warn(
+            '[teams] agent-apps re-check refused: submit activity names no team scope',
+          );
+        }
       } catch (err) {
         console.error(
           '[teams] agent-apps re-check failed:',
@@ -2472,11 +2475,7 @@ export async function runTeamsAutoInviteHook(
 
   const result = await deps.installAgentApps(team);
   if (result.outcomes.length === 0) return 'skipped';
-  const card = buildAgentAppsResultCard({
-    outcomes: result.outcomes,
-    teamId: team.teamId,
-    tenantId: team.tenantId,
-  });
+  const card = buildAgentAppsResultCard({ outcomes: result.outcomes });
   await context.sendActivity({
     type: ActivityTypes.Message,
     attachments: [card],
@@ -2484,29 +2483,46 @@ export async function runTeamsAutoInviteHook(
   return 'posted-result-card';
 }
 
+/** What one "🔄 Prüfen" click did — surfaced for logging + tests. */
+export type TeamsAgentAppsRecheckResult =
+  | 'updated-card'
+  | 'posted-card'
+  | 'refused-unscoped';
+
+/** The refusal the clicker sees when the submit activity does not name a
+ *  team we may install into. Deliberately actionable rather than silent. */
+export const AGENT_APPS_RECHECK_UNSCOPED_MESSAGE =
+  'Die Prüfung braucht den Team-Kontext dieses Kanals — bitte in dem Teams-Kanal klicken, in dem die Karte gepostet wurde.';
+
 /**
  * "🔄 Prüfen" re-check: re-run the installer and UPDATE the existing card
  * (the submit's `replyToId` names the card activity); falls back to a
- * fresh post when the channel rejects the update. Card `data` is
- * client-editable, so the transport-derived team/tenant of the submit
- * activity wins over the round-tripped values whenever present.
+ * fresh post when the channel rejects the update.
+ *
+ * The install target comes from the submit activity's own `channelData`
+ * and NOWHERE ELSE (#1030). This branch is out-of-band — it answers
+ * before the orchestrator, so nothing upstream has established a
+ * principal — and card `data` is client-editable, so the earlier
+ * round-tripped `teamId`/`tenantId` fallback let a hand-crafted or
+ * replayed click aim `installAgentApps` at any team in any tenant. A
+ * click whose transport carries no team scope is refused, the same way
+ * `handleApprovalDecision` refuses when it cannot confirm the responder.
  */
 export async function handleTeamsAgentAppsRecheck(
   deps: TeamsAutoInviteDeps,
   context: TeamsAutoInviteTurnContext,
-  submitted: AgentAppsRecheckValue,
-): Promise<void> {
-  const transport = teamsTeamScopeFromActivity(context.activity);
-  const request: InstallAgentAppsRequest = transport ?? {
-    teamId: submitted.teamId,
-    tenantId: submitted.tenantId,
-  };
+): Promise<TeamsAgentAppsRecheckResult> {
+  const request: InstallAgentAppsRequest | undefined =
+    teamsTeamScopeFromActivity(context.activity);
+  if (!request) {
+    await context.sendActivity({
+      type: ActivityTypes.Message,
+      text: AGENT_APPS_RECHECK_UNSCOPED_MESSAGE,
+    });
+    return 'refused-unscoped';
+  }
   const result = await deps.installAgentApps(request);
-  const card = buildAgentAppsResultCard({
-    outcomes: result.outcomes,
-    teamId: request.teamId,
-    tenantId: request.tenantId,
-  });
+  const card = buildAgentAppsResultCard({ outcomes: result.outcomes });
   const cardActivityId = context.activity.replyToId;
   if (cardActivityId) {
     try {
@@ -2516,7 +2532,7 @@ export async function handleTeamsAgentAppsRecheck(
         conversation: context.activity.conversation,
         attachments: [card],
       });
-      return;
+      return 'updated-card';
     } catch {
       // Some contexts reject activity updates — fall through to a fresh post.
     }
@@ -2525,4 +2541,5 @@ export async function handleTeamsAgentAppsRecheck(
     type: ActivityTypes.Message,
     attachments: [card],
   });
+  return 'posted-card';
 }
