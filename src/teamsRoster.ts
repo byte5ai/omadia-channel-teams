@@ -27,10 +27,21 @@ export class TeamsRosterProvider {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   }
 
-  async list(context: TurnContext): Promise<ChatParticipant[]> {
+  /**
+   * `maxAgeMs` tightens the cache for one call. The kernel's member-scoped
+   * memory reads the roster as the room's audience, and a roster cached across
+   * a member joining would hide the newcomer from the rule and let them read
+   * what was never theirs. Membership events invalidate the entry too; this
+   * bounds the window when one is missed.
+   */
+  async list(
+    context: TurnContext,
+    options: { maxAgeMs?: number } = {},
+  ): Promise<ChatParticipant[]> {
     const convId = context.activity.conversation?.id ?? 'unknown';
     const hit = this.cache.get(convId);
-    if (hit && Date.now() - hit.fetchedAt < this.ttlMs) {
+    const maxAge = Math.min(this.ttlMs, options.maxAgeMs ?? this.ttlMs);
+    if (hit && Date.now() - hit.fetchedAt < maxAge) {
       return hit.participants;
     }
     const members: ChatParticipant[] = [];
@@ -61,6 +72,9 @@ export class TeamsRosterProvider {
               typeof m['userPrincipalName'] === 'string'
                 ? (m['userPrincipalName'] as string)
                 : null,
+            // Bot Framework bot ids start with `28:`; a bot is not a person in
+            // the room, for mentions or for member-scoped memory.
+            ...(channelUserId.startsWith('28:') ? { kind: 'agent' as const } : {}),
           });
         }
         continuation =
