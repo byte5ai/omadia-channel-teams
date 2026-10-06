@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.28.0
+
+Teams liefert die Anwesenden für das mitgliederbezogene Gedächtnis
+(byte5ai/omadia#1340, Kontextmodus `members`):
+
+- **Der Roster gilt als vollständig**: `teamsBot.ts` reicht den
+  Teilnehmer-Provider mit `completeRoster: true` an den Kernel. Erst damit
+  löst der Kernel einen Gruppenchat zu einer Owner-Menge auf; ohne das Flag
+  bleibt eine Gruppe „unbekannt“ und sieht kein mitgliederbezogenes Wissen.
+- **Kein veralteter Roster als Publikum**: `TeamsRosterProvider.list` nimmt
+  ein optionales `maxAgeMs`; für die Audience-Abfrage gilt 10 s statt des
+  5-Minuten-Caches. Ein Neuzugang, dessen Membership-Event verloren ging,
+  wird so spätestens nach 10 s mitgezählt — und sperrt das Wissen, das nicht
+  auch seins ist.
+- **Bots sind keine Anwesenden**: Roster-Einträge mit `28:`-ID tragen
+  `kind: 'agent'` und zählen nicht zur Owner-Menge.
+- **TurnOrigin**: jeder Turn nennt seinen Chat-Kontext (1:1 → `personal`,
+  Gruppenchat → Konversation, Team-Kanal → Konversation + Team).
+- Tests: `teamsRosterAudience.test.ts` (Cache vs. `maxAgeMs`, Bot-Markierung),
+  `teamsTurnOrigin.test.ts`. `botbuilder` ist im Test-Bundle jetzt extern,
+  damit ein Stub von `TeamsInfo` dieselbe Instanz trifft wie `dist/`.
+
 ## 0.26.2
 
 Der Recheck-Klick nimmt sein Installationsziel nicht mehr aus der Karte

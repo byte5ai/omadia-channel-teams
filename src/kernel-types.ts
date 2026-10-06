@@ -54,9 +54,18 @@ export interface ChatParticipant {
   displayName: string;
   email: string | null;
   userPrincipalName: string | null;
+  /** Kernel #1018 — `'agent'` marks a bot; absent = a person. */
+  kind?: 'human' | 'agent';
 }
 
-export type ChatParticipantsProvider = () => Promise<ChatParticipant[]>;
+/**
+ * `completeRoster` mirrors the kernel flag (member-scoped memory): the provider
+ * promises its non-empty roster lists EVERY member of the chat. The kernel
+ * gives a group member-scoped knowledge only when this is set.
+ */
+export type ChatParticipantsProvider = (() => Promise<ChatParticipant[]>) & {
+  readonly completeRoster?: boolean;
+};
 
 // ---------------------------------------------------------------------------
 // Turn context — mirror of src/services/turnContext.ts (structural)

@@ -100,6 +100,12 @@ const TEAMS_MAX_MESSAGE_CHARS = 25_000;
 // Frequency of typing indicators during long-running orchestrator calls. The Teams
 // client dims the "typing" animation after ~10 s of silence, so we refresh faster.
 const TYPING_INTERVAL_MS = 5_000;
+/**
+ * Member-scoped memory — how old a cached roster may be when the kernel reads
+ * it as the room's audience. Membership events invalidate the cache; this
+ * bounds the window when one is missed.
+ */
+const AUDIENCE_ROSTER_MAX_AGE_MS = 10_000;
 
 /**
  * #575 D7 — the Teams turn's session scope, derived through the channel SDK's
@@ -2007,10 +2013,17 @@ export class TeamsBot extends TeamsActivityHandler {
     };
 
     if (rosterProvider) {
-      await this.turnContext.runWithChatParticipants(
-        () => rosterProvider.list(context),
-        run,
+      // `completeRoster`: `getPagedMembers` pages through EVERY member, and a
+      // failed or partial fetch yields `[]` (which the kernel reads as an
+      // unknown room), never a subset — so a non-empty answer is the whole
+      // chat, the promise member-scoped memory needs before a group may use
+      // anything its members own. The short max age bounds how long a roster
+      // can lag a join when a membership event is missed.
+      const participants = Object.assign(
+        () => rosterProvider.list(context, { maxAgeMs: AUDIENCE_ROSTER_MAX_AGE_MS }),
+        { completeRoster: true } as const,
       );
+      await this.turnContext.runWithChatParticipants(participants, run);
     } else {
       await run();
     }

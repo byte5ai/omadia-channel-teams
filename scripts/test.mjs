@@ -52,6 +52,9 @@ await build({
     '@omadia/orchestrator',
     '@omadia/plugin-api',
     '@omadia/plugin-ui-helpers',
+    // Kept external so a test that stubs `TeamsInfo` patches the same
+    // instance the built `dist/` calls.
+    'botbuilder',
   ],
 });
 
