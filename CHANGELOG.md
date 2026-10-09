@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.29.0
+
+Antwortumfang pro Turn: zwei Buttons auf der Antwort-Card (Phase 3 des
+Antwortumfangs; Kernel-Seite in byte5ai/omadia, nach #1369 und #1370):
+
+- **„🔽 Kürzer“ / „🔼 Mehr Details“** stellen dieselbe Frage noch einmal, eine
+  Stufe knapper bzw. ausführlicher auf der Skala `tldr · brief · standard ·
+  detailed · max` — nur für diesen einen Turn; der nächste Turn läuft wieder
+  mit der Agent-/Installationseinstellung. Am Rand der Skala fehlt der
+  jeweilige Button.
+- **Woher die Stufe kommt**: der Kernel meldet mit jeder Antwort
+  `answerVerbosity: { effective, source }`. Ohne diese Angabe (älterer Kernel)
+  gibt es keine Buttons; das Plugin liest das Feld strukturell
+  (`readAnswerVerbosity`), weil das SDK, gegen das es kompiliert, es noch
+  nicht kennt.
+- **Mechanik wie Fresh Check**: `Action.Submit` mit `{ type: 'verbosity_step',
+  level, originalMessage }`, Klick läuft losgelöst (`runOrchestratorTurnDetached`)
+  mit erhaltener Historie und `answerVerbosity: level` im Turn-Input.
+- Budget: über Teams' Card-Grenze fliegen zuerst die Größen-Buttons, dann die
+  Direct-Line-Buttons.
+- Tests: `teamsCard.test.ts` (Buttons, Skalen-Rand, Payload-Parsing, kein
+  Rendern ohne Stufe/Frage).
+
 ## 0.28.0
 
 Teams liefert die Anwesenden für das mitgliederbezogene Gedächtnis

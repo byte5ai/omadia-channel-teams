@@ -39,10 +39,13 @@ interface TurnAgentResolution {
 import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
+import { readAnswerVerbosity } from './kernel-types.js';
 import type {
   CaptureDisclosure,
   ChatAgent,
   AgentConsultation,
+  AnswerVerbosityInfo,
+  AnswerVerbosityLevel,
   ConversationHistoryStore,
   DelegatedAnswer,
   FollowUpOption,
@@ -74,6 +77,7 @@ import {
   parseDirectLineValue,
   parseFollowUpValue,
   parseFreshCheckValue,
+  parseVerbosityStepValue,
   parseRoutineCardActionValue,
   parseRoutineListFilterValue,
   parseTopicDecisionValue,
@@ -967,6 +971,14 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
 
+    // "🔽 Kürzer" / "🔼 Mehr Details" — re-ask the same question one step
+    // down / up the answer-size scale, for this turn only.
+    const verbosityStep = parseVerbosityStepValue(context.activity.value);
+    if (verbosityStep) {
+      await this.handleVerbosityStep(context, sessionScope, userId, verbosityStep);
+      return;
+    }
+
     // `ask_user_choice` option click — blocking clarification resolved.
     // The chosen `value` is injected as the next user turn so the LLM can
     // re-run with the disambiguated input.
@@ -1574,6 +1586,35 @@ export class TeamsBot extends TeamsActivityHandler {
   }
 
   /**
+   * User clicked "🔽 Kürzer" / "🔼 Mehr Details" on an answer card: the same
+   * question again, one step down / up the answer-size scale, for this turn
+   * only. History is kept (unlike Fresh Check — the point here is size, not
+   * isolation) and the pending-choice slot is cleared like for a follow-up.
+   * Detached, like every card click: the Teams client gives a submit ~15 s.
+   */
+  private async handleVerbosityStep(
+    context: TurnContext,
+    sessionScope: string,
+    userId: string | undefined,
+    step: { level: AnswerVerbosityLevel; originalMessage: string },
+  ): Promise<void> {
+    const conversationId = context.activity.conversation?.id ?? 'unknown';
+    console.error(
+      `[teams] verbosity-step conv=${conversationId} level=${step.level} msg="${truncate(step.originalMessage, 80)}"`,
+    );
+    this.history.clearPending(sessionScope);
+    const priorTurns = this.history.get(sessionScope);
+    await this.runOrchestratorTurnDetached(context, {
+      conversationId,
+      sessionScope,
+      userId,
+      userMessage: step.originalMessage,
+      priorTurns,
+      answerVerbosity: step.level,
+    });
+  }
+
+  /**
    * User clicked one of the option buttons on an `ask_user_choice` card.
    * The chosen `value` is sent as the next user turn with the full chat
    * history preserved — the LLM then has the disambiguated input and can
@@ -1764,6 +1805,7 @@ export class TeamsBot extends TeamsActivityHandler {
       userMessage: string;
       priorTurns: ReturnType<ConversationHistoryStore['get']>;
       freshCheck?: boolean;
+      answerVerbosity?: AnswerVerbosityLevel;
     },
   ): Promise<void> {
     if (!this.proactiveSend) {
@@ -1806,6 +1848,8 @@ export class TeamsBot extends TeamsActivityHandler {
       priorTurns: ReturnType<ConversationHistoryStore['get']>;
       /** When true, the orchestrator skips context retrieval + memory read. */
       freshCheck?: boolean;
+      /** Answer-size pick for this turn only ("Kürzer" / "Mehr Details"). */
+      answerVerbosity?: AnswerVerbosityLevel;
       /** Pre-extracted on the ORIGINAL inbound turn for detached card clicks —
        *  a proactive continuation cannot read the user token itself. */
       presetSsoAssertion?: string;
@@ -1901,6 +1945,7 @@ export class TeamsBot extends TeamsActivityHandler {
           ...(input.userId ? { userId: input.userId } : {}),
           ...(input.priorTurns.length > 0 ? { priorTurns: input.priorTurns } : {}),
           ...(input.freshCheck ? { freshCheck: true } : {}),
+          ...(input.answerVerbosity ? { answerVerbosity: input.answerVerbosity } : {}),
           ...(ssoAssertion ? { ssoAssertion } : {}),
           userTimeZone,
           origin,
@@ -1967,6 +2012,9 @@ export class TeamsBot extends TeamsActivityHandler {
               ? { delegatedAnswer: result.delegatedAnswer }
               : {}),
             ...(result.memoryUsed ? { memoryUsed: true } : {}),
+            ...(readAnswerVerbosity(result)
+              ? { answerVerbosity: readAnswerVerbosity(result) }
+              : {}),
           },
         );
 
@@ -2096,6 +2144,8 @@ async function sendAnswer(
     agentsConsulted?: readonly AgentConsultation[];
     delegatedAnswer?: DelegatedAnswer;
     memoryUsed?: boolean;
+    /** The level the answer was generated under → "Kürzer"/"Mehr Details". */
+    answerVerbosity?: AnswerVerbosityInfo;
   },
 ): Promise<void> {
   // Blocking clarification — render a standalone Choice-Card instead of
@@ -2151,6 +2201,9 @@ async function sendAnswer(
       ...(verifier ? { verifier } : {}),
       ...(originalUserMessage ? { originalUserMessage } : {}),
       ...(directLine?.memoryUsed ? { showFreshCheck: true } : {}),
+      ...(directLine?.answerVerbosity
+        ? { answerVerbosity: directLine.answerVerbosity }
+        : {}),
       ...(mentionEntities.length > 0 ? { mentions: mentionEntities } : {}),
       ...(followUpOptions && followUpOptions.length > 0
         ? { followUpOptions }
