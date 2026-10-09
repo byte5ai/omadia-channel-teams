@@ -3,12 +3,15 @@ import { CardFactory } from 'botbuilder';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import type {
   AgentConsultation,
+  AnswerVerbosityInfo,
+  AnswerVerbosityLevel,
   CaptureDisclosure,
   DelegatedAnswer,
   OutgoingAttachment,
   RunTracePayload,
   VerifierBadge,
 } from './kernel-types.js';
+import { ANSWER_VERBOSITY_LEVELS, isAnswerVerbosityLevel } from './kernel-types.js';
 import type { MentionEntity } from './teamsMentions.js';
 import type { AgentAppInstallOutcome } from './teamsAgentInstaller.js';
 
@@ -103,6 +106,14 @@ export interface BuildAnswerCardInput {
    */
   showFreshCheck?: boolean;
   /**
+   * The answer-size level this answer was generated under
+   * (`SemanticAnswer.answerVerbosity`). With `originalUserMessage` set, the
+   * card offers "🔽 Kürzer" / "🔼 Mehr Details" as a re-ask one step down /
+   * up the scale; the button at the end of the scale is left out. Absent
+   * (older kernel) → no size buttons.
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
+  /**
    * Teams @-mention entities resolved against the active chat's roster.
    * When non-empty, embedded in the card's `msteams.entities` so Teams
    * renders the blue @-pill around matching `<at>Display Name</at>` tokens
@@ -163,6 +174,15 @@ export interface BuildAnswerCardInput {
   delegatedAnswer?: DelegatedAnswer;
 }
 
+/** Operator-facing names of the answer-size levels, for the button tooltips. */
+const VERBOSITY_LABEL: Record<AnswerVerbosityLevel, string> = {
+  tldr: 'TL;DR',
+  brief: 'Kurz',
+  standard: 'Standard',
+  detailed: 'Ausführlich',
+  max: 'Maximal',
+};
+
 /** Adaptive-Card Submit payload for the fresh-check button. */
 export const FRESH_CHECK_VALUE_TYPE = 'fresh_check';
 
@@ -180,6 +200,44 @@ export function parseFreshCheckValue(value: unknown): FreshCheckValue | undefine
     return undefined;
   }
   return { type: FRESH_CHECK_VALUE_TYPE, originalMessage };
+}
+
+/**
+ * Adaptive-Card Submit payload for the answer-size buttons ("🔽 Kürzer" /
+ * "🔼 Mehr Details"): re-ask the same question one step down or up the
+ * scale from the level the answer was generated under. Same shape and same
+ * handling as Fresh Check — the question text travels in the card and comes
+ * back verbatim in `activity.value`.
+ */
+export const VERBOSITY_STEP_VALUE_TYPE = 'verbosity_step';
+
+export interface VerbosityStepValue {
+  type: typeof VERBOSITY_STEP_VALUE_TYPE;
+  level: AnswerVerbosityLevel;
+  originalMessage: string;
+}
+
+export function parseVerbosityStepValue(value: unknown): VerbosityStepValue | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (v['type'] !== VERBOSITY_STEP_VALUE_TYPE) return undefined;
+  const level = v['level'];
+  const originalMessage = v['originalMessage'];
+  if (!isAnswerVerbosityLevel(level)) return undefined;
+  if (typeof originalMessage !== 'string' || originalMessage.length === 0) {
+    return undefined;
+  }
+  return { type: VERBOSITY_STEP_VALUE_TYPE, level, originalMessage };
+}
+
+/** The neighbouring level, or undefined at either end of the scale. */
+export function verbosityNeighbour(
+  level: AnswerVerbosityLevel,
+  direction: 'shorter' | 'longer',
+): AnswerVerbosityLevel | undefined {
+  const idx = ANSWER_VERBOSITY_LEVELS.indexOf(level);
+  if (idx < 0) return undefined;
+  return ANSWER_VERBOSITY_LEVELS[direction === 'shorter' ? idx - 1 : idx + 1];
 }
 
 /**
@@ -515,16 +573,23 @@ interface CardBody {
 export function buildDirectLineOnlyCard(
   input: Pick<
     BuildAnswerCardInput,
-    'agentsConsulted' | 'delegatedAnswer' | 'originalUserMessage'
+    'agentsConsulted' | 'delegatedAnswer' | 'originalUserMessage' | 'answerVerbosity'
   >,
 ): Attachment | undefined {
   const hasConsulted = (input.agentsConsulted?.length ?? 0) > 0;
-  if (!hasConsulted && !input.delegatedAnswer) return undefined;
+  // The size steps ride along on this slim card too: a long answer is
+  // exactly the one most likely to have been generated at `detailed`/`max`,
+  // so losing "🔽 Kürzer" here would strand the user one click up.
+  const hasSizeSteps = Boolean(input.answerVerbosity && input.originalUserMessage?.trim());
+  if (!hasConsulted && !input.delegatedAnswer && !hasSizeSteps) return undefined;
   const base: CardBody = {
     body: [{ type: 'Container', spacing: 'None', items: [] }],
     actions: [],
   };
-  const decorated = decorateDirectLine(base, input as BuildAnswerCardInput);
+  const decorated = decorateVerbositySteps(
+    decorateDirectLine(base, input as BuildAnswerCardInput),
+    input as BuildAnswerCardInput,
+  );
   const head = decorated.body[0] as { items?: unknown[] } | undefined;
   const hasChips = (head?.items?.length ?? 0) > 0;
   const hasActions = (decorated.actions?.length ?? 0) > 0;
@@ -542,13 +607,21 @@ export function buildDirectLineOnlyCard(
 function buildCardBody(input: BuildAnswerCardInput): CardBody {
   // Size-tier selection stays in `buildCardBodyBase`; the #332 transparency
   // chips + Direct-Line buttons are decorated onto the chosen tier here.
-  const card = decorateDirectLine(buildCardBodyBase(input), input);
+  const card = decorateVerbositySteps(
+    decorateDirectLine(buildCardBodyBase(input), input),
+    input,
+  );
   // The decoration runs AFTER the base fitter, so on an answer fitted near the
   // budget the added buttons could push the card over Teams' hard cap → silent
   // render failure. The chips are tiny (keep them); the buttons carry the bulk,
   // so shed them if we're over budget. The Direct-Line buttons also surface in
   // the long-answer fallback's slim card, so dropping them here is not a total
-  // loss of the affordance.
+  // loss of the affordance. The size steps go first: they are the cheaper
+  // affordance to lose (the user can still type "kürzer").
+  if (bytes(card) > CARD_BUDGET_BYTES && card.actions) {
+    card.actions = card.actions.filter((a) => !isVerbosityStepAction(a));
+    if (card.actions.length === 0) delete card.actions;
+  }
   if (bytes(card) > CARD_BUDGET_BYTES && card.actions) {
     card.actions = card.actions.filter((a) => !isDirectLineAction(a));
     if (card.actions.length === 0) delete card.actions;
@@ -560,6 +633,62 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
 function isDirectLineAction(action: unknown): boolean {
   const data = (action as { data?: { type?: unknown } } | undefined)?.data;
   return data?.type === DIRECT_LINE_VALUE_TYPE;
+}
+
+/** True for an `Action.Submit` carrying an answer-size step payload. */
+function isVerbosityStepAction(action: unknown): boolean {
+  const data = (action as { data?: { type?: unknown } } | undefined)?.data;
+  return data?.type === VERBOSITY_STEP_VALUE_TYPE;
+}
+
+/**
+ * Add "🔽 Kürzer" / "🔼 Mehr Details" — a re-ask of the same question one
+ * step down / up the answer-size scale. NOT behind the Fresh-Check gate: like
+ * the Direct-Line buttons it reads the original question directly, and only
+ * needs the kernel to have said which level the answer was generated under
+ * (`answerVerbosity`); an older kernel omits that and gets no buttons. The
+ * button at the end of the scale is left out rather than disabled.
+ */
+function decorateVerbositySteps(
+  card: CardBody,
+  input: BuildAnswerCardInput,
+): CardBody {
+  const question = input.originalUserMessage?.trim();
+  const level = input.answerVerbosity?.effective;
+  if (!question || !level) return card;
+  // Same cap as the Fresh-Check payload: the question is serialised into
+  // every button's `data`.
+  const originalMessage =
+    question.length > 2000 ? `${question.slice(0, 1999)}…` : question;
+  const actions = card.actions ?? [];
+  const shorter = verbosityNeighbour(level, 'shorter');
+  const longer = verbosityNeighbour(level, 'longer');
+  if (shorter) {
+    actions.push({
+      type: 'Action.Submit',
+      title: '🔽 Kürzer',
+      tooltip: `Dieselbe Frage noch einmal, eine Stufe knapper (${VERBOSITY_LABEL[shorter]}).`,
+      data: {
+        type: VERBOSITY_STEP_VALUE_TYPE,
+        level: shorter,
+        originalMessage,
+      } satisfies VerbosityStepValue,
+    });
+  }
+  if (longer) {
+    actions.push({
+      type: 'Action.Submit',
+      title: '🔼 Mehr Details',
+      tooltip: `Dieselbe Frage noch einmal, eine Stufe ausführlicher (${VERBOSITY_LABEL[longer]}).`,
+      data: {
+        type: VERBOSITY_STEP_VALUE_TYPE,
+        level: longer,
+        originalMessage,
+      } satisfies VerbosityStepValue,
+    });
+  }
+  if (actions.length > 0) card.actions = actions;
+  return card;
 }
 
 /**
@@ -967,6 +1096,7 @@ function assemble(
       } satisfies FreshCheckValue,
     });
   }
+
 
   // Follow-up refinements live INSIDE the body as an ActionSet, visually
   // separated from the meta-actions (Tool-Trace, Fresh-Check) in the card's

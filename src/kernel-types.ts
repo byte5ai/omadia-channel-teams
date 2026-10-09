@@ -209,6 +209,50 @@ export interface RunTracePayload {
 // Chat agent — mirror of ChatAgent + ChatTurnInput
 // ---------------------------------------------------------------------------
 
+/**
+ * Answer-size scale — mirror of the kernel's `ANSWER_VERBOSITY_LEVELS`
+ * (`@omadia/channel-sdk` ≥ the phase-3 cut; mirrored here because the SDK
+ * this package compiles against predates it). The kernel parses the wire
+ * value and ignores anything outside the scale, so a drift here can only
+ * make a button inert, never pick a wrong level.
+ */
+export const ANSWER_VERBOSITY_LEVELS = [
+  'tldr',
+  'brief',
+  'standard',
+  'detailed',
+  'max',
+] as const;
+export type AnswerVerbosityLevel = (typeof ANSWER_VERBOSITY_LEVELS)[number];
+
+/** The level an answer was generated under (`SemanticAnswer.answerVerbosity`). */
+export interface AnswerVerbosityInfo {
+  readonly effective: AnswerVerbosityLevel;
+  readonly source: 'turn' | 'configured';
+}
+
+export function isAnswerVerbosityLevel(raw: unknown): raw is AnswerVerbosityLevel {
+  return (
+    typeof raw === 'string' &&
+    (ANSWER_VERBOSITY_LEVELS as readonly string[]).includes(raw)
+  );
+}
+
+/**
+ * Read the level off a kernel answer structurally: the SDK type this package
+ * compiles against may predate the field, and an older kernel simply omits
+ * it — in which case the card offers no size buttons.
+ */
+export function readAnswerVerbosity(answer: unknown): AnswerVerbosityInfo | undefined {
+  if (!answer || typeof answer !== 'object') return undefined;
+  const raw = (answer as { answerVerbosity?: unknown }).answerVerbosity;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { effective, source } = raw as { effective?: unknown; source?: unknown };
+  if (!isAnswerVerbosityLevel(effective)) return undefined;
+  if (source !== 'turn' && source !== 'configured') return undefined;
+  return { effective, source };
+}
+
 export interface ChatTurnInput {
   userMessage: string;
   sessionScope?: string;
@@ -216,6 +260,12 @@ export interface ChatTurnInput {
   priorTurns?: Array<{ userMessage: string; assistantAnswer: string }>;
   extraSystemHint?: string;
   freshCheck?: boolean;
+  /**
+   * Answer-size pick for THIS turn only (the "Kürzer" / "Mehr Details" card
+   * buttons re-asking the same question). Replaces the configured level for
+   * the one turn; an older kernel ignores the field.
+   */
+  answerVerbosity?: AnswerVerbosityLevel;
   ssoAssertion?: string;
   userTimeZone?: string;
   /**

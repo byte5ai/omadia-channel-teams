@@ -3,7 +3,10 @@ import { strict as assert } from 'node:assert';
 import {
   aiLabelEntity,
   buildAnswerCard,
+  buildDirectLineOnlyCard,
+  parseVerbosityStepValue,
   stripFoldedAiDisclosure,
+  verbosityNeighbour,
 } from '@omadia/channel-teams';
 import type { RunTracePayload } from '@omadia/orchestrator';
 
@@ -244,6 +247,112 @@ describe('buildAnswerCard — Fresh-Check gate (memoryUsed)', () => {
   it('never renders Fresh-Check without an originalUserMessage', () => {
     const att = buildAnswerCard({ answer: 'ok', showFreshCheck: true });
     assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
+  });
+});
+
+/** The `Action.Submit` entries of a card, by their `data.type`. */
+function submitActions(content: unknown, type: string): Array<Record<string, unknown>> {
+  const actions = (content as { actions?: Array<Record<string, unknown>> }).actions ?? [];
+  return actions.filter((a) => (a['data'] as { type?: string } | undefined)?.type === type);
+}
+
+describe('buildAnswerCard — answer-size steps ("Kürzer" / "Mehr Details")', () => {
+  it('offers both neighbours from the middle of the scale, carrying the question', () => {
+    const att = buildAnswerCard({
+      answer: 'Antwort',
+      originalUserMessage: 'Wie viele offene Rechnungen gibt es?',
+      answerVerbosity: { effective: 'standard', source: 'configured' },
+    });
+    const steps = submitActions(att.content, 'verbosity_step');
+    assert.deepEqual(
+      steps.map((a) => [a['title'], (a['data'] as { level: string }).level]),
+      [
+        ['🔽 Kürzer', 'brief'],
+        ['🔼 Mehr Details', 'detailed'],
+      ],
+    );
+    for (const a of steps) {
+      const parsed = parseVerbosityStepValue(a['data']);
+      assert.ok(parsed, 'button payload must round-trip through the parser');
+      assert.equal(parsed.originalMessage, 'Wie viele offene Rechnungen gibt es?');
+    }
+  });
+
+  it('leaves out the button at the end of the scale instead of disabling it', () => {
+    const atTop = buildAnswerCard({
+      answer: 'Antwort',
+      originalUserMessage: 'Frage',
+      answerVerbosity: { effective: 'max', source: 'turn' },
+    });
+    assert.deepEqual(
+      submitActions(atTop.content, 'verbosity_step').map((a) => a['title']),
+      ['🔽 Kürzer'],
+    );
+    const atBottom = buildAnswerCard({
+      answer: 'Antwort',
+      originalUserMessage: 'Frage',
+      answerVerbosity: { effective: 'tldr', source: 'turn' },
+    });
+    assert.deepEqual(
+      submitActions(atBottom.content, 'verbosity_step').map((a) => a['title']),
+      ['🔼 Mehr Details'],
+    );
+  });
+
+  it('renders no size buttons without a level (older kernel) or without the question', () => {
+    const noLevel = buildAnswerCard({ answer: 'ok', originalUserMessage: 'Frage' });
+    assert.equal(submitActions(noLevel.content, 'verbosity_step').length, 0);
+    const noQuestion = buildAnswerCard({
+      answer: 'ok',
+      answerVerbosity: { effective: 'brief', source: 'configured' },
+    });
+    assert.equal(submitActions(noQuestion.content, 'verbosity_step').length, 0);
+  });
+
+  it('is independent of the Fresh-Check gate', () => {
+    const att = buildAnswerCard({
+      answer: 'ok',
+      originalUserMessage: 'Frage',
+      answerVerbosity: { effective: 'brief', source: 'configured' },
+      // showFreshCheck deliberately unset
+    });
+    assert.equal(submitActions(att.content, 'verbosity_step').length, 2);
+    assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
+  });
+
+  it('the parser rejects a level outside the scale and a missing question', () => {
+    assert.equal(
+      parseVerbosityStepValue({ type: 'verbosity_step', level: 'verbose', originalMessage: 'x' }),
+      undefined,
+    );
+    assert.equal(
+      parseVerbosityStepValue({ type: 'verbosity_step', level: 'max', originalMessage: '' }),
+      undefined,
+    );
+    assert.equal(parseVerbosityStepValue({ type: 'fresh_check', originalMessage: 'x' }), undefined);
+  });
+
+  it('survives the long-answer fallback on the slim card — "Kürzer" after "Mehr Details"', () => {
+    // A >25 KB answer loses the full card; the slim card must still carry
+    // the steps, or a user one click up has no way back down.
+    const slim = buildDirectLineOnlyCard({
+      originalUserMessage: 'Frage',
+      answerVerbosity: { effective: 'max', source: 'turn' },
+    });
+    assert.ok(slim, 'slim card must render for the size steps alone');
+    assert.deepEqual(
+      submitActions(slim.content, 'verbosity_step').map((a) => a['title']),
+      ['🔽 Kürzer'],
+    );
+    // Nothing to surface at all → still no card.
+    assert.equal(buildDirectLineOnlyCard({ originalUserMessage: 'Frage' }), undefined);
+  });
+
+  it('verbosityNeighbour walks the closed scale and stops at its ends', () => {
+    assert.equal(verbosityNeighbour('standard', 'shorter'), 'brief');
+    assert.equal(verbosityNeighbour('standard', 'longer'), 'detailed');
+    assert.equal(verbosityNeighbour('tldr', 'shorter'), undefined);
+    assert.equal(verbosityNeighbour('max', 'longer'), undefined);
   });
 });
 
