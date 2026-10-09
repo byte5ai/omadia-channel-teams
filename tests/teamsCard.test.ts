@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import {
   aiLabelEntity,
   buildAnswerCard,
+  buildDirectLineOnlyCard,
   parseVerbosityStepValue,
   stripFoldedAiDisclosure,
   verbosityNeighbour,
@@ -329,6 +330,22 @@ describe('buildAnswerCard — answer-size steps ("Kürzer" / "Mehr Details")', (
       undefined,
     );
     assert.equal(parseVerbosityStepValue({ type: 'fresh_check', originalMessage: 'x' }), undefined);
+  });
+
+  it('survives the long-answer fallback on the slim card — "Kürzer" after "Mehr Details"', () => {
+    // A >25 KB answer loses the full card; the slim card must still carry
+    // the steps, or a user one click up has no way back down.
+    const slim = buildDirectLineOnlyCard({
+      originalUserMessage: 'Frage',
+      answerVerbosity: { effective: 'max', source: 'turn' },
+    });
+    assert.ok(slim, 'slim card must render for the size steps alone');
+    assert.deepEqual(
+      submitActions(slim.content, 'verbosity_step').map((a) => a['title']),
+      ['🔽 Kürzer'],
+    );
+    // Nothing to surface at all → still no card.
+    assert.equal(buildDirectLineOnlyCard({ originalUserMessage: 'Frage' }), undefined);
   });
 
   it('verbosityNeighbour walks the closed scale and stops at its ends', () => {

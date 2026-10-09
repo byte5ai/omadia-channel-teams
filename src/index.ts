@@ -137,6 +137,7 @@ export {
   buildAgentAppsResultCard,
   buildAnswerCard,
   buildChoiceAskCard,
+  buildDirectLineOnlyCard,
   buildFollowUpsOnlyCard,
   buildSlotPickerCard,
   buildTopicAskCard,

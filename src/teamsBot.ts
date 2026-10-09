@@ -1989,6 +1989,9 @@ export class TeamsBot extends TeamsActivityHandler {
           result.text,
           result.aiDisclosure?.text,
         );
+        // Read once: the level this answer was generated under drives the
+        // "🔽 Kürzer" / "🔼 Mehr Details" buttons on the card.
+        const answerVerbosity = readAnswerVerbosity(result);
         await sendAnswer(
           context,
           answerText,
@@ -2012,9 +2015,7 @@ export class TeamsBot extends TeamsActivityHandler {
               ? { delegatedAnswer: result.delegatedAnswer }
               : {}),
             ...(result.memoryUsed ? { memoryUsed: true } : {}),
-            ...(readAnswerVerbosity(result)
-              ? { answerVerbosity: readAnswerVerbosity(result) }
-              : {}),
+            ...(answerVerbosity ? { answerVerbosity } : {}),
           },
         );
 
@@ -2272,13 +2273,23 @@ async function sendAnswer(
   }
   // #332 — same fallback for the agent-transparency footer + Direct-Line
   // buttons; otherwise the trust affordance silently vanishes on long answers.
-  if (directLine?.agentsConsulted?.length || directLine?.delegatedAnswer) {
+  // The answer-size steps ride on the same slim card: a >25 KB answer is the
+  // one most likely generated at `detailed`/`max`, so this is where the user
+  // needs "🔽 Kürzer" most.
+  if (
+    directLine?.agentsConsulted?.length ||
+    directLine?.delegatedAnswer ||
+    directLine?.answerVerbosity
+  ) {
     const dlCard = buildDirectLineOnlyCard({
       ...(directLine.agentsConsulted
         ? { agentsConsulted: directLine.agentsConsulted }
         : {}),
       ...(directLine.delegatedAnswer
         ? { delegatedAnswer: directLine.delegatedAnswer }
+        : {}),
+      ...(directLine.answerVerbosity
+        ? { answerVerbosity: directLine.answerVerbosity }
         : {}),
       ...(originalUserMessage ? { originalUserMessage } : {}),
     });

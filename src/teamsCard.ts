@@ -573,16 +573,23 @@ interface CardBody {
 export function buildDirectLineOnlyCard(
   input: Pick<
     BuildAnswerCardInput,
-    'agentsConsulted' | 'delegatedAnswer' | 'originalUserMessage'
+    'agentsConsulted' | 'delegatedAnswer' | 'originalUserMessage' | 'answerVerbosity'
   >,
 ): Attachment | undefined {
   const hasConsulted = (input.agentsConsulted?.length ?? 0) > 0;
-  if (!hasConsulted && !input.delegatedAnswer) return undefined;
+  // The size steps ride along on this slim card too: a long answer is
+  // exactly the one most likely to have been generated at `detailed`/`max`,
+  // so losing "🔽 Kürzer" here would strand the user one click up.
+  const hasSizeSteps = Boolean(input.answerVerbosity && input.originalUserMessage?.trim());
+  if (!hasConsulted && !input.delegatedAnswer && !hasSizeSteps) return undefined;
   const base: CardBody = {
     body: [{ type: 'Container', spacing: 'None', items: [] }],
     actions: [],
   };
-  const decorated = decorateDirectLine(base, input as BuildAnswerCardInput);
+  const decorated = decorateVerbositySteps(
+    decorateDirectLine(base, input as BuildAnswerCardInput),
+    input as BuildAnswerCardInput,
+  );
   const head = decorated.body[0] as { items?: unknown[] } | undefined;
   const hasChips = (head?.items?.length ?? 0) > 0;
   const hasActions = (decorated.actions?.length ?? 0) > 0;

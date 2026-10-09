@@ -19,7 +19,9 @@ Antwortumfangs; Kernel-Seite in byte5ai/omadia, nach #1369 und #1370):
   level, originalMessage }`, Klick läuft losgelöst (`runOrchestratorTurnDetached`)
   mit erhaltener Historie und `answerVerbosity: level` im Turn-Input.
 - Budget: über Teams' Card-Grenze fliegen zuerst die Größen-Buttons, dann die
-  Direct-Line-Buttons.
+  Direct-Line-Buttons. Beim Long-Answer-Fallback (> 25 KB, Card wird durch
+  Text-Chunks ersetzt) reiten die Buttons auf der schlanken Direct-Line-Card
+  mit — gerade eine `max`-Antwort braucht den Weg zurück zu „Kürzer“.
 - Tests: `teamsCard.test.ts` (Buttons, Skalen-Rand, Payload-Parsing, kein
   Rendern ohne Stufe/Frage).
 
