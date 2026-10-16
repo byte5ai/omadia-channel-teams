@@ -2016,6 +2016,7 @@ export class TeamsBot extends TeamsActivityHandler {
               : {}),
             ...(result.memoryUsed ? { memoryUsed: true } : {}),
             ...(answerVerbosity ? { answerVerbosity } : {}),
+            ...(result.answerSource === 'privacy-render' ? { systemData: true } : {}),
           },
         );
 
@@ -2147,6 +2148,8 @@ async function sendAnswer(
     memoryUsed?: boolean;
     /** The level the answer was generated under → "Kürzer"/"Mehr Details". */
     answerVerbosity?: AnswerVerbosityInfo;
+    /** Privacy Shield rendered the answer → "Originaldaten" chip. */
+    systemData?: boolean;
   },
 ): Promise<void> {
   // Blocking clarification — render a standalone Choice-Card instead of
@@ -2200,6 +2203,7 @@ async function sendAnswer(
       ...(runTrace ? { runTrace } : {}),
       ...(attachments ? { attachments } : {}),
       ...(verifier ? { verifier } : {}),
+      ...(directLine?.systemData ? { systemData: true } : {}),
       ...(originalUserMessage ? { originalUserMessage } : {}),
       ...(directLine?.memoryUsed ? { showFreshCheck: true } : {}),
       ...(directLine?.answerVerbosity

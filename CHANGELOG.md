@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.30.0
+
+Antworten, die Privacy Shield server-seitig gerendert hat, tragen jetzt auch in
+Teams den Hinweis auf Originaldaten (Kernel-Seite: byte5ai/omadia #1402/#1407):
+
+- **„🗄 Originaldaten aus dem System“** als Chip in der Statuszeile der
+  Antwort-Card, neben „✨ AI-generated“ und dem Verifier-Chip. Gleicher Wortlaut
+  wie das `SystemDataBadge` im Web-Chat. Die Werte setzt der Server unverändert
+  aus dem Quellsystem ein; der Verifier-Chip bewertet weiter nur den Text des
+  Modells drumherum.
+- **Quelle**: `SemanticAnswer.answerSource === 'privacy-render'`, das der
+  Kernel schon mitliefert, Teams bisher aber ignoriert hat.
+- Beim Long-Answer-Fallback (> 25 KB, Text-Chunks statt Card) gibt es wie beim
+  Verifier-Chip keine Statuszeile.
+- Tests: `teamsCard.test.ts` (Chip mit/ohne Verifier, fehlt bei Modell-Antwort,
+  übersteht die Größenstufen).
+
 ## 0.29.0
 
 Antwortumfang pro Turn: zwei Buttons auf der Antwort-Card (Phase 3 des

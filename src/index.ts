@@ -169,6 +169,7 @@ export {
   BOOK_SLOT_VALUE_TYPE,
   TOPIC_DECISION_VALUE_TYPE,
   TEAMS_CARD_CONTENT_TYPE,
+  SYSTEM_DATA_CHIP,
 } from './teamsCard.js';
 
 // ---------------------------------------------------------------------------
