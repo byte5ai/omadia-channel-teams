@@ -90,6 +90,14 @@ export interface BuildAnswerCardInput {
    */
   verifier?: VerifierBadge;
   /**
+   * The answer was rendered server-side by Privacy Shield
+   * (`SemanticAnswer.answerSource === 'privacy-render'`): its values are the
+   * source system's original data, inserted by the server, not text the
+   * model wrote. The card then shows a "🗄 Originaldaten aus dem System" chip
+   * next to the AI and verifier chips — the same marker the web chat shows.
+   */
+  systemData?: boolean;
+  /**
    * When present, renders a `🔄 Fresh Check` button that re-asks the same
    * question while bypassing memory read + FTS context block. Used when
    * the user suspects an old memory entry is poisoning the answer.
@@ -820,6 +828,10 @@ function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
   const followUps = (input.followUpOptions ?? []).slice(0, FOLLOW_UP_MAX_OPTIONS);
   const disclosure = input.captureDisclosure;
   const privacy = input.privacyReceipt;
+  const chips: StatusChips = {
+    ...(input.verifier ? { verifier: input.verifier } : {}),
+    systemData: input.systemData === true,
+  };
 
   // Drop-order in size pressure: trace-detail → trace → disclosure → privacy
   // → truncate answer. Privacy survives longer than disclosure because it's
@@ -833,7 +845,7 @@ function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
     input.runTrace,
     'full',
     attachments,
-    input.verifier,
+    chips,
     originalMessage,
     followUps,
     disclosure,
@@ -849,7 +861,7 @@ function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
       input.runTrace,
       'compact',
       attachments,
-      input.verifier,
+      chips,
       originalMessage,
       followUps,
       disclosure,
@@ -865,7 +877,7 @@ function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
     undefined,
     'full',
     attachments,
-    input.verifier,
+    chips,
     originalMessage,
     followUps,
     disclosure,
@@ -880,7 +892,7 @@ function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
     undefined,
     'full',
     attachments,
-    input.verifier,
+    chips,
     originalMessage,
     followUps,
     undefined,
@@ -895,7 +907,7 @@ function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
     undefined,
     'full',
     attachments,
-    input.verifier,
+    chips,
     originalMessage,
     followUps,
     undefined,
@@ -912,7 +924,7 @@ function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
     undefined,
     'full',
     attachments,
-    input.verifier,
+    chips,
     originalMessage,
     followUps,
     undefined,
@@ -925,12 +937,19 @@ function bytes(body: CardBody): number {
   return Buffer.byteLength(JSON.stringify(body), 'utf8');
 }
 
+/** The status chips under the "✨ AI-generated" marker. */
+interface StatusChips {
+  verifier?: VerifierBadge;
+  /** Privacy Shield rendered the answer: original system data. */
+  systemData: boolean;
+}
+
 function assemble(
   answer: string,
   runTrace: RunTracePayload | undefined,
   traceLevel: 'full' | 'compact',
-  attachments: readonly DiagramAttachment[] = [],
-  verifier?: VerifierBadge,
+  attachments: readonly DiagramAttachment[],
+  chips: StatusChips,
   originalMessage?: string,
   followUps: ReadonlyArray<{ label: string; prompt: string }> = [],
   disclosure?: CaptureDisclosure,
@@ -947,17 +966,12 @@ function assemble(
       wrap: true,
     },
   ];
-  if (verifier) {
-    const { label, color } = verifierChip(verifier);
-    chipItems.push({
-      type: 'TextBlock',
-      text: label,
-      size: 'Small',
-      weight: 'Bolder',
-      color,
-      wrap: true,
-      spacing: 'Small',
-    });
+  if (chips.verifier) {
+    const { label, color } = verifierChip(chips.verifier);
+    chipItems.push(chipText(label, color));
+  }
+  if (chips.systemData) {
+    chipItems.push(chipText(SYSTEM_DATA_CHIP, 'Accent'));
   }
   const body: unknown[] = [
     // AI marker chip (visual, in addition to the activity-level entity).
@@ -1291,6 +1305,21 @@ function maskedValuesLine(masked: ReadonlySet<string>): unknown {
     }
   });
   return { type: 'RichTextBlock', spacing: 'Small', inlines };
+}
+
+/** Same wording as the web chat's `SystemDataBadge` (`chat.systemData.label`). */
+export const SYSTEM_DATA_CHIP = '🗄 Originaldaten aus dem System';
+
+function chipText(text: string, color: 'Good' | 'Warning' | 'Attention' | 'Accent'): unknown {
+  return {
+    type: 'TextBlock',
+    text,
+    size: 'Small',
+    weight: 'Bolder',
+    color,
+    wrap: true,
+    spacing: 'Small',
+  };
 }
 
 function verifierChip(verifier: VerifierBadge): {

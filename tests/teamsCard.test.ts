@@ -6,6 +6,7 @@ import {
   buildDirectLineOnlyCard,
   parseVerbosityStepValue,
   stripFoldedAiDisclosure,
+  SYSTEM_DATA_CHIP,
   verbosityNeighbour,
 } from '@omadia/channel-teams';
 import type { RunTracePayload } from '@omadia/orchestrator';
@@ -247,6 +248,44 @@ describe('buildAnswerCard — Fresh-Check gate (memoryUsed)', () => {
   it('never renders Fresh-Check without an originalUserMessage', () => {
     const att = buildAnswerCard({ answer: 'ok', showFreshCheck: true });
     assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
+  });
+});
+
+/** The texts of the chip row (first body container) of an answer card. */
+function chipTexts(content: unknown): string[] {
+  const body = (content as { body: Array<{ items?: Array<{ text?: string }> }> }).body;
+  return (body[0]?.items ?? []).map((i) => i.text ?? '');
+}
+
+describe('buildAnswerCard — "Originaldaten aus dem System" chip (Privacy Shield render)', () => {
+  it('shows the chip next to the AI marker when the server rendered the answer', () => {
+    const att = buildAnswerCard({ answer: '| Name | Betrag |', systemData: true });
+    assert.deepEqual(chipTexts(att.content), ['✨ AI-generated', SYSTEM_DATA_CHIP]);
+  });
+
+  it('sits after the verifier chip, which still judges the prose', () => {
+    const att = buildAnswerCard({
+      answer: 'Hier die offenen Posten:',
+      systemData: true,
+      verifier: { status: 'verified' },
+    });
+    assert.deepEqual(chipTexts(att.content), ['✨ AI-generated', '✓ Antwort geprüft', SYSTEM_DATA_CHIP]);
+  });
+
+  it('is absent for an ordinary model answer', () => {
+    for (const input of [{ answer: 'pong' }, { answer: 'pong', systemData: false }]) {
+      const att = buildAnswerCard(input);
+      assert.deepEqual(chipTexts(att.content), ['✨ AI-generated']);
+    }
+  });
+
+  it('survives the size tiers that drop the trace', () => {
+    const att = buildAnswerCard({
+      answer: 'x'.repeat(20_000),
+      runTrace: sampleTrace,
+      systemData: true,
+    });
+    assert.ok(chipTexts(att.content).includes(SYSTEM_DATA_CHIP));
   });
 });
 
