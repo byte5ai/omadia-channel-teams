@@ -72,10 +72,16 @@ import {
   parseTeamsBotsConfig,
 } from './teamsBotsConfig.js';
 import { createTeamsRouter, type TeamsRouterBotCredentials } from './messagesRouter.js';
+import { createTeamsSsoVerifier } from './teamsTabAuth.js';
 import { createTeamsUiRouter } from './uiRouter.js';
+
 import { parseTeamsAgentAppsConfig } from './teamsAgentApps.js';
 import { TeamsAgentInstaller } from './teamsAgentInstaller.js';
 import type { TeamsAutoInviteDeps } from './teamsBot.js';
+
+/** Mount of the Hub / Tab-Config pages. Must equal the manifest's
+ *  `permissions.public_paths` entry — `auth:'custom'` is refused elsewhere. */
+const TEAMS_UI_MOUNT_PATH = '/p/channel-teams';
 
 /**
  * Minimal shape of the kernel's UiRouteCatalog service. Declared here
@@ -813,6 +819,17 @@ export async function activate(
   }
   const teamsUiRouter = createTeamsUiRouter({
     webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',
+    mountPath: TEAMS_UI_MOUNT_PATH,
+    // A Teams SSO token is accepted for any bot this install serves: the
+    // app package's `webApplicationInfo.id` is that bot's app id.
+    verifier: createTeamsSsoVerifier({
+      audiences: botCredentials.map(({ identity }) => ({
+        appId: identity.appId,
+        tenantId: identity.tenantId,
+      })),
+    }),
+    onAuthFailure: (reason) =>
+      core.log('info', `[tab-auth] catalog refused: ${reason}`),
     discover: () =>
       uiRouteCatalog
         .list()
@@ -827,11 +844,20 @@ export async function activate(
           title: r.title,
         })),
   });
+  // byte5ai/omadia#1596: Teams loads these pages WITHOUT the omadia session
+  // cookie, so the kernel's default `auth:'session'` answers 401 there.
+  // `auth:'custom'` + the manifest's `permissions.public_paths` entry
+  // (served once the operator grants it); the router authenticates the
+  // only data-bearing endpoint (`/catalog`) itself with the Teams SSO token.
   const disposeTeamsUi = ctx.routes.register(
-    '/p/channel-teams',
+    TEAMS_UI_MOUNT_PATH,
     teamsUiRouter,
+    { auth: 'custom' },
   );
-  core.log('info', 'teams bridge uiRoutes mounted at /p/channel-teams/{hub,tab-config}');
+  core.log(
+    'info',
+    `teams bridge uiRoutes mounted at ${TEAMS_UI_MOUNT_PATH}/{hub,tab-config,catalog} (auth=custom, teams-sso for ${String(botCredentials.length)} bot(s))`,
+  );
 
   // --- Notification handler ------------------------------------------
   // Slice 2: real Graph `sendActivityNotification` Bell-Icon push when

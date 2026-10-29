@@ -195,3 +195,19 @@ export {
   type SignAttachmentUrlParams,
   type VerifyAttachmentSigParams,
 } from './attachmentSigning.js';
+
+// ---------------------------------------------------------------------------
+// byte5ai/omadia#1596 — Hub / Tab-Config router (`auth:'custom'`) and the
+// Teams SSO verifier that authenticates its `/catalog` endpoint. Exported for
+// tests/teamsTabAuth.test.ts, which runs against the built dist/.
+// ---------------------------------------------------------------------------
+export { createTeamsUiRouter, type DiscoveredUiRoute } from './uiRouter.js';
+export {
+  bearerToken,
+  createTeamsSsoVerifier,
+  TeamsSsoError,
+  type TeamsSsoAudience,
+  type TeamsSsoPrincipal,
+  type TeamsSsoVerifier,
+  type TeamsSsoVerifierOptions,
+} from './teamsTabAuth.js';

@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.31.0
+
+Teams-Tabs laden wieder (Folge von byte5ai/omadia#1596 / #1608): Seit der Kernel
+`/p/…`-Routen mit `auth: 'session'` hinter die omadia-Session stellt, antworteten
+`/p/channel-teams/hub` und `/tab-config` in Teams mit 401 — Teams lädt sie ohne
+unser Session-Cookie.
+
+- **`auth: 'custom'` + `permissions.public_paths: ["/p/channel-teams"]`**: Der
+  Router läuft nicht mehr durch das Session-Gate, sondern über den
+  Public-Path-Mount des Kernels — erst, wenn der Operator den Pfad freigibt.
+- **Eigene Prüfung im Plugin**: `/hub` und `/tab-config` sind jetzt datenfreie
+  Hüllen. Den Plugin-Katalog liefert nur der neue JSON-Endpunkt `/catalog`, und
+  der antwortet 401 ohne gültiges **Teams-SSO-Token**
+  (`authentication.getAuthToken()`, Ressource = `webApplicationInfo` des
+  App-Pakets). Geprüft werden RS256-Signatur gegen die Entra-Schlüssel, Issuer
+  und `tid` (nur Tenants der konfigurierten Bots), Audience (App-ID eines Bots,
+  `api://<host>/<appId>` oder blank), Laufzeit sowie ein delegiertes
+  User-Token (`scp` + `oid`; App-only-Tokens zählen nicht). Der Tab-Kontext aus
+  `app.getContext()` dient nicht zur Authentifizierung.
+- **Ohne Abhängigkeit**: `node:crypto` (JWK-Import) + `fetch`; Schlüssel werden
+  pro Tenant eine Stunde gecacht, ein unbekanntes `kid` löst höchstens alle
+  5 Minuten einen neuen Abruf aus, und nur für konfigurierte Tenants.
+- **Manifest**: `login.microsoftonline.com` unter `network.outbound`
+  (Schlüssel-Abruf).
+- **Voraussetzung**: Die App-Registrierung muss eine API unter
+  `api://<middleware-host>/<appId>` mit Scope `access_as_user` freigeben und die
+  Teams-Clients vorab autorisieren (Setup-Guide, Abschnitt 5). Ohne das zeigt
+  der Hub „Teams sign-in failed“ statt des Katalogs — nie Daten.
+- Tests: `teamsTabAuth.test.ts` (v1/v2-Token, fremder Schlüssel, manipulierter
+  Payload, `alg: none`, fremder Tenant ohne Schlüssel-Abruf, fremde Audience,
+  falscher Issuer, abgelaufen, App-only, `kid`-Refetch-Floor; Router: Hüllen
+  ohne Katalogdaten, `/catalog` 401 ohne/mit gefälschtem Token, 200 mit
+  gültigem).
+
 ## 0.30.0
 
 Antworten, die Privacy Shield server-seitig gerendert hat, tragen jetzt auch in
