@@ -1942,10 +1942,20 @@ export class TeamsBot extends TeamsActivityHandler {
             console.error('[teams] routines turn-context capture failed:', refErr);
           }
         }
-        const chatAgent =
-          input.chatAgent ??
-          this.resolveChatAgentForTurn(context.activity).chatAgent ??
-          this.defaultOrchestrator;
+        // byte5ai/omadia#1598 — card clicks and detached turns resolve here,
+        // not in handleMessage, so the refusal has to hold here too: a wired
+        // resolver that serves no agent is never answered by the default.
+        const resolved = input.chatAgent
+          ? { chatAgent: input.chatAgent }
+          : this.resolveChatAgentForTurn(context.activity);
+        if (!resolved.chatAgent && 'refused' in resolved && resolved.refused) {
+          console.error(
+            `[teams] no agent for conv=${input.conversationId.slice(0, 24)}… — turn refused`,
+          );
+          await context.sendActivity(NO_AGENT_FOR_CONVERSATION_TEXT);
+          return;
+        }
+        const chatAgent = resolved.chatAgent ?? this.defaultOrchestrator;
         // #330 field report — the attributed form is what the agent sees AND
         // what lands in history; sendAnswer keeps the raw text for mention
         // resolution. See attributeGroupMessage for the why.

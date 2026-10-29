@@ -10,6 +10,9 @@ Kein Fallback mehr auf den Default-Orchestrator ohne Plugin-Zuordnung
   hat keine Plugin-Zuordnung pro Agent und damit die Tools **aller** Plugins.
   Jetzt wird der Turn verweigert, und der Bot antwortet: „Diesem Chat ist kein
   Agent zugeordnet. Bitte wende dich an deinen Administrator."
+- Das gilt auch für Karten-Klicks und abgesetzte Turns, die den Agenten später
+  erneut auflösen: Liefert der Resolver dort keinen Agenten, wird der Turn
+  ebenfalls verweigert.
 - Installationen ohne Resolver (Single-Agent, kein Postgres) verhalten sich wie
   bisher.
 
