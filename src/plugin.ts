@@ -817,6 +817,7 @@ export async function activate(
       "channel-teams: required service 'uiRouteCatalog' not published — kernel must publish it before plugins activate (see middleware/src/index.ts).",
     );
   }
+  const http = ctx.http;
   const teamsUiRouter = createTeamsUiRouter({
     webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',
     mountPath: TEAMS_UI_MOUNT_PATH,
@@ -827,6 +828,9 @@ export async function activate(
         appId: identity.appId,
         tenantId: identity.tenantId,
       })),
+      // Key discovery through the kernel's egress allow-list
+      // (`network.outbound: login.microsoftonline.com`) when available.
+      ...(http ? { fetchImpl: (url: string, init?: RequestInit) => http.fetch(url, init) } : {}),
     }),
     onAuthFailure: (reason) =>
       core.log('info', `[tab-auth] catalog refused: ${reason}`),

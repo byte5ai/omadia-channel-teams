@@ -132,7 +132,7 @@ setup:
       Teams loads `/p/channel-teams/hub` and `/tab-config` without an omadia
       session. Two things make them work:
       1. **Grant the public path** `/p/channel-teams` for this plugin in the
-         operator UI (Plugins → Microsoft Teams Channel → permissions). The
+         operator UI (Plugins → Microsoft Teams Channel → Grants). The
          pages are data-free; the plugin catalogue is only served to a
          verified Teams SSO token.
       2. **Teams SSO on the app registration** (once): **Expose an API** →
@@ -234,7 +234,7 @@ setup:
       Teams lädt `/p/channel-teams/hub` und `/tab-config` ohne
       omadia-Session. Damit sie funktionieren:
       1. **Public Path freigeben**: `/p/channel-teams` für dieses Plugin in
-         der Operator-UI (Plugins → Microsoft Teams Channel → Berechtigungen).
+         der Operator-UI (Plugins → Microsoft Teams Channel → Freigaben).
          Die Seiten selbst enthalten keine Daten; den Plugin-Katalog gibt es
          nur gegen ein geprüftes Teams-SSO-Token.
       2. **Teams-SSO an der App-Registrierung** (einmalig): **Expose an API**

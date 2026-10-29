@@ -206,6 +206,7 @@ export {
   bearerToken,
   createTeamsSsoVerifier,
   TeamsSsoError,
+  TEAMS_SSO_CLIENT_IDS,
   type TeamsSsoAudience,
   type TeamsSsoPrincipal,
   type TeamsSsoVerifier,
