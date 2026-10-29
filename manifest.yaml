@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.30.0"
+  version: "0.31.0"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für Omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -127,6 +127,20 @@ setup:
       the bot posts a fallback card with per-agent install deep links
       (`https://teams.microsoft.com/l/app/<teamsAppId>`, public app ids
       only).
+
+      ### 5. Teams tabs (Hub + Tab-Config)
+      Teams loads `/p/channel-teams/hub` and `/tab-config` without an omadia
+      session. Two things make them work:
+      1. **Grant the public path** `/p/channel-teams` for this plugin in the
+         operator UI (Plugins → Microsoft Teams Channel → Grants). The
+         pages are data-free; the plugin catalogue is only served to a
+         verified Teams SSO token.
+      2. **Teams SSO on the app registration** (once): **Expose an API** →
+         Application ID URI `api://<middleware-host>/<app-id>`, scope
+         `access_as_user` (admins and users), and authorise the Teams clients
+         `1fec8e78-bce4-4aaf-ab1b-5451cc387264` (desktop/mobile) and
+         `5e3ce6c0-2b1f-4285-8d4b-75ee78787346` (web) for that scope. The
+         app package's `webApplicationInfo` already points there.
     de: |
       ## Microsoft Teams verbinden
 
@@ -215,6 +229,21 @@ setup:
       Install-Deep-Links pro Agent
       (`https://teams.microsoft.com/l/app/<teamsAppId>`, nur öffentliche
       App-IDs).
+
+      ### 5. Teams-Tabs (Hub + Tab-Config)
+      Teams lädt `/p/channel-teams/hub` und `/tab-config` ohne
+      omadia-Session. Damit sie funktionieren:
+      1. **Public Path freigeben**: `/p/channel-teams` für dieses Plugin in
+         der Operator-UI (Plugins → Microsoft Teams Channel → Freigaben).
+         Die Seiten selbst enthalten keine Daten; den Plugin-Katalog gibt es
+         nur gegen ein geprüftes Teams-SSO-Token.
+      2. **Teams-SSO an der App-Registrierung** (einmalig): **Expose an API**
+         → Application ID URI `api://<middleware-host>/<app-id>`, Scope
+         `access_as_user` (Admins und User), und die Teams-Clients
+         `1fec8e78-bce4-4aaf-ab1b-5451cc387264` (Desktop/Mobile) und
+         `5e3ce6c0-2b1f-4285-8d4b-75ee78787346` (Web) für diesen Scope
+         vorab autorisieren. `webApplicationInfo` im App-Paket zeigt bereits
+         dorthin.
   fields:
     - key: "teams_bots"
       type: "string"
@@ -283,8 +312,19 @@ permissions:
     outbound:
       - "smba.trafficmanager.net"
       - "*.botframework.com"
+      # Entra signing keys for the Teams-tab SSO check (src/teamsTabAuth.ts).
+      - "login.microsoftonline.com"
   filesystem:
     scratch: false
+  # byte5ai/omadia#1596 — Teams loads the Hub (`/hub`) and Tab-Config
+  # (`/tab-config`) pages inside the Teams client, without the omadia session
+  # cookie. The router is registered `auth: 'custom'` and is only served once
+  # the operator grants this path. The two pages are data-free shells; the
+  # plugin catalogue they show comes from `/catalog`, which answers 401 unless
+  # the request carries a Teams SSO token for one of this install's bots
+  # (signature, tenant, audience and expiry checked by the plugin).
+  public_paths:
+    - "/p/channel-teams"
 
 integrations:
   - id: "bot_framework"
