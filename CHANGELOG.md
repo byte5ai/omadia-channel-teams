@@ -16,12 +16,18 @@ unser Session-Cookie.
   (`authentication.getAuthToken()`, Ressource = `webApplicationInfo` des
   App-Pakets). Geprüft werden RS256-Signatur gegen die Entra-Schlüssel, Issuer
   und `tid` (nur Tenants der konfigurierten Bots), Audience (App-ID eines Bots,
-  `api://<host>/<appId>` oder blank), Laufzeit sowie ein delegiertes
-  User-Token (`scp` + `oid`; App-only-Tokens zählen nicht). Der Tab-Kontext aus
+  `api://<host>/<appId>` oder blank), ausgestellt an einen Teams-/M365-Client
+  (`azp`/`appid`), Laufzeit sowie ein delegiertes User-Token (`scp` + `oid`;
+  App-only-Tokens zählen nicht). Der Tab-Kontext aus
   `app.getContext()` dient nicht zur Authentifizierung.
-- **Ohne Abhängigkeit**: `node:crypto` (JWK-Import) + `fetch`; Schlüssel werden
-  pro Tenant eine Stunde gecacht, ein unbekanntes `kid` löst höchstens alle
-  5 Minuten einen neuen Abruf aus, und nur für konfigurierte Tenants.
+- **Ohne Abhängigkeit**: `node:crypto` (JWK-Import) + `ctx.http.fetch` (Egress
+  über die Allow-List des Kernels). Schlüssel werden pro Tenant eine Stunde
+  gecacht; ein unbekanntes `kid` löst höchstens alle 5 Minuten einen neuen
+  Abruf aus, nach einem Fehlschlag gilt 60 s Backoff, parallele Anfragen teilen
+  sich einen Abruf, und abgerufen wird nur für konfigurierte Tenants.
+- **Wer den Katalog sieht**: jede angemeldete Person eines konfigurierten
+  Tenants, auch B2B-Gäste. Der Katalog enthält nur Plugin-IDs, Titel und Pfade;
+  die verlinkten Seiten prüfen selbst.
 - **Manifest**: `login.microsoftonline.com` unter `network.outbound`
   (Schlüssel-Abruf).
 - **Voraussetzung**: Die App-Registrierung muss eine API unter
@@ -30,7 +36,8 @@ unser Session-Cookie.
   der Hub „Teams sign-in failed“ statt des Katalogs — nie Daten.
 - Tests: `teamsTabAuth.test.ts` (v1/v2-Token, fremder Schlüssel, manipulierter
   Payload, `alg: none`, fremder Tenant ohne Schlüssel-Abruf, fremde Audience,
-  falscher Issuer, abgelaufen, App-only, `kid`-Refetch-Floor; Router: Hüllen
+  falscher Issuer, abgelaufen, App-only, fremder Client, `kid`-Refetch-Floor,
+  Fehler-Backoff + Single-Flight; Router: Hüllen
   ohne Katalogdaten, `/catalog` 401 ohne/mit gefälschtem Token, 200 mit
   gültigem).
 
