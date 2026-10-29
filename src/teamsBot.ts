@@ -35,7 +35,18 @@ import { pickChatAgentForTurn } from './agentForTurn.js';
 interface TurnAgentResolution {
   readonly chatAgent?: ChatAgent;
   readonly identityBotKey?: string;
+  /**
+   * byte5ai/omadia#1598 — the platform resolver is wired but serves no agent
+   * for this activity (it rejected, or it threw). The turn is refused: the
+   * `defaultOrchestrator` fallback is the kernel's legacy bundle, which has no
+   * per-agent plugin grants and would answer with every plugin's tools.
+   */
+  readonly refused?: true;
 }
+
+/** byte5ai/omadia#1598 — what a user sees when no agent serves the chat. */
+export const NO_AGENT_FOR_CONVERSATION_TEXT =
+  'Diesem Chat ist kein Agent zugeordnet. Bitte wende dich an deinen Administrator.';
 import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
@@ -820,15 +831,15 @@ export class TeamsBot extends TeamsActivityHandler {
         },
       });
       return {
-        ...(chatAgent ? { chatAgent } : {}),
+        ...(chatAgent ? { chatAgent } : { refused: true as const }),
         ...(identityBotKey ? { identityBotKey } : {}),
       };
     } catch (err) {
       console.error(
-        `[teams] channelResolver threw (conv=${conversationId?.slice(0, 16) ?? '-'}, recipient=${recipientId?.slice(0, 16) ?? '-'}…) — falling back to default agent:`,
+        `[teams] channelResolver threw (conv=${conversationId?.slice(0, 16) ?? '-'}, recipient=${recipientId?.slice(0, 16) ?? '-'}…) — refusing the turn (#1598):`,
         err,
       );
-      return {};
+      return { refused: true };
     }
   }
 
@@ -892,6 +903,16 @@ export class TeamsBot extends TeamsActivityHandler {
       console.error(
         `[teams] drop non-mention conv=${conversationIdShort}… type=${conversationType}`,
       );
+      return;
+    }
+
+    // byte5ai/omadia#1598 — no agent serves this chat: say so instead of
+    // answering with the grant-less default bundle.
+    if (turnAgent.refused) {
+      console.error(
+        `[teams] no agent for conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… — turn refused`,
+      );
+      await context.sendActivity(NO_AGENT_FOR_CONVERSATION_TEXT);
       return;
     }
 

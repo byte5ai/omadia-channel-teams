@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.32.0
+
+Kein Fallback mehr auf den Default-Orchestrator ohne Plugin-Zuordnung
+(byte5ai/omadia#1598).
+
+- Wenn der Kernel-Resolver für einen Chat **keinen** Agenten liefert (er lehnt
+  ab oder wirft), antwortete der Bot bisher über den `chatAgent@1`-Default. Der
+  hat keine Plugin-Zuordnung pro Agent und damit die Tools **aller** Plugins.
+  Jetzt wird der Turn verweigert, und der Bot antwortet: „Diesem Chat ist kein
+  Agent zugeordnet. Bitte wende dich an deinen Administrator."
+- Installationen ohne Resolver (Single-Agent, kein Postgres) verhalten sich wie
+  bisher.
+
 ## 0.31.0
 
 Teams-Tabs laden wieder (Folge von byte5ai/omadia#1596 / #1608): Seit der Kernel
