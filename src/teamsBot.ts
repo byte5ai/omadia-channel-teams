@@ -95,6 +95,10 @@ import {
   stripFoldedAiDisclosure,
   type ApprovalValue,
 } from './teamsCard.js';
+import {
+  DEFAULT_TEAMS_CARD_FEATURES,
+  type TeamsCardFeatures,
+} from './teamsCardFeatures.js';
 import type {
   InstallAgentAppsRequest,
   TeamsAgentInstallResult,
@@ -542,6 +546,13 @@ export class TeamsBot extends TeamsActivityHandler {
      * itself never talks to Graph for installs.
      */
     private readonly autoInvite?: TeamsAutoInviteDeps,
+    /**
+     * Operator switches for the optional answer-card buttons (`teams_card_*`
+     * setup fields, resolved once in plugin.ts via
+     * `resolveTeamsCardFeatures`). Absent → every switch on, i.e. the card
+     * renders exactly as before the switches existed.
+     */
+    private readonly cardFeatures: TeamsCardFeatures = DEFAULT_TEAMS_CARD_FEATURES,
   ) {
     super();
 
@@ -2048,6 +2059,7 @@ export class TeamsBot extends TeamsActivityHandler {
             ...(result.memoryUsed ? { memoryUsed: true } : {}),
             ...(answerVerbosity ? { answerVerbosity } : {}),
             ...(result.answerSource === 'privacy-render' ? { systemData: true } : {}),
+            cardFeatures: this.cardFeatures,
           },
         );
 
@@ -2181,8 +2193,11 @@ async function sendAnswer(
     answerVerbosity?: AnswerVerbosityInfo;
     /** Privacy Shield rendered the answer → "Originaldaten" chip. */
     systemData?: boolean;
+    /** Operator switches for the optional buttons; absent → all on. */
+    cardFeatures?: TeamsCardFeatures;
   },
 ): Promise<void> {
+  const cardFeatures = directLine?.cardFeatures ?? DEFAULT_TEAMS_CARD_FEATURES;
   // Blocking clarification — render a standalone Choice-Card instead of
   // an answer. The follow-up / fresh-check actions aren't meaningful here
   // since there's no concrete answer yet; attachments are ignored because
@@ -2253,6 +2268,7 @@ async function sendAnswer(
       ...(directLine?.delegatedAnswer
         ? { delegatedAnswer: directLine.delegatedAnswer }
         : {}),
+      features: cardFeatures,
     });
     const activity = MessageFactory.attachment(card);
     // Activity-level entities: AI label + mention entities for Teams'
@@ -2302,9 +2318,11 @@ async function sendAnswer(
   // Long-answer fallback ate the card, so follow-up buttons need their own
   // mini-card appended after the chunks. Rare path (>25 KB answers); worth
   // the extra activity to keep refinements working.
+  // The operator's follow-ups switch is applied inside the builder
+  // (undefined → nothing to send), so card and fallback can never disagree.
   if (followUpOptions && followUpOptions.length > 0) {
-    const card = buildFollowUpsOnlyCard(followUpOptions);
-    await context.sendActivity(MessageFactory.attachment(card));
+    const card = buildFollowUpsOnlyCard(followUpOptions, cardFeatures);
+    if (card) await context.sendActivity(MessageFactory.attachment(card));
   }
   // #332 — same fallback for the agent-transparency footer + Direct-Line
   // buttons; otherwise the trust affordance silently vanishes on long answers.
@@ -2327,6 +2345,7 @@ async function sendAnswer(
         ? { answerVerbosity: directLine.answerVerbosity }
         : {}),
       ...(originalUserMessage ? { originalUserMessage } : {}),
+      features: cardFeatures,
     });
     if (dlCard) await context.sendActivity(MessageFactory.attachment(dlCard));
   }

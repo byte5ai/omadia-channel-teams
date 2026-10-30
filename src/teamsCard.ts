@@ -14,6 +14,10 @@ import type {
 import { ANSWER_VERBOSITY_LEVELS, isAnswerVerbosityLevel } from './kernel-types.js';
 import type { MentionEntity } from './teamsMentions.js';
 import type { AgentAppInstallOutcome } from './teamsAgentInstaller.js';
+import {
+  DEFAULT_TEAMS_CARD_FEATURES,
+  type TeamsCardFeatures,
+} from './teamsCardFeatures.js';
 
 /**
  * Post-S+7.5 alias — the kernel/SemanticAnswer naming is "OutgoingAttachment",
@@ -180,6 +184,19 @@ export interface BuildAnswerCardInput {
    * user knows the body is the specialist's own words, not the orchestrator's.
    */
   delegatedAnswer?: DelegatedAnswer;
+  /**
+   * Operator switches for the optional buttons (`teams_card_*` setup
+   * fields, see `teamsCardFeatures.ts`). A switch that is off removes the
+   * button AND its hidden container / header, even when the data for it was
+   * passed in. Omitted → every switch on, i.e. the card renders exactly as
+   * it did before the switches existed. Chips are never affected.
+   */
+  features?: TeamsCardFeatures;
+}
+
+/** The effective switches for an input — defaults when the caller passed none. */
+function effectiveFeatures(input: Pick<BuildAnswerCardInput, 'features'>): TeamsCardFeatures {
+  return input.features ?? DEFAULT_TEAMS_CARD_FEATURES;
 }
 
 /** Operator-facing names of the answer-size levels, for the button tooltips. */
@@ -476,11 +493,15 @@ export function buildChoiceAskCard(input: BuildChoiceAskCardInput): Attachment {
  * Minimal standalone card carrying ONLY follow-up buttons, used for the
  * long-answer fallback where the answer is sent as plain-text chunks
  * (which can't carry Adaptive-Card actions). Attached as a final activity
- * after the chunks so the buttons still appear.
+ * after the chunks so the buttons still appear. Returns undefined when the
+ * operator switched follow-ups off (or there is nothing to offer) — the
+ * gate lives here so the card and its fallback can never disagree.
  */
 export function buildFollowUpsOnlyCard(
   options: ReadonlyArray<{ label: string; prompt: string }>,
-): Attachment {
+  features: TeamsCardFeatures = DEFAULT_TEAMS_CARD_FEATURES,
+): Attachment | undefined {
+  if (!features.followUps || options.length === 0) return undefined;
   return CardFactory.adaptiveCard({
     $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
     type: 'AdaptiveCard',
@@ -581,14 +602,22 @@ interface CardBody {
 export function buildDirectLineOnlyCard(
   input: Pick<
     BuildAnswerCardInput,
-    'agentsConsulted' | 'delegatedAnswer' | 'originalUserMessage' | 'answerVerbosity'
+    | 'agentsConsulted'
+    | 'delegatedAnswer'
+    | 'originalUserMessage'
+    | 'answerVerbosity'
+    | 'features'
   >,
 ): Attachment | undefined {
+  const features = effectiveFeatures(input);
   const hasConsulted = (input.agentsConsulted?.length ?? 0) > 0;
   // The size steps ride along on this slim card too: a long answer is
   // exactly the one most likely to have been generated at `detailed`/`max`,
-  // so losing "🔽 Kürzer" here would strand the user one click up.
-  const hasSizeSteps = Boolean(input.answerVerbosity && input.originalUserMessage?.trim());
+  // so losing "🔽 Kürzer" here would strand the user one click up. The
+  // operator's switch applies here as on the full card.
+  const hasSizeSteps =
+    features.verbositySteps &&
+    Boolean(input.answerVerbosity && input.originalUserMessage?.trim());
   if (!hasConsulted && !input.delegatedAnswer && !hasSizeSteps) return undefined;
   const base: CardBody = {
     body: [{ type: 'Container', spacing: 'None', items: [] }],
@@ -661,6 +690,7 @@ function decorateVerbositySteps(
   card: CardBody,
   input: BuildAnswerCardInput,
 ): CardBody {
+  if (!effectiveFeatures(input).verbositySteps) return card;
   const question = input.originalUserMessage?.trim();
   const level = input.answerVerbosity?.effective;
   if (!question || !level) return card;
@@ -789,8 +819,15 @@ function decorateDirectLine(
     ? stripDirective(input.originalUserMessage)
     : undefined;
   // Cap short (600) — four buttons each embed this, so a 2 KB message would be
-  // the dominant card-size cost.
-  if (consulted.length > 0 && original && original.trim().length > 0) {
+  // the dominant card-size cost. The operator's `directLine` switch removes
+  // only these buttons — the chips above are the #332 transparency layer and
+  // stay regardless.
+  if (
+    effectiveFeatures(input).directLine &&
+    consulted.length > 0 &&
+    original &&
+    original.trim().length > 0
+  ) {
     const trimmed =
       original.length > 600 ? `${original.slice(0, 599)}…` : original;
     const actions = card.actions ?? [];
@@ -817,14 +854,31 @@ function decorateDirectLine(
   return card;
 }
 
-function buildCardBodyBase(input: BuildAnswerCardInput): CardBody {
+function buildCardBodyBase(rawInput: BuildAnswerCardInput): CardBody {
+  const features = effectiveFeatures(rawInput);
+  // Operator switches: a button that is off is dropped TOGETHER with the
+  // data that would render it, so the ToggleVisibility button and its hidden
+  // target container (and the follow-ups header + ActionSet) always go as a
+  // pair — never a button pointing at a missing element, never an orphaned
+  // container that only costs card bytes. Done by narrowing the input once,
+  // so every size tier below sees the same picture.
+  const input: BuildAnswerCardInput = {
+    ...rawInput,
+    ...(features.toolTrace ? {} : { runTrace: undefined }),
+    ...(features.memoryDisclosure ? {} : { captureDisclosure: undefined }),
+    ...(features.privacyReceipt ? {} : { privacyReceipt: undefined }),
+    ...(features.followUps ? {} : { followUpOptions: undefined }),
+  };
   const attachments = (input.attachments ?? []).slice(0, MAX_ATTACHMENTS_PER_CARD);
   // Fresh-Check gate: `originalMessage` here ONLY drives the Fresh-Check
   // action in `assemble`. The Direct-Line buttons read
   // `input.originalUserMessage` directly in `decorateDirectLine` and stay
-  // available regardless of the gate.
+  // available regardless of the gate. The operator's `freshCheck` switch
+  // sits on top of the kernel's memoryUsed gate.
   const originalMessage =
-    input.showFreshCheck === true ? input.originalUserMessage : undefined;
+    features.freshCheck && input.showFreshCheck === true
+      ? input.originalUserMessage
+      : undefined;
   const followUps = (input.followUpOptions ?? []).slice(0, FOLLOW_UP_MAX_OPTIONS);
   const disclosure = input.captureDisclosure;
   const privacy = input.privacyReceipt;

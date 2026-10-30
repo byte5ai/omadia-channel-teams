@@ -212,3 +212,19 @@ export {
   type TeamsSsoVerifier,
   type TeamsSsoVerifierOptions,
 } from './teamsTabAuth.js';
+
+// ---------------------------------------------------------------------------
+// Operator switches for the optional answer-card buttons (`teams_card_*`
+// setup fields). Re-exported for plugin.ts' sibling consumers and the tests
+// under tests/ (scripts/test.mjs runs them against the built dist/).
+// ---------------------------------------------------------------------------
+export {
+  DEFAULT_TEAMS_CARD_FEATURES,
+  TEAMS_CARD_FEATURE_CONFIG_KEYS,
+  TEAMS_CARD_FEATURE_KEYS,
+  disabledTeamsCardFeatures,
+  parseBooleanSetting,
+  resolveTeamsCardFeatures,
+  type TeamsCardFeatureKey,
+  type TeamsCardFeatures,
+} from './teamsCardFeatures.js';
