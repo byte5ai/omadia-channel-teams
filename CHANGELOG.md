@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **People directory** (`teamsPeopleDirectory.ts`): registers the kernel's
+  `PeopleDirectoryProvider` for `teams` (feature-detected —
+  `core.registerPeopleDirectoryProvider?.`), so Conductor human steps can
+  resolve a person named in prose to a routable address. Graph
+  `GET /users?$search` under the default bot's app registration,
+  filtered to enabled `Member` accounts of the bot's tenant; `principalRef` =
+  mail lowercased = the channel binding key (mail-less users are skipped — UPN
+  never binds).
+  Requires the **`User.Read.All` application permission** (admin consent);
+  401/403 → `not_configured` (the kernel surfaces a *partial* result, nothing
+  breaks). `TeamsGraphResolver.searchUsers()` + `GraphRequestError` (status
+  on Graph failures) added.
+
 ## 0.33.0
 
 Buttons auf der Antwort-Card per Plugin-Einstellung ein- und ausschaltbar.

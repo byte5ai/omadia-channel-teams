@@ -66,6 +66,29 @@ const DEFAULT_MEMBER_CAP = 8;
 const TOKEN_EXPIRY_SLACK_MS = 60_000;
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const MEMBER_PAGE_SIZE = 50;
+/** `/users?$search` page cap — Graph allows up to 999, the kernel asks for ≤25. */
+const USER_SEARCH_MAX = 50;
+
+/** A Graph user as the people directory needs it (`$select` below). */
+export interface GraphUser {
+  readonly id: string;
+  readonly displayName?: string;
+  readonly mail?: string | null;
+  readonly userPrincipalName?: string | null;
+  readonly jobTitle?: string | null;
+}
+
+/** Error from a Graph call, carrying the HTTP status so callers can tell
+ *  "permission not granted" (401/403) from a transient failure. */
+export class GraphRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GraphRequestError';
+  }
+}
 
 interface CacheEntry {
   readonly value: ResolvedConversation;
@@ -229,17 +252,60 @@ export class TeamsGraphResolver {
     };
   }
 
-  private async fetchJson(url: string): Promise<Record<string, unknown>> {
+  /**
+   * People directory (Conductor human steps): tenant users matching `query`
+   * on display name / mail / UPN via Graph `$search` (needs the
+   * `User.Read.All` application permission). Not cached — the kernel bounds
+   * and rate-limits the calls, and a stale directory would hand out an
+   * address that no longer routes. Throws `GraphRequestError` so the
+   * provider can map 401/403 to "not configured".
+   */
+  async searchUsers(query: string, limit: number): Promise<{ users: GraphUser[]; truncated: boolean }> {
+    const top = Math.max(1, Math.min(USER_SEARCH_MAX, Math.floor(limit)));
+    // Graph `$search` wants the term in double quotes; strip quotes from the input so a
+    // user-typed `"` cannot break out of the clause.
+    const term = query.replace(/["\\]/g, ' ').trim();
+    const search = `"displayName:${term}" OR "mail:${term}" OR "userPrincipalName:${term}"`;
+    // Members of THIS bot's tenant only, enabled accounts only: guests (whose mail lives
+    // in another tenant), disabled and resource accounts must not become suggestions —
+    // a reminder routed to them either leaks or vanishes. `$filter` + `$search` needs
+    // ConsistencyLevel eventual and `$count=true` on the users endpoint.
+    const filter = "accountEnabled eq true and userType eq 'Member'";
+    const url =
+      `${GRAPH_BASE}/users?$search=${encodeURIComponent(search)}` +
+      `&$filter=${encodeURIComponent(filter)}&$count=true` +
+      `&$select=id,displayName,mail,userPrincipalName,jobTitle&$top=${String(top)}`;
+    const json = await this.fetchJson(url, { ConsistencyLevel: 'eventual' });
+    const value = json['value'];
+    // A 200 without a `value` array is a broken answer, not an empty directory.
+    if (!Array.isArray(value)) throw new GraphRequestError(0, 'graph /users returned no value array');
+    const users: GraphUser[] = [];
+    for (const raw of value) {
+      const u = raw as Record<string, unknown>;
+      if (typeof u['id'] !== 'string') continue;
+      users.push({
+        id: u['id'],
+        ...(typeof u['displayName'] === 'string' ? { displayName: u['displayName'] } : {}),
+        ...(typeof u['mail'] === 'string' ? { mail: u['mail'] } : {}),
+        ...(typeof u['userPrincipalName'] === 'string' ? { userPrincipalName: u['userPrincipalName'] } : {}),
+        ...(typeof u['jobTitle'] === 'string' ? { jobTitle: u['jobTitle'] } : {}),
+      });
+    }
+    // A next-page link means more matched than we show — the kernel treats that as partial.
+    return { users, truncated: typeof json['@odata.nextLink'] === 'string' };
+  }
+
+  private async fetchJson(url: string, extraHeaders: Record<string, string> = {}): Promise<Record<string, unknown>> {
     const token = await this.accessToken();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await this.fetchImpl(url, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
         signal: controller.signal,
       });
       if (!res.ok) {
-        throw new Error(`graph ${String(res.status)} for ${url.slice(0, 80)}`);
+        throw new GraphRequestError(res.status, `graph ${String(res.status)} for ${url.slice(0, 80)}`);
       }
       return (await res.json()) as Record<string, unknown>;
     } finally {
