@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.34.0
 
 - **People directory** (`teamsPeopleDirectory.ts`): registers the kernel's
   `PeopleDirectoryProvider` for `teams` (feature-detected —
