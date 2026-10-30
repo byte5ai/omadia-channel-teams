@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.32.0"
+  version: "0.33.0"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für Omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -97,7 +97,21 @@ setup:
         query param) or Graph Explorer (`/teams`). Empty → log-only.
       - Attachment prefix, topic URL and directory label have safe defaults.
 
-      ### 4. Auto-invite agent apps (optional Graph consent)
+      ### 4. Answer-card buttons (optional)
+      Every answer card may carry up to seven optional buttons. Each one has
+      its own switch (**on** by default) under **Answer card: …**:
+      Tool-Trace, Memory impact, Privacy Guard, Fresh Check, follow-up
+      suggestions, "Direct line to <Agent>", and the answer-size steps
+      ("Shorter" / "More details"). A switch that is off removes the button
+      (and its expandable section) from the card and from the mini-cards
+      used for long answers. Buttons that finish a flow — approvals,
+      clarification questions, slot picking, calendar consent — and the
+      transparency chips (AI label, verifier, consulted agents) are never
+      affected. Switching a button off only hides it: the underlying data
+      (follow-up suggestions, privacy receipt, trace) is still produced by
+      the kernel.
+
+      ### 5. Auto-invite agent apps (optional Graph consent)
       With **Agent Apps (JSON)** (`teams_agent_apps`) configured, the channel
       auto-installs the listed omadia agent apps into a team when one of its
       bots is added there. That needs two extra Graph **application
@@ -128,7 +142,7 @@ setup:
       (`https://teams.microsoft.com/l/app/<teamsAppId>`, public app ids
       only).
 
-      ### 5. Teams tabs (Hub + Tab-Config)
+      ### 6. Teams tabs (Hub + Tab-Config)
       Teams loads `/p/channel-teams/hub` and `/tab-config` without an omadia
       session. Two things make them work:
       1. **Grant the public path** `/p/channel-teams` for this plugin in the
@@ -197,7 +211,20 @@ setup:
         (groupId-Parameter) oder Graph Explorer (`/teams`). Leer → nur Log.
       - Attachment-Präfix, Topic-URL und Directory-Label haben sichere Defaults.
 
-      ### 4. Agent-Apps automatisch einladen (optionaler Graph-Consent)
+      ### 4. Buttons auf der Antwort-Card (optional)
+      Jede Antwort-Card kann bis zu sieben optionale Buttons tragen. Jeder
+      hat einen eigenen Schalter (Standard: **an**) unter **Antwort-Card: …**:
+      Tool-Trace, Memory-Auswirkung, Privacy Guard, Fresh Check,
+      Folgevorschläge, „Direkt mit <Agent>" und die Umfang-Buttons („Kürzer" /
+      „Mehr Details"). Ein ausgeschalteter Button verschwindet samt seines
+      aufklappbaren Abschnitts von der Card und von den Mini-Cards bei langen
+      Antworten. Buttons, die einen Ablauf abschließen — Freigaben,
+      Rückfragen, Terminwahl, Kalender-Zustimmung — und die Transparenz-Chips
+      (KI-Kennzeichnung, Prüf-Badge, konsultierte Agenten) bleiben immer. Ein
+      Schalter blendet nur aus: Die zugrunde liegenden Daten (Folgevorschläge,
+      Privacy-Receipt, Trace) erzeugt der Kernel weiterhin.
+
+      ### 5. Agent-Apps automatisch einladen (optionaler Graph-Consent)
       Mit konfiguriertem **Agent Apps (JSON)** (`teams_agent_apps`)
       installiert der Channel die gelisteten omadia-Agent-Apps automatisch
       in ein Team, sobald einer seiner Bots dort hinzugefügt wird. Dafür
@@ -230,7 +257,7 @@ setup:
       (`https://teams.microsoft.com/l/app/<teamsAppId>`, nur öffentliche
       App-IDs).
 
-      ### 5. Teams-Tabs (Hub + Tab-Config)
+      ### 6. Teams-Tabs (Hub + Tab-Config)
       Teams lädt `/p/channel-teams/hub` und `/tab-config` ohne
       omadia-Session. Damit sie funktionieren:
       1. **Public Path freigeben**: `/p/channel-teams` für dieses Plugin in
@@ -282,6 +309,76 @@ setup:
       label: "Dashboard-Label für Channel-Routing"
       help: "Optionales operator-freundliches Label für /operator/channels (statt 'Teams · <bot-app-id-short>'). Beispiel: 'Teams · Production · Marketing'. Leer lassen → generiertes Default-Label."
       required: false
+    - key: "teams_card_tool_trace"
+      type: "boolean"
+      label:
+        en: "Answer card: Tool-Trace button"
+        de: "Antwort-Card: Tool-Trace-Button"
+      help:
+        en: "Shows the \"🔧 Tool-Trace\" button that expands which tools and sub-agents ran for this answer (visible only to the viewer who expands it). Off: button and section are removed. Default: on."
+        de: "Zeigt den Button „🔧 Tool-Trace“, der aufklappt, welche Tools und Sub-Agenten für diese Antwort gelaufen sind (sichtbar nur für den, der aufklappt). Aus: Button und Abschnitt entfallen. Standard: an."
+      required: false
+      default: "true"
+    - key: "teams_card_memory_disclosure"
+      type: "boolean"
+      label:
+        en: "Answer card: Memory impact button"
+        de: "Antwort-Card: Memory-Auswirkung-Button"
+      help:
+        en: "Shows the \"🧠 Memory-Auswirkung\" button that expands what the turn persisted into the knowledge graph. Off: button and section are removed; the capture itself is unchanged. Default: on."
+        de: "Zeigt den Button „🧠 Memory-Auswirkung“, der aufklappt, was der Turn im Wissensgraphen gespeichert hat. Aus: Button und Abschnitt entfallen; die Speicherung selbst bleibt unverändert. Standard: an."
+      required: false
+      default: "true"
+    - key: "teams_card_privacy_receipt"
+      type: "boolean"
+      label:
+        en: "Answer card: Privacy Guard button"
+        de: "Antwort-Card: Privacy-Guard-Button"
+      help:
+        en: "Shows the \"🛡 Privacy Guard\" button that expands the per-turn privacy receipt (detections, masking, routing). Off: button and section are removed; the Privacy Shield itself keeps running. Default: on."
+        de: "Zeigt den Button „🛡 Privacy Guard“, der den Privacy-Receipt des Turns aufklappt (Erkennungen, Maskierung, Routing). Aus: Button und Abschnitt entfallen; der Privacy Shield selbst läuft weiter. Standard: an."
+      required: false
+      default: "true"
+    - key: "teams_card_fresh_check"
+      type: "boolean"
+      label:
+        en: "Answer card: Fresh Check button"
+        de: "Antwort-Card: Fresh-Check-Button"
+      help:
+        en: "Shows the \"🔄 Fresh Check (ohne Memory)\" button that re-asks the same question without memory when memory influenced the answer. Off: the button is never offered. Default: on."
+        de: "Zeigt den Button „🔄 Fresh Check (ohne Memory)“, der dieselbe Frage ohne Memory erneut stellt, wenn Memory die Antwort beeinflusst hat. Aus: Der Button wird nie angeboten. Standard: an."
+      required: false
+      default: "true"
+    - key: "teams_card_follow_ups"
+      type: "boolean"
+      label:
+        en: "Answer card: Follow-up suggestions"
+        de: "Antwort-Card: Folgevorschläge"
+      help:
+        en: "Shows the \"💡 Nächste Varianten\" buttons with one-click follow-up questions (also on the mini-card after long answers). Off: suggestions are not shown; the agent may still generate them. Default: on."
+        de: "Zeigt die Buttons „💡 Nächste Varianten“ mit Folgefragen per Klick (auch auf der Mini-Card nach langen Antworten). Aus: Vorschläge werden nicht gezeigt; der Agent kann sie weiterhin erzeugen. Standard: an."
+      required: false
+      default: "true"
+    - key: "teams_card_direct_line"
+      type: "boolean"
+      label:
+        en: "Answer card: Direct-line buttons"
+        de: "Antwort-Card: Direkt-mit-Buttons"
+      help:
+        en: "Shows one \"💬 Direkt mit <Agent>\" button per consulted specialist to re-ask the question directly there. Off: the buttons are removed; the \"🔎 Konsultiert\" transparency chip stays. Default: on."
+        de: "Zeigt pro konsultiertem Spezialisten einen Button „💬 Direkt mit <Agent>“, um die Frage dort direkt erneut zu stellen. Aus: Die Buttons entfallen; der Transparenz-Chip „🔎 Konsultiert“ bleibt. Standard: an."
+      required: false
+      default: "true"
+    - key: "teams_card_verbosity_steps"
+      type: "boolean"
+      label:
+        en: "Answer card: Answer-size buttons"
+        de: "Antwort-Card: Umfang-Buttons"
+      help:
+        en: "Shows \"🔽 Kürzer\" / \"🔼 Mehr Details\" to re-ask the question one step shorter or longer. Off: the buttons are removed; typing \"kürzer\" still works. Default: on."
+        de: "Zeigt „🔽 Kürzer“ / „🔼 Mehr Details“, um die Frage eine Stufe knapper oder ausführlicher erneut zu stellen. Aus: Die Buttons entfallen; „kürzer“ tippen funktioniert weiterhin. Standard: an."
+      required: false
+      default: "true"
 
 playbook:
   when_to_use: |

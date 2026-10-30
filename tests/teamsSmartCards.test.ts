@@ -296,6 +296,7 @@ describe('buildFollowUpsOnlyCard', () => {
       { label: 'A', prompt: 'Frage A' },
       { label: 'B', prompt: 'Frage B' },
     ]);
+    assert.ok(card, 'default must render');
     const acts = actions(card);
     assert.equal(acts.length, 2);
     assert.equal(acts[0]!.data?.type, FOLLOW_UP_VALUE_TYPE);

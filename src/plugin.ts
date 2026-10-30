@@ -52,6 +52,10 @@ import { createAttachmentsRouter } from './attachmentsRouter.js';
 import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
 import { buildApprovalCard } from './teamsCard.js';
+import {
+  disabledTeamsCardFeatures,
+  resolveTeamsCardFeatures,
+} from './teamsCardFeatures.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import {
   createTeamsConversationSendAdapter,
@@ -620,6 +624,18 @@ export async function activate(
     }
   }
 
+  // Operator switches for the optional answer-card buttons (`teams_card_*`
+  // boolean setup fields). Resolved once here — the kernel re-activates the
+  // plugin when its config is saved. Log names only, never config values.
+  const cardFeatures = resolveTeamsCardFeatures((key) => ctx.config.get(key));
+  const disabledCardFeatures = disabledTeamsCardFeatures(cardFeatures);
+  if (disabledCardFeatures.length > 0) {
+    core.log(
+      'info',
+      `Teams answer-card features disabled by config: ${disabledCardFeatures.join(', ')}`,
+    );
+  }
+
   const bot = new TeamsBot(
     chatAgent,
     conversationHistoryStore,
@@ -639,6 +655,7 @@ export async function activate(
     resolveConductorAwait,
     groupPrimitives,
     autoInvite,
+    cardFeatures,
   );
 
   if (resolveChatAgentForActivity) {

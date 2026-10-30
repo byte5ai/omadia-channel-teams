@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.33.0
+
+Buttons auf der Antwort-Card per Plugin-Einstellung ein- und ausschaltbar.
+
+- **Sieben neue Boolean-Setup-Felder** (`teams_card_*`, Standard jeweils an):
+  `teams_card_tool_trace` (🔧 Tool-Trace), `teams_card_memory_disclosure`
+  (🧠 Memory-Auswirkung), `teams_card_privacy_receipt` (🛡 Privacy Guard),
+  `teams_card_fresh_check` (🔄 Fresh Check), `teams_card_follow_ups`
+  (💡 Nächste Varianten), `teams_card_direct_line` (💬 Direkt mit <Agent>),
+  `teams_card_verbosity_steps` (🔽 Kürzer / 🔼 Mehr Details). Ohne gesetzte
+  Werte rendert die Card unverändert zu 0.32.0.
+- **Was ein Schalter tut**: Button *und* zugehöriger aufklappbarer Abschnitt
+  (bzw. Überschrift + ActionSet bei den Folgevorschlägen) entfallen gemeinsam —
+  nie ein Button ohne Ziel, nie ein verwaister Container. Dieselben Schalter
+  gelten für die Mini-Cards des Long-Answer-Fallbacks (> 25 KB).
+  `buildFollowUpsOnlyCard` liefert dafür jetzt `undefined`, wenn nichts zu
+  zeigen ist.
+- **Bewusst nicht schaltbar**: Rückfrage-, Topic-, Freigabe-, Slot-Picker-,
+  Consent-, Routine- und Agenten-Apps-Cards (ihre Buttons beenden einen
+  Ablauf) sowie alle Status-Chips (✨ KI-Kennzeichnung nach AI Act Art. 50,
+  Prüf-Badge, 🗄 Originaldaten, 🔎 Konsultiert, 💬 Direkte Antwort). Der
+  Direct-Line-Schalter entfernt nur die Buttons, der Konsultiert-Chip bleibt.
+- **Nur Ausblenden**: Die Daten hinter einem Button (Folgevorschläge,
+  Privacy-Receipt, Trace, Memory-Capture) erzeugt der Kernel weiterhin — ein
+  Schalter spart keine Tokens.
+- **Mechanik**: `src/teamsCardFeatures.ts` (Typ, Defaults, Key-Map, toleranter
+  Boolean-Parser für `true/false` und `"true"/"false"`), neues Feld
+  `features` auf `BuildAnswerCardInput`, Auflösung einmal in `activate()`
+  (der Kernel re-aktiviert das Plugin beim Speichern der Config), Log-Zeile
+  mit den deaktivierten Schaltern. **Gilt für neue Antworten**: Click-Handler
+  bleiben ungeändert, bereits gepostete Cards behalten ihre Buttons und
+  funktionieren weiter. Mögliche Fortsetzung: ein Kernel-Hinweis, der bei
+  ausgeschalteten Folgevorschlägen das `suggest_follow_ups`-Tool gar nicht
+  erst laufen lässt (spart dann auch Tokens).
+- Tests: `teamsCardFeatures.test.ts` (Parser, Resolver, pro Schalter an/aus,
+  Byte-Identität ohne Config, alle aus, Fallback-Cards).
+
 ## 0.32.0
 
 Kein Fallback mehr auf den Default-Orchestrator ohne Plugin-Zuordnung
