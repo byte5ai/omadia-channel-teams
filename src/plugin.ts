@@ -25,6 +25,7 @@ import {
 import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
+import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
 /**
  * Narrow shim for the kernel's `channelDirectoryRegistry@1` service so
@@ -715,13 +716,21 @@ export async function activate(
     createTeamsRosterAdapter({ refs: conversationRefs, roster: teamsRosterProvider, sendProactive }),
   );
   core.registerTargetedSendProvider?.(ctx.agentId, createTeamsTargetedSendAdapter({ sendProactive }));
+  // People directory (Conductor human steps resolve "Teresita Biel" → her address). Same
+  // feature-detect lifecycle; Graph `/users` under the default bot's registration, needs
+  // the User.Read.All application permission — without it the provider answers
+  // `not_configured` and the Conductor picker keeps its free-text field.
+  core.registerPeopleDirectoryProvider?.(
+    ctx.agentId,
+    createTeamsPeopleDirectoryProvider({ resolver: graphResolver, log: (m: string) => core.log('warn', m) }),
+  );
   core.registerConversationSendProvider?.(
     ctx.agentId,
     createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive }),
   );
   core.log(
     'info',
-    `group primitives (#330): roster=${typeof core.registerRosterProvider === 'function' ? 'on' : 'kernel<B1'}, targetedSend=${typeof core.registerTargetedSendProvider === 'function' ? 'on' : 'kernel<B1'}, membershipEvents=${typeof core.emitConversationEvent === 'function' ? 'on' : 'kernel<B1'}, conversationSend=${typeof core.registerConversationSendProvider === 'function' ? 'on' : 'kernel<C3'}`,
+    `group primitives (#330): roster=${typeof core.registerRosterProvider === 'function' ? 'on' : 'kernel<B1'}, targetedSend=${typeof core.registerTargetedSendProvider === 'function' ? 'on' : 'kernel<B1'}, membershipEvents=${typeof core.emitConversationEvent === 'function' ? 'on' : 'kernel<B1'}, conversationSend=${typeof core.registerConversationSendProvider === 'function' ? 'on' : 'kernel<C3'}, peopleDirectory=${typeof core.registerPeopleDirectoryProvider === 'function' ? 'on' : 'kernel<people-directory'}`,
   );
   // Endpoint-active lines: one per bot, secret-free by construction —
   // slug + display name only (teamsBotLogLabel), never appId or secrets.

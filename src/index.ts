@@ -108,6 +108,9 @@ export {
 // (re-exported for the tests under tests/)
 // ---------------------------------------------------------------------------
 export { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
+// People directory (Conductor human-step principal resolution via Graph /users)
+export { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
+export { GraphRequestError, type GraphUser } from './teamsGraphResolver.js';
 export {
   TeamsConversationObserver,
   type TeamsConversation,

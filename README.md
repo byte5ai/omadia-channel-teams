@@ -58,7 +58,10 @@ The operator channels dashboard shows raw conversation ids (`28:<app-id>`,
 topics, member display names, and the tenant org name on the catch-all
 row, grant the app registration these **application permissions** (admin
 consent required): `Chat.Read.All`, `ChatMember.Read.All`,
-`TeamMember.Read.All`, `Organization.Read.All`. Without them the plugin
+`TeamMember.Read.All`, `Organization.Read.All`; plus `User.Read.All` for the
+**people directory** (Conductor resolves "Eskalation an Teresita Biel" to her
+address via Graph `/users` — without it that lookup reports *not configured*
+and the Conductor picker keeps its free-text address field). Without them the plugin
 degrades silently to the Bot-Framework-derived labels (one log line per
 failure class explains what is missing). Resolution is cached (10 min
 TTL) and never blocks the dashboard render.
