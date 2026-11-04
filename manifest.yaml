@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.34.0"
+  version: "0.35.0"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als First-Class-Channel für Omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -17,7 +17,7 @@ identity:
     - "communication"
 
 compat:
-  core: ">=1.0 <2.0"
+  core: ">=1.51.0 <2.0"
   node: ">=20"
 
 lifecycle:
@@ -147,8 +147,9 @@ setup:
       session. Two things make them work:
       1. **Grant the public path** `/p/channel-teams` for this plugin in the
          operator UI (Plugins → Microsoft Teams Channel → Grants). The
-         pages are data-free; the plugin catalogue is only served to a
-         verified Teams SSO token.
+         pages are data-free; the plugin catalogue (`/p/channel-teams/catalog`)
+         is only served to a Teams SSO token the omadia kernel verified
+         (requires omadia core with plugin-api >= 1.51.0).
       2. **Teams SSO on the app registration** (once): **Expose an API** →
          Application ID URI `api://<middleware-host>/<app-id>`, scope
          `access_as_user` (admins and users), and authorise the Teams clients
@@ -262,8 +263,10 @@ setup:
       omadia-Session. Damit sie funktionieren:
       1. **Public Path freigeben**: `/p/channel-teams` für dieses Plugin in
          der Operator-UI (Plugins → Microsoft Teams Channel → Freigaben).
-         Die Seiten selbst enthalten keine Daten; den Plugin-Katalog gibt es
-         nur gegen ein geprüftes Teams-SSO-Token.
+         Die Seiten selbst enthalten keine Daten; den Plugin-Katalog
+         (`/p/channel-teams/catalog`) gibt es nur gegen ein Teams-SSO-Token,
+         das der omadia-Kernel geprüft hat (omadia-Core mit plugin-api
+         >= 1.51.0).
       2. **Teams-SSO an der App-Registrierung** (einmalig): **Expose an API**
          → Application ID URI `api://<middleware-host>/<app-id>`, Scope
          `access_as_user` (Admins und User), und die Teams-Clients
@@ -409,17 +412,17 @@ permissions:
     outbound:
       - "smba.trafficmanager.net"
       - "*.botframework.com"
-      # Entra signing keys for the Teams-tab SSO check (src/teamsTabAuth.ts).
-      - "login.microsoftonline.com"
   filesystem:
     scratch: false
-  # byte5ai/omadia#1596 — Teams loads the Hub (`/hub`) and Tab-Config
+  # byte5ai/omadia#1596 / #1620 — Teams loads the Hub (`/hub`) and Tab-Config
   # (`/tab-config`) pages inside the Teams client, without the omadia session
-  # cookie. The router is registered `auth: 'custom'` and is only served once
-  # the operator grants this path. The two pages are data-free shells; the
-  # plugin catalogue they show comes from `/catalog`, which answers 401 unless
-  # the request carries a Teams SSO token for one of this install's bots
-  # (signature, tenant, audience and expiry checked by the plugin).
+  # cookie. Both routers are only served once the operator grants this path:
+  #  - `/p/channel-teams` (`auth: 'public'`): the two pages, data-free shells;
+  #  - `/p/channel-teams/catalog` (`auth: 'teams-sso'`, beneath this entry):
+  #    the plugin catalogue the pages show. The KERNEL verifies the Teams SSO
+  #    token (signature, tenant + app id of one of this install's bots,
+  #    audience, Teams client, tenant member, lifetime); the router also
+  #    refuses any request without `req.teamsSsoUser`.
   public_paths:
     - "/p/channel-teams"
 

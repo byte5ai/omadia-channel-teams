@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.35.0
+
+Der Plugin-Katalog der Teams-Tabs läuft über den Kernel-Modus
+`auth: 'teams-sso'` (byte5ai/omadia#1620) statt über die eigene Token-Prüfung.
+
+- **Router getrennt**: `/p/channel-teams/hub` und `/tab-config` sind
+  datenfreie Hüllen mit `auth: 'public'` (`createTeamsUiShellRouter` — die
+  Factory bekommt den Katalog gar nicht erst). Der Katalog
+  `/p/channel-teams/catalog` ist ein eigener Router mit `auth: 'teams-sso'`
+  (`createTeamsCatalogRouter`); der Kernel leitet an das längste lebende
+  Präfix weiter, die URL der Seiten bleibt unverändert.
+- **Prüfung im Kernel**: RS256 gegen Entra-JWKS, Tenant + App-ID eines Bots
+  dieser Installation, `api://`-Audience-Host des Deployments, Teams-/M365-Client,
+  delegiertes Token eines Tenant-**Members** (Gäste und App-only abgelehnt),
+  Laufzeit. Neu gegenüber 0.31.0: B2B-Gäste sehen den Katalog nicht mehr.
+- **Fail-closed**: Erste Middleware des Katalog-Routers antwortet
+  `401 {"code":"auth.teams_sso_required"}`, wenn `req.teamsSsoUser` fehlt —
+  ein Bearer-Header allein öffnet nichts.
+- **Entfernt**: `src/teamsTabAuth.ts` (eigener Verifier) samt Exporten
+  (`createTeamsSsoVerifier`, `bearerToken`, `TeamsSsoError`, …) und
+  `login.microsoftonline.com` unter `network.outbound` (nur für den
+  Schlüssel-Abruf des Verifiers deklariert; der Graph-Client nutzt es nicht
+  über `ctx.http`). `createTeamsUiRouter` ist durch die beiden neuen
+  Factories ersetzt.
+- **Manifest**: `compat.core` `>=1.51.0 <2.0` (plugin-api mit `'teams-sso'`).
+  `permissions.public_paths` bleibt `"/p/channel-teams"` — der Katalog liegt
+  darunter, die bestehende Freigabe gilt weiter.
+- Die `href`s im Katalog kommen weiter aus den `uiRoutes`-Deskriptoren der
+  Plugins (`/p/<slug><path>`); Plugins nach #1620 zeigen dort auf ihre
+  Teams-Hülle (`/teams/<page>`).
+- Tests: `teamsUiRouter.test.ts` (Hüllen ohne Daten, Katalog 401 ohne
+  `req.teamsSsoUser` und mit bloßem Bearer, 200 mit Kernel-User, Manifest).
+  `teamsTabAuth.test.ts` entfällt mit dem Verifier.
+
 ## 0.34.0
 
 - **People directory** (`teamsPeopleDirectory.ts`): registers the kernel's

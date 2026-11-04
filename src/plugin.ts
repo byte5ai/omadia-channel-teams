@@ -77,16 +77,20 @@ import {
   parseTeamsBotsConfig,
 } from './teamsBotsConfig.js';
 import { createTeamsRouter, type TeamsRouterBotCredentials } from './messagesRouter.js';
-import { createTeamsSsoVerifier } from './teamsTabAuth.js';
-import { createTeamsUiRouter } from './uiRouter.js';
+import { createTeamsCatalogRouter, createTeamsUiShellRouter } from './uiRouter.js';
 
 import { parseTeamsAgentAppsConfig } from './teamsAgentApps.js';
 import { TeamsAgentInstaller } from './teamsAgentInstaller.js';
 import type { TeamsAutoInviteDeps } from './teamsBot.js';
 
-/** Mount of the Hub / Tab-Config pages. Must equal the manifest's
- *  `permissions.public_paths` entry — `auth:'custom'` is refused elsewhere. */
+/** Mount of the Hub / Tab-Config pages. Must equal (or lie beneath) the
+ *  manifest's `permissions.public_paths` entry — the kernel refuses
+ *  `auth:'public'` / `'teams-sso'` registrations anywhere else. */
 const TEAMS_UI_MOUNT_PATH = '/p/channel-teams';
+/** Mount of the catalogue JSON (`auth:'teams-sso'`, #1620). Beneath the
+ *  shell mount: the kernel dispatches a request to the LONGEST live prefix,
+ *  so `/p/channel-teams/catalog` reaches this router, not the shell router. */
+const TEAMS_CATALOG_MOUNT_PATH = `${TEAMS_UI_MOUNT_PATH}/catalog`;
 
 /**
  * Minimal shape of the kernel's UiRouteCatalog service. Declared here
@@ -843,23 +847,11 @@ export async function activate(
       "channel-teams: required service 'uiRouteCatalog' not published — kernel must publish it before plugins activate (see middleware/src/index.ts).",
     );
   }
-  const http = ctx.http;
-  const teamsUiRouter = createTeamsUiRouter({
+  const teamsShellRouter = createTeamsUiShellRouter({
+    catalogUrl: TEAMS_CATALOG_MOUNT_PATH,
+  });
+  const teamsCatalogRouter = createTeamsCatalogRouter({
     webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',
-    mountPath: TEAMS_UI_MOUNT_PATH,
-    // A Teams SSO token is accepted for any bot this install serves: the
-    // app package's `webApplicationInfo.id` is that bot's app id.
-    verifier: createTeamsSsoVerifier({
-      audiences: botCredentials.map(({ identity }) => ({
-        appId: identity.appId,
-        tenantId: identity.tenantId,
-      })),
-      // Key discovery through the kernel's egress allow-list
-      // (`network.outbound: login.microsoftonline.com`) when available.
-      ...(http ? { fetchImpl: (url: string, init?: RequestInit) => http.fetch(url, init) } : {}),
-    }),
-    onAuthFailure: (reason) =>
-      core.log('info', `[tab-auth] catalog refused: ${reason}`),
     discover: () =>
       uiRouteCatalog
         .list()
@@ -874,19 +866,28 @@ export async function activate(
           title: r.title,
         })),
   });
-  // byte5ai/omadia#1596: Teams loads these pages WITHOUT the omadia session
-  // cookie, so the kernel's default `auth:'session'` answers 401 there.
-  // `auth:'custom'` + the manifest's `permissions.public_paths` entry
-  // (served once the operator grants it); the router authenticates the
-  // only data-bearing endpoint (`/catalog`) itself with the Teams SSO token.
+  // byte5ai/omadia#1596 / #1620: Teams loads these pages WITHOUT the omadia
+  // session cookie, so the kernel's default `auth:'session'` answers 401
+  // there. Both prefixes sit beneath the manifest's granted
+  // `permissions.public_paths` entry `/p/channel-teams`:
+  //  - the Hub / Tab-Config pages are data-free shells → `auth:'public'`;
+  //  - the catalogue is the only data → `auth:'teams-sso'`: the KERNEL
+  //    verifies the Teams SSO token (signature, tenant + app id of one of
+  //    this install's bots, audience, Teams client, member, lifetime) and
+  //    the router fails closed without `req.teamsSsoUser`.
   const disposeTeamsUi = ctx.routes.register(
     TEAMS_UI_MOUNT_PATH,
-    teamsUiRouter,
-    { auth: 'custom' },
+    teamsShellRouter,
+    { auth: 'public' },
+  );
+  const disposeTeamsCatalog = ctx.routes.register(
+    TEAMS_CATALOG_MOUNT_PATH,
+    teamsCatalogRouter,
+    { auth: 'teams-sso' },
   );
   core.log(
     'info',
-    `teams bridge uiRoutes mounted at ${TEAMS_UI_MOUNT_PATH}/{hub,tab-config,catalog} (auth=custom, teams-sso for ${String(botCredentials.length)} bot(s))`,
+    `teams bridge uiRoutes mounted at ${TEAMS_UI_MOUNT_PATH}/{hub,tab-config} (auth=public) + ${TEAMS_CATALOG_MOUNT_PATH} (auth=teams-sso)`,
   );
 
   // --- Notification handler ------------------------------------------
@@ -982,6 +983,7 @@ export async function activate(
       // incoming requests return 503. The TeamsBot holds no timers or
       // sockets we need to close explicitly; attachment store / graph
       // client rely on HTTP pools that shut down with the process.
+      disposeTeamsCatalog();
       disposeTeamsUi();
       disposeTeamsNotify();
       // Drop our channel-directory contribution so /operator/channels
