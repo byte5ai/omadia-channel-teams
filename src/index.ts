@@ -200,21 +200,16 @@ export {
 } from './attachmentSigning.js';
 
 // ---------------------------------------------------------------------------
-// byte5ai/omadia#1596 — Hub / Tab-Config router (`auth:'custom'`) and the
-// Teams SSO verifier that authenticates its `/catalog` endpoint. Exported for
-// tests/teamsTabAuth.test.ts, which runs against the built dist/.
+// byte5ai/omadia#1596 / #1620 — Hub / Tab-Config shell router
+// (`auth:'public'`) and the catalogue router (`auth:'teams-sso'`; the kernel
+// verifies the Teams SSO token). Exported for tests/teamsUiRouter.test.ts,
+// which runs against the built dist/.
 // ---------------------------------------------------------------------------
-export { createTeamsUiRouter, type DiscoveredUiRoute } from './uiRouter.js';
 export {
-  bearerToken,
-  createTeamsSsoVerifier,
-  TeamsSsoError,
-  TEAMS_SSO_CLIENT_IDS,
-  type TeamsSsoAudience,
-  type TeamsSsoPrincipal,
-  type TeamsSsoVerifier,
-  type TeamsSsoVerifierOptions,
-} from './teamsTabAuth.js';
+  createTeamsCatalogRouter,
+  createTeamsUiShellRouter,
+  type DiscoveredUiRoute,
+} from './uiRouter.js';
 
 // ---------------------------------------------------------------------------
 // Operator switches for the optional answer-card buttons (`teams_card_*`

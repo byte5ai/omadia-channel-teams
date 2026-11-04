@@ -7,8 +7,6 @@ import {
   withIframeSafeHeaders,
 } from '@omadia/plugin-ui-helpers';
 
-import { bearerToken, TeamsSsoError } from './teamsTabAuth.js';
-import type { TeamsSsoPrincipal, TeamsSsoVerifier } from './teamsTabAuth.js';
 
 /**
  * Discoverable descriptor of a plugin-served UI surface. Routes for the
@@ -24,24 +22,28 @@ export interface DiscoveredUiRoute {
   readonly title: string;
 }
 
-export interface TeamsUiRouterOptions {
+export interface TeamsUiShellRouterOptions {
+  /** Absolute URL path the pages fetch the catalogue from. Default
+   *  `/p/channel-teams/catalog`. */
+  readonly catalogUrl?: string;
+}
+
+export interface TeamsCatalogRouterOptions {
   /** Callback that returns the current list of plugin uiRoutes. Allows
    *  the channel plugin to inject a discovery strategy without coupling
    *  to the kernel's route-registry type. */
   readonly discover: () => DiscoveredUiRoute[] | Promise<DiscoveredUiRoute[]>;
-  /** Verifies the Teams SSO token the pages send to `/catalog`. */
-  readonly verifier: TeamsSsoVerifier;
-  /** Absolute mount path of this router; the pages fetch
-   *  `<mountPath>/catalog`. Default `/p/channel-teams`. */
-  readonly mountPath?: string;
   /** Origin (scheme + host) that web-ui presents to the browser; this is
    *  the URL Teams iframes resolve against. Pass via env in production;
    *  default `''` produces relative URLs which the iframe origin resolves. */
   readonly webUiOrigin?: string;
-  /** Called when `/catalog` refuses a request. */
-  readonly onAuthFailure?: (reason: string) => void;
-  /** Called when `/catalog` served a verified principal. */
-  readonly onAuthSuccess?: (principal: TeamsSsoPrincipal) => void;
+}
+
+/** Shape the kernel's `auth:'teams-sso'` mode leaves on the request
+ *  (`TeamsSsoUser` in `@omadia/plugin-api` >= 1.51.0). Declared locally so
+ *  the guard below compiles against older plugin-api typings too. */
+interface TeamsSsoRequest {
+  teamsSsoUser?: unknown;
 }
 
 /** Teams JS SDK, loaded by both pages — Teams talks to it via postMessage. */
@@ -78,6 +80,7 @@ function catalogLoaderJs(catalogUrl: string): string {
           return fetch(${JSON.stringify(catalogUrl)}, {
             headers: { Authorization: 'Bearer ' + token },
             credentials: 'omit',
+            cache: 'no-store',
           });
         }, function (err) {
           throw new Error('Teams sign-in failed: ' + ((err && err.message) || err));
@@ -97,7 +100,9 @@ function catalogLoaderJs(catalogUrl: string): string {
 }
 
 /**
- * Teams-bridge uiRoutes exposed by the channel-teams plugin:
+ * Teams-bridge uiRoutes exposed by the channel-teams plugin.
+ *
+ * Shell router — `auth:'public'` at `/p/channel-teams` (#1596 / #1620):
  *
  *   GET /hub        — Personal-Tab content. Lists discovered plugin
  *                     uiRoutes as clickable cards.
@@ -107,68 +112,15 @@ function catalogLoaderJs(catalogUrl: string): string {
  *                     `pages.config.setConfig({ contentUrl, entityId })`
  *                     when the user picks a target route + clicks Save.
  *
- *   GET /catalog    — the route list both pages render, as JSON. The ONLY
- *                     data-bearing endpoint: answers 401 unless the request
- *                     carries a Teams SSO token the verifier accepts.
- *
- * byte5ai/omadia#1596: Teams iframes these pages without the omadia session
- * cookie, so the router is mounted `auth:'custom'` behind a granted
- * `permissions.public_paths` entry. The two HTML pages are therefore
- * data-free shells; the plugin catalogue only ever leaves `/catalog`.
+ * Teams iframes these pages without the omadia session cookie and without a
+ * bearer, so they are DATA-FREE shells: this factory has no access to the
+ * catalogue at all. They fetch it from {@link createTeamsCatalogRouter}.
  */
-export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
+export function createTeamsUiShellRouter(
+  opts: TeamsUiShellRouterOptions = {},
+): Router {
   const router = Router();
-  const origin = opts.webUiOrigin ?? '';
-  const catalogUrl = `${opts.mountPath ?? '/p/channel-teams'}/catalog`;
-
-  /**
-   * pluginId in the catalog is the full agentId (e.g. `@omadia/foo`),
-   * but plugins mount their routers under `/p/<name-without-namespace>`
-   * (e.g. `/p/foo`). Strip the leading `@<scope>/` so the rendered URL
-   * matches the actual HTTP mount.
-   */
-  const mountSlug = (pluginId: string): string =>
-    pluginId.replace(/^@[^/]+\//, '');
-
-  router.get('/catalog', async (req, res, next) => {
-    withIframeSafeHeaders(res);
-    res.setHeader('Cache-Control', 'no-store');
-    const token = bearerToken(req.headers.authorization);
-    if (!token) {
-      opts.onAuthFailure?.('no bearer token');
-      res.setHeader('WWW-Authenticate', 'Bearer');
-      res.status(401).json({ ok: false, error: 'unauthorized' });
-      return;
-    }
-    let principal: TeamsSsoPrincipal;
-    try {
-      principal = await opts.verifier.verify(token);
-    } catch (err) {
-      if (!(err instanceof TeamsSsoError)) {
-        next(err);
-        return;
-      }
-      opts.onAuthFailure?.(err.message);
-      res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
-      res.status(401).json({ ok: false, error: 'unauthorized' });
-      return;
-    }
-    opts.onAuthSuccess?.(principal);
-    try {
-      const routes = await opts.discover();
-      res.json({
-        ok: true,
-        routes: routes.map((r) => ({
-          pluginId: r.pluginId,
-          path: r.path,
-          title: r.title,
-          href: `${origin}/p/${mountSlug(r.pluginId)}${r.path}`,
-        })),
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
+  const catalogUrl = opts.catalogUrl ?? '/p/channel-teams/catalog';
 
   router.get(
     '/hub',
@@ -334,6 +286,62 @@ export function createTeamsUiRouter(opts: TeamsUiRouterOptions): Router {
       });
     }),
   );
+
+  return router;
+}
+
+/**
+ * `GET /` — the route list both shell pages render, as JSON. The ONLY
+ * data-bearing endpoint of the Teams bridge. Mounted by plugin.ts with the
+ * kernel's `auth:'teams-sso'` mode (#1620) at `/p/channel-teams/catalog`:
+ * the kernel verifies the Teams SSO token and sets `req.teamsSsoUser`
+ * before this router runs.
+ *
+ * The first middleware is a fail-closed guard: without `req.teamsSsoUser`
+ * (an older core that does not know `'teams-sso'`, or any mis-mount) it
+ * answers the kernel's own 401 and never reaches the catalogue.
+ */
+export function createTeamsCatalogRouter(opts: TeamsCatalogRouterOptions): Router {
+  const router = Router();
+  const origin = opts.webUiOrigin ?? '';
+
+  /**
+   * pluginId in the catalog is the full agentId (e.g. `@omadia/foo`),
+   * but plugins mount their routers under `/p/<name-without-namespace>`
+   * (e.g. `/p/foo`). Strip the leading `@<scope>/` so the rendered URL
+   * matches the actual HTTP mount. Plugins on the #1620 Teams-tab pattern
+   * point their descriptor `path` at `/teams/<page>`, so the href lands on
+   * their data-free shell.
+   */
+  const mountSlug = (pluginId: string): string =>
+    pluginId.replace(/^@[^/]+\//, '');
+
+  router.use((req, res, next) => {
+    withIframeSafeHeaders(res);
+    res.setHeader('Cache-Control', 'no-store');
+    if (!(req as TeamsSsoRequest).teamsSsoUser) {
+      res.status(401).json({ code: 'auth.teams_sso_required' });
+      return;
+    }
+    next();
+  });
+
+  router.get('/', async (_req, res, next) => {
+    try {
+      const routes = await opts.discover();
+      res.json({
+        ok: true,
+        routes: routes.map((r) => ({
+          pluginId: r.pluginId,
+          path: r.path,
+          title: r.title,
+          href: `${origin}/p/${mountSlug(r.pluginId)}${r.path}`,
+        })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   return router;
 }
