@@ -24,6 +24,8 @@ import {
   botNotInstalledError,
   CARLA,
   cardExecuteActivity,
+  CHANNEL_ID,
+  channelThreadId,
   editActivity,
   GROUP_CHAT_ID,
   JONAS,
@@ -38,10 +40,19 @@ import {
   SimulatedGraph,
   SimulatedKernel,
   simulatedBot,
+  TEAM_AAD_GROUP_ID,
+  TEMPLATE_RSC,
   TENANT_ID,
   type SimBot,
   type SimUser,
 } from './support/teamsSimulation.js';
+
+/** `TurnOrigin.channelConversationId` (channel-sdk 0.4.0): the conversation
+ *  id as the channel names it. */
+function channelConversationIdOf(origin: unknown): string | undefined {
+  const value = (origin as { channelConversationId?: unknown } | undefined)?.channelConversationId;
+  return typeof value === 'string' ? value : undefined;
+}
 
 /**
  * The contract scenarios of byte5ai/omadia#2043 §6.2 and issues #43 / #44,
@@ -98,7 +109,7 @@ const ROSTER = [ANNA, BERT, CARLA].map((user) => ({
  *  `connector` and `table` to model a restart: Teams and the database stay,
  *  every in-process cache is new. */
 function startInstance(
-  carry: Partial<Pick<Instance, 'kernel' | 'graph' | 'connector'>> & { table?: SimulatedRefTable } = {},
+  carry: Partial<Pick<Instance, 'kernel' | 'graph' | 'connector'>> & { table?: SimulatedRefTable; ownIdentity?: boolean } = {},
 ): Instance & { table: SimulatedRefTable } {
   const kernel = carry.kernel ?? new SimulatedKernel();
   const graph = carry.graph ?? new SimulatedGraph();
@@ -119,6 +130,7 @@ function startInstance(
       membership.push(event);
     },
     meetingSessions,
+    ...(carry.ownIdentity ? { ownIdentity: true } : {}),
   });
   const postAdapter = createTeamsConversationSendAdapter({
     refs,
@@ -181,21 +193,9 @@ describe('scenario 0 — the mention that opens a facilitation', () => {
   };
 
   it('a mention in a group chat, a team channel and a meeting chat reaches the turn with a group origin', async () => {
-    const CHANNEL_THREAD = '19:5f0c1a2b3c4d4e5f8a9b0c1d2e3f4a5b@thread.tacv2;messageid=1731930000000';
     const activities = [
       messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true }),
-      {
-        // A channel message as Teams sends it: the thread in the id, the team
-        // and the channel in `channelData`.
-        ...messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: CHANNEL_THREAD, conversationType: 'channel' }),
-        channelData: {
-          teamsChannelId: '19:5f0c1a2b3c4d4e5f8a9b0c1d2e3f4a5b@thread.tacv2',
-          teamsTeamId: '19:general@thread.tacv2',
-          channel: { id: '19:5f0c1a2b3c4d4e5f8a9b0c1d2e3f4a5b@thread.tacv2' },
-          team: { id: '19:general@thread.tacv2' },
-          tenant: { id: TENANT_ID },
-        },
-      },
+      messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: channelThreadId('1795023950656'), conversationType: 'channel' }),
       messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: MEETING_CHAT_ID }),
     ];
     for (const activity of activities) {
@@ -224,6 +224,190 @@ describe('scenario 0 — the mention that opens a facilitation', () => {
     assert.equal(origin.scope?.kind, 'personal');
     assert.equal(origin.conversationType, 'direct');
     assert.equal(isGroupForKernel(origin), false, 'a facilitator refuses a private request');
+  });
+});
+
+describe('scenario 10 — a facilitation in a channel thread, facilitator with its own bot', () => {
+  // Ids as captured live on 2026-11-18. A root post in a channel is its own
+  // conversation (`<channel>;messageid=<root>`); the facilitation belongs to
+  // the thread it was started in. The kernel and the engine get that id from
+  // the turn origin and hand it back unchanged.
+  const ROOT = '1795023950656';
+  const THREAD = channelThreadId(ROOT);
+  const TEAM_RSC = TEMPLATE_RSC.filter((permission) => permission.endsWith('.Group'));
+
+  function threadMessage(from: SimUser, text: string, opts: { mention?: boolean; id?: string; root?: string } = {}): ReturnType<typeof messageActivity> {
+    return messageActivity({
+      bot: MIRA,
+      from,
+      text,
+      conversationId: channelThreadId(opts.root ?? ROOT),
+      conversationType: 'channel',
+      ...(opts.mention ? { mention: true } : {}),
+      ...(opts.id ? { id: opts.id } : {}),
+    });
+  }
+
+  it('the opening mention states the thread id; the session scope is bot-qualified and is not that id', async () => {
+    const i = startInstance({ ownIdentity: true });
+
+    await i.bot.deliver(threadMessage(ANNA, 'starte eine Abstimmung', { mention: true, id: ROOT }));
+
+    assert.deepEqual(i.bot.scopes, [`teams-${MIRA.key}-${THREAD}`]);
+    const stated = channelConversationIdOf(i.bot.origins[0]);
+    assert.equal(stated, THREAD);
+
+    // The kernel subscribes with the id as given; the message events of the
+    // same conversation carry the same string.
+    i.kernel.subscribe(stated ?? '', MIRA);
+    await i.bot.deliver({ ...threadMessage(BERT, 'B > A > C'), replyToId: ROOT });
+    assert.deepEqual(i.kernel.events.map((e) => e.conversationId), [stated]);
+  });
+
+  it('readiness for the thread asks Graph for the TEAM, never with the thread id or a bot key', async () => {
+    const i = startInstance({ ownIdentity: true });
+    i.graph.install(TEAM_AAD_GROUP_ID, MIRA, { consented: TEAM_RSC });
+    await i.bot.deliver(threadMessage(ANNA, 'starte eine Abstimmung', { mention: true, id: ROOT }));
+
+    const report = await i.readiness.check(THREAD, { asChannelKey: MIRA.key });
+
+    assert.deepEqual(report, { installed: true, canReadAllMessages: true, canPost: true, ready: true, missing: [] });
+    const graphCalls = i.graph.requests.filter((r) => r.includes('graph.microsoft.com'));
+    assert.ok(graphCalls.length >= 2);
+    for (const call of graphCalls) {
+      assert.ok(call.includes(`/teams/${TEAM_AAD_GROUP_ID}/`), call);
+      assert.ok(!/messageid|28%3A|28:|thread\.tacv2/i.test(call), `not for Graph: ${call}`);
+    }
+  });
+
+  it('a reply in the thread is recorded under the thread id; a new root post in the channel is not covered', async () => {
+    const i = startInstance({ ownIdentity: true });
+    await i.bot.deliver(threadMessage(ANNA, 'starte eine Abstimmung', { mention: true, id: ROOT }));
+    i.kernel.subscribe(THREAD, MIRA);
+
+    // Documented, not captured live: a reply carries the thread's id and
+    // `replyToId` = the root.
+    await i.bot.deliver({ ...threadMessage(BERT, 'B > A > C'), replyToId: ROOT });
+    await i.bot.deliver({ ...threadMessage(CARLA, 'C > A > B'), replyToId: ROOT });
+    // Another root post: another conversation.
+    await i.bot.deliver(threadMessage(BERT, 'ganz anderes Thema', { root: '1795024337919', id: '1795024337919' }));
+
+    assert.deepEqual(
+      i.kernel.events.map((e) => [e.conversationId, e.author.displayName, e.text]),
+      [
+        [THREAD, BERT.name, 'B > A > C'],
+        [THREAD, CARLA.name, 'C > A > B'],
+      ],
+    );
+    assert.equal(i.bot.turns.length, 1, 'only the opening mention was a turn');
+  });
+
+  it('the facilitator posts INTO the thread, also into one it holds no reference of its own for', async () => {
+    const i = startInstance({ ownIdentity: true });
+    await i.bot.deliver(threadMessage(ANNA, 'starte eine Abstimmung', { mention: true, id: ROOT }));
+    await settle();
+
+    const posted = await i.post(THREAD, { text: 'Die Abstimmung läuft.' }, { asChannelKey: MIRA.key });
+
+    assert.equal(posted.outcome, 'delivered');
+    assert.equal(i.connector.sent.at(-1)?.conversationId, THREAD, 'a reply in the thread, not a new root post');
+    assert.equal(i.connector.sent.at(-1)?.asBot, MIRA.key);
+
+    // After a restart, with only the bare channel row (written when the bot
+    // was added to the team) the thread is still reachable.
+    const table = new SimulatedRefTable();
+    const fresh = startInstance({ ownIdentity: true, table });
+    await fresh.bot.deliver(
+      messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true, conversationId: CHANNEL_ID, conversationType: 'channel' }),
+    );
+    await settle();
+    const restarted = startInstance({ ownIdentity: true, table, connector: fresh.connector });
+    const other = channelThreadId('1795023471899');
+    const intoOther = await restarted.post(other, { text: 'Erinnerung.' }, { asChannelKey: MIRA.key });
+
+    assert.equal(intoOther.outcome, 'delivered');
+    assert.equal(restarted.connector.sent.at(-1)?.conversationId, other);
+    assert.equal(restarted.refs.teamIdFor(other), TEAM_AAD_GROUP_ID, 'the team of every thread is the channel\'s team');
+  });
+
+  it('refuses a conversation id cut out of the session scope, by name and without asking Graph', async () => {
+    const i = startInstance({ ownIdentity: true });
+    i.graph.install(TEAM_AAD_GROUP_ID, MIRA, { consented: TEAM_RSC });
+    await i.bot.deliver(threadMessage(ANNA, 'starte eine Abstimmung', { mention: true, id: ROOT }));
+    // What the kernel derived before the origin stated the id (D13).
+    const cutFromScope = (i.bot.scopes[0] ?? '').slice('teams-'.length);
+    assert.equal(cutFromScope, `${MIRA.key}-${THREAD}`);
+
+    const report = await i.readiness.check(cutFromScope, { asChannelKey: MIRA.key });
+    const repair = await i.readiness.repairConsent(cutFromScope, { asChannelKey: MIRA.key });
+    const posted = await i.post(cutFromScope, { text: 'x' }, { asChannelKey: MIRA.key });
+
+    assert.deepEqual(report.missing.map((m) => m.code), ['unsupported_conversation']);
+    assert.match(report.missing[0]?.message ?? '', /is not a Teams conversation id: it starts with a bot key/);
+    assert.ok(report.missing[0]?.message.includes(cutFromScope), 'the id is named');
+    assert.equal(repair.outcome === 'failed' ? repair.code : '', 'unsupported_conversation');
+    assert.equal(posted.outcome, 'unreachable');
+    assert.match(posted.outcome === 'unreachable' ? posted.message : '', /starts with a bot key/);
+    assert.deepEqual(i.graph.requests.filter((r) => r.includes('graph.microsoft.com')), []);
+    assert.deepEqual(i.connector.sent, []);
+  });
+
+  it('repairs the consent of a team install through the team, with the team-scoped permissions', async () => {
+    const i = startInstance({ ownIdentity: true });
+    i.graph.install(TEAM_AAD_GROUP_ID, MIRA, { consented: ['TeamsActivity.Send.Group'], version: '1.3.0' });
+    await i.bot.deliver(threadMessage(ANNA, 'starte eine Abstimmung', { mention: true, id: ROOT }));
+    assert.deepEqual((await i.readiness.check(THREAD, { asChannelKey: MIRA.key })).missing.map((m) => m.code), ['consent_missing']);
+
+    const outcome = await i.readiness.repairConsent(THREAD, { asChannelKey: MIRA.key });
+
+    assert.equal(outcome.outcome, 'upgraded');
+    assert.deepEqual(i.graph.upgrades.map((u) => u.scope), [TEAM_AAD_GROUP_ID]);
+    assert.ok(i.graph.requests.some((r) => r.startsWith(`POST https://graph.microsoft.com/v1.0/teams/${TEAM_AAD_GROUP_ID}/installedApps/`) && r.endsWith('/upgrade')));
+    assert.equal((await i.readiness.check(THREAD, { asChannelKey: MIRA.key })).ready, true);
+  });
+});
+
+describe('scenario 11 — a facilitation in a meeting chat, facilitator with its own bot', () => {
+  it('the opening mention states the chat id, and readiness asks Graph for exactly that chat', async () => {
+    const i = startInstance({ ownIdentity: true });
+    i.graph.install(MEETING_CHAT_ID, MIRA);
+
+    await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: MEETING_CHAT_ID }));
+
+    assert.deepEqual(i.bot.scopes, [`teams-${MIRA.key}-${MEETING_CHAT_ID}`]);
+    const stated = channelConversationIdOf(i.bot.origins[0]);
+    assert.equal(stated, MEETING_CHAT_ID);
+
+    const report = await i.readiness.check(stated ?? '', { asChannelKey: MIRA.key });
+    assert.equal(report.ready, true, JSON.stringify(report.missing));
+    const chat = encodeURIComponent(MEETING_CHAT_ID);
+    const graphCalls = i.graph.requests.filter((r) => r.includes('graph.microsoft.com'));
+    assert.ok(graphCalls.length >= 2);
+    assert.ok(graphCalls.every((call) => call.includes(`/chats/${chat}/`)), graphCalls.join('\n'));
+  });
+
+  it('records every message under the chat id and posts as the facilitator', async () => {
+    const i = startInstance({ ownIdentity: true });
+    await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: MEETING_CHAT_ID }));
+    i.kernel.subscribe(MEETING_CHAT_ID, MIRA);
+
+    await i.bot.deliver(messageActivity({ bot: MIRA, from: BERT, text: 'B', conversationId: MEETING_CHAT_ID }));
+    const posted = await i.post(MEETING_CHAT_ID, { text: 'Danke, Bert.' }, { asChannelKey: MIRA.key });
+
+    assert.deepEqual(i.kernel.events.map((e) => [e.conversationId, e.text]), [[MEETING_CHAT_ID, 'B']]);
+    assert.equal(posted.outcome, 'delivered');
+    assert.equal(i.connector.sent.at(-1)?.conversationId, MEETING_CHAT_ID);
+  });
+
+  it('refuses the bot-key-prefixed id the kernel used before (the live failure of 2026-11-18)', async () => {
+    const i = startInstance({ ownIdentity: true });
+    i.graph.install(MEETING_CHAT_ID, MIRA);
+    await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: MEETING_CHAT_ID }));
+
+    const report = await i.readiness.check(`${MIRA.key}-${MEETING_CHAT_ID}`, { asChannelKey: MIRA.key });
+
+    assert.deepEqual(report.missing.map((m) => m.code), ['unsupported_conversation'], 'one named reason, not graph_error plus cannot_post');
+    assert.deepEqual(i.graph.requests.filter((r) => r.includes('graph.microsoft.com')), []);
   });
 });
 

@@ -287,6 +287,18 @@ export interface ChatTurnInput {
 }
 
 /**
+ * `TurnOrigin` with the field `@omadia/channel-sdk` 0.4.0 adds (#2043):
+ * the conversation as the CHANNEL names it, here `activity.conversation.id`
+ * as received (no `teams-` prefix, no bot key, `;messageid=<root>` kept).
+ * The kernel uses it for the tool call context, the subscription check and
+ * the own-post counter instead of deriving an id from the session scope.
+ *
+ * Mirrored as an intersection, so it is the SDK's own type as soon as the
+ * SDK declares the field, and an older kernel just ignores it.
+ */
+export type TeamsTurnOrigin = TurnOrigin & { readonly channelConversationId?: string };
+
+/**
  * Channel-facing chat agent. `chat()` returns the SDK's SemanticAnswer —
  * Teams doesn't consume `chatStream` (that's HTTP-route territory), so the
  * shim omits it. The concrete kernel class (Orchestrator or VerifierService)

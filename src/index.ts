@@ -294,3 +294,11 @@ export {
   type TeamsCardFeatureKey,
   type TeamsCardFeatures,
 } from './teamsCardFeatures.js';
+
+// #2043 — which conversation id goes where (kernel key vs. Graph).
+export {
+  bareConversationId,
+  isBotKeyPrefixedConversationId,
+  isChannelConversationId,
+  threadRootMessageId,
+} from './teamsConversationIds.js';

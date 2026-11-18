@@ -125,6 +125,37 @@ naming the permission that step needs (`TeamsAppInstallation.ReadForChat.All`,
 and `package_outdated` when the catalog still holds an older package. *Simulated; the
 upgrade call itself is Open → M5.*
 
+## 5a. Which conversation id goes where
+
+*Live* for the ids and `channelData` keys (byte5 tenant, 2026-11-18); *Docs* and
+*Simulated* for a reply inside a thread and for the post into a thread.
+
+| Conversation | `activity.conversation.id` | Towards the kernel | Towards Graph |
+|---|---|---|---|
+| Group chat | `19:…@thread.v2` | the same id | `/chats/{id}` |
+| Meeting chat | `19:meeting_…@thread.v2` (`conversationType: groupChat`) | the same id | `/chats/{id}` |
+| Team channel | `19:…@thread.tacv2;messageid=<root message id>` | the same per-thread id | `/teams/{team.aadGroupId}` |
+
+- **One id towards the kernel.** The turn origin states `activity.conversation.id`
+  unchanged (`channelConversationId`). Conversation references, the subscription lookup,
+  message events, session events and posts use exactly that id. The session scope is
+  **not** that id: for a bot with its own identity it is `teams-<botKey>-<id>`, a storage
+  key. An id that starts with `28:<appId>-` is refused by name
+  (`unsupported_conversation`).
+- **A facilitation in a channel belongs to one thread.** Every root post of a channel is
+  its own conversation id. A facilitation started by a mention in a root post covers that
+  thread: replies arrive under the same id, the facilitator's posts go into the thread. A
+  new root post in the same channel is another conversation and is not covered.
+- **Graph gets the team, never the thread.** Installation and grants of a channel live on
+  the team. The team comes from `channelData.team.aadGroupId` (present on real channel
+  messages) and is stored with the conversation reference, per channel.
+- **A thread without its own reference.** When the bot was never addressed in a thread, a
+  post for it uses the channel's reference (written when the bot was added to the team)
+  with the thread as its conversation.
+- **Unverified:** no human reply inside a thread was captured, so "a reply carries the
+  thread's id" is from the documentation; the post into a thread and the team consent
+  upgrade ran against the simulation only.
+
 ## 6. Mentions and returned ids in proactive posts
 
 | Finding | Evidence |

@@ -32,6 +32,13 @@ import type {
 } from './kernel-types.js';
 import { templateRevisionOfAppVersion, type TeamsAppTemplateInfo } from './teamsAppTemplate.js';
 import { parseTeamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
+import {
+  bareConversationId,
+  botKeyPrefixedConversationMessage,
+  isBotKeyPrefixedConversationId,
+  isChannelConversationId,
+  reportBotKeyPrefixedConversationId,
+} from './teamsConversationIds.js';
 import type { TeamsConversationReferenceCache } from './teamsGroupPrimitives.js';
 
 export const CHAT_READ_ALL_RSC_PERMISSION = 'ChatMessage.Read.Chat';
@@ -41,6 +48,7 @@ export const CHAT_INSTALL_READ_GRAPH_PERMISSION = 'TeamsAppInstallation.ReadForC
 export const TEAM_INSTALL_READ_GRAPH_PERMISSION = 'TeamsAppInstallation.ReadForTeam.All';
 /** What the consent upgrade needs. */
 export const CHAT_CONSENT_GRAPH_PERMISSION = 'TeamsAppInstallation.ReadWriteAndConsentForChat.All';
+export const TEAM_CONSENT_GRAPH_PERMISSION = 'TeamsAppInstallation.ReadWriteAndConsentForTeam.All';
 /** What reading the published app definition needs. */
 export const APP_CATALOG_GRAPH_PERMISSION = 'AppCatalog.ReadWrite.All';
 
@@ -67,7 +75,7 @@ export interface TeamsReadinessDeps {
   /** The instance's Graph client (the M365 integration's registration).
    *  `undefined` when its credentials are not available to this plugin. */
   graph: TeamsReadinessGraph | undefined;
-  refs: Pick<TeamsConversationReferenceCache, 'getOrLoad' | 'teamIdFor' | 'lastPostResult'>;
+  refs: Pick<TeamsConversationReferenceCache, 'getOrLoad' | 'resolveTeamId' | 'lastPostResult'>;
   /** Why `graph` is absent, naming the exact setting or secret. The kernel
    *  refuses a facilitation that is not ready, so this message is what an
    *  operator has to act on. */
@@ -78,9 +86,20 @@ export interface TeamsReadinessDeps {
 }
 
 /** Where Graph keeps the installation: a chat, or the team of a channel. */
-type Scope =
-  | { kind: 'chat'; path: string; permission: string; readPermission: string }
-  | { kind: 'team'; path: string; permission: string; readPermission: string };
+interface Scope {
+  kind: 'chat' | 'team';
+  /** Graph path of the chat or the team. Never a thread id, never a session
+   *  scope fragment. */
+  path: string;
+  /** The RSC permission that lets the bot read every message here. */
+  permission: string;
+  /** Graph application permission to read installs and grants. */
+  readPermission: string;
+  /** Graph application permission for the consent upgrade. */
+  consentPermission: string;
+  /** Suffix of the RSC permissions that apply to this scope. */
+  rscSuffix: string;
+}
 
 interface Installation {
   id: string;
@@ -92,6 +111,7 @@ interface Installation {
 
 /** Permissions Graph can grant in a chat; `.Group` ones apply to a team. */
 const CHAT_SCOPE_SUFFIX = '.Chat';
+const TEAM_SCOPE_SUFFIX = '.Group';
 
 type Lookup<T> =
   | { state: 'read'; value: T }
@@ -304,24 +324,46 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
    * used to tell chats apart: a 1:1 between two people with an agent app
    * arrives as `groupChat`, and old group chats carry `@thread.skype`.
    */
-  const scopeFor = (conversationId: string, teamsType: string | undefined): Scope | { missingTeamId: true } => {
-    const isChannel = teamsType === 'channel' || conversationId.includes('@thread.tacv2');
+  const scopeFor = async (
+    conversationId: string,
+    teamsType: string | undefined,
+    botAppId: string,
+  ): Promise<Scope | { missingTeamId: true }> => {
+    const isChannel = teamsType === 'channel' || isChannelConversationId(conversationId);
     if (!isChannel) {
       return {
         kind: 'chat',
-        path: `/chats/${encodeURIComponent(conversationId)}`,
+        // The plain chat id. A chat id has no thread part; cut one anyway
+        // rather than hand Graph something it answers with a bare 400.
+        path: `/chats/${encodeURIComponent(bareConversationId(conversationId))}`,
         permission: CHAT_READ_ALL_RSC_PERMISSION,
         readPermission: CHAT_INSTALL_READ_GRAPH_PERMISSION,
+        consentPermission: CHAT_CONSENT_GRAPH_PERMISSION,
+        rscSuffix: CHAT_SCOPE_SUFFIX,
       };
     }
-    const teamId = deps.refs.teamIdFor(conversationId);
+    // A channel, or one thread of it (`…;messageid=<root>`): Graph keeps the
+    // installation and the grants on the TEAM. The thread id is this
+    // plugin's and the kernel's key only.
+    const teamId = await deps.refs.resolveTeamId(conversationId, botAppId);
     if (!teamId) return { missingTeamId: true };
     return {
       kind: 'team',
       path: `/teams/${encodeURIComponent(teamId)}`,
       permission: CHANNEL_READ_ALL_RSC_PERMISSION,
       readPermission: TEAM_INSTALL_READ_GRAPH_PERMISSION,
+      consentPermission: TEAM_CONSENT_GRAPH_PERMISSION,
+      rscSuffix: TEAM_SCOPE_SUFFIX,
     };
+  };
+
+  /** #2043 — `28:<appId>-<id>` is a fragment of this plugin's session scope,
+   *  not a conversation id. Refused by name: Graph would answer a bare 400
+   *  and no reference exists under such an id. */
+  const callerBug = (conversationId: string, where: string): ChannelReadinessIssue | undefined => {
+    if (!isBotKeyPrefixedConversationId(conversationId)) return undefined;
+    reportBotKeyPrefixedConversationId(conversationId, where);
+    return { code: 'unsupported_conversation', message: botKeyPrefixedConversationMessage(conversationId) };
   };
 
   const identify = (asChannelKey: string): { botAppId: string; label: string } | ChannelReadinessIssue => {
@@ -357,6 +399,8 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       const identity = identify(opts.asChannelKey);
       if ('code' in identity) return report(NOTHING, [identity]);
       const { botAppId, label } = identity;
+      const wrongId = callerBug(conversationId, 'readiness check');
+      if (wrongId) return report(NOTHING, [wrongId]);
 
       const reference = await ownReference(conversationId, botAppId);
       const lastPost = deps.refs.lastPostResult(conversationId, botAppId);
@@ -376,12 +420,12 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
         return report({ installed: true, canReadAllMessages: true, canPost }, postIssue ? [postIssue] : []);
       }
 
-      const scope = scopeFor(conversationId, reference?.teamsType);
+      const scope = await scopeFor(conversationId, reference?.teamsType, botAppId);
       if ('missingTeamId' in scope) {
         return report({ ...NOTHING, canPost }, [
           {
             code: 'team_unknown',
-            message: `this is a team channel and '${label}' has not received an activity from it since the last restart, so the team is not known. Mention the bot once in the channel and check again.`,
+            message: `this is a team channel and '${label}' has no stored activity from it that names the team, so the team is not known. Mention the bot once in the channel and check again.`,
           },
           ...(postIssue ? [postIssue] : []),
         ]);
@@ -424,7 +468,7 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       } else if (installed && !canReadAllMessages) {
         missing.push({
           code: 'consent_missing',
-          message: `'${label}' is installed in this ${scope.kind}${installation.state === 'read' && installation.value?.version ? ` (app version ${installation.value.version})` : ''}, but the permission ${scope.permission} is not granted to it here, so it only receives messages that @mention it. Fix: upgrade the installation with the full consented permission set (Graph installedApps/{id}/upgrade, needs ${CHAT_CONSENT_GRAPH_PERMISSION} on the instance's app registration). If the tenant blocks resource-specific consent for apps, an administrator has to allow it first.`,
+          message: `'${label}' is installed in this ${scope.kind}${installation.state === 'read' && installation.value?.version ? ` (app version ${installation.value.version})` : ''}, but the permission ${scope.permission} is not granted to it here, so it only receives messages that @mention it. Fix: upgrade the installation with the full consented permission set (Graph installedApps/{id}/upgrade, needs ${scope.consentPermission} on the instance's app registration). If the tenant blocks resource-specific consent for apps, an administrator has to allow it first.`,
         });
       }
       // An install made from an earlier app package: the chat can be read,
@@ -450,9 +494,9 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
 
     async grantedPermissions(conversationId, opts): Promise<readonly string[] | undefined> {
       const identity = identify(opts.asChannelKey);
-      if ('code' in identity || !deps.graph) return undefined;
+      if ('code' in identity || !deps.graph || callerBug(conversationId, 'granted permissions')) return undefined;
       const reference = await ownReference(conversationId, identity.botAppId);
-      const scope = scopeFor(conversationId, reference?.teamsType);
+      const scope = await scopeFor(conversationId, reference?.teamsType, identity.botAppId);
       if ('missingTeamId' in scope || scope.kind !== 'chat') return undefined;
       const graph = deps.graph;
       const grants = await lookup(() => readGrants(graph, scope, identity.botAppId));
@@ -470,10 +514,16 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
           message: deps.graphUnavailableReason ?? 'no Graph client that can write is available to the Teams channel.',
         };
       }
+      const wrongId = callerBug(conversationId, 'consent repair');
+      if (wrongId) return { outcome: 'failed', code: 'unsupported_conversation', message: wrongId.message };
       const reference = await ownReference(conversationId, identity.botAppId);
-      const scope = scopeFor(conversationId, reference?.teamsType);
-      if ('missingTeamId' in scope || scope.kind !== 'chat') {
-        return { outcome: 'failed', code: 'unsupported_conversation', message: 'the consent upgrade is implemented for chats only.' };
+      const scope = await scopeFor(conversationId, reference?.teamsType, identity.botAppId);
+      if ('missingTeamId' in scope) {
+        return {
+          outcome: 'failed',
+          code: 'team_unknown',
+          message: `this is a team channel and '${identity.label}' has no stored activity from it that names the team, so there is no team to upgrade the installation in. Mention the bot once in the channel and repair again.`,
+        };
       }
       // Each Graph step names the permission it needs: "forbidden" alone
       // would not tell an operator what to grant.
@@ -495,13 +545,13 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
 
       const found = await step(
         () => findInstallation(graph, scope, identity.botAppId),
-        'list the apps installed in this chat',
-        CHAT_INSTALL_READ_GRAPH_PERMISSION,
+        `list the apps installed in this ${scope.kind}`,
+        scope.readPermission,
       );
       if ('outcome' in found) return found;
       const installation = found.value;
       if (!installation) {
-        return { outcome: 'failed', code: 'app_not_installed', message: `the app of '${identity.label}' is not installed in this chat; there is nothing to upgrade.` };
+        return { outcome: 'failed', code: 'app_not_installed', message: `the app of '${identity.label}' is not installed in this ${scope.kind}; there is nothing to upgrade.` };
       }
       if (!installation.catalogAppId) {
         return { outcome: 'failed', code: 'graph_error', message: 'the installation row carries no catalog app id; the declared permission set cannot be read.' };
@@ -519,10 +569,11 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       const publishedVersion = declared.value.version;
       const names = resourceSpecificPermissions.map((entry) => entry.permissionValue);
       // What the published app has to declare before an upgrade is worth it:
-      // the read permission, and every chat permission of the shipped template.
+      // the read permission, and every permission of the shipped template
+      // that applies to this scope (chat or team).
       const expected = [
         scope.permission,
-        ...(deps.template?.permissions.filter((name) => name.endsWith(CHAT_SCOPE_SUFFIX)) ?? []),
+        ...(deps.template?.permissions.filter((name) => name.endsWith(scope.rscSuffix)) ?? []),
       ];
       const undeclared = [...new Set(expected)].filter((name) => !names.includes(name));
       if (undeclared.length > 0) {
@@ -543,19 +594,19 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
           message: `the published app of '${identity.label}' (version ${publishedVersion ?? '?'}) is built from template revision ${String(publishedRevision)}; current is ${String(deps.template.revision)}. Publish the current app package to the tenant app catalog first, then repair again.`,
         };
       }
-      // Needed while any chat-scoped permission the definition declares is
+      // Needed while any permission of this scope the definition declares is
       // not granted here (an older install is brought to the FULL set, not
       // only to the one permission the readiness check looks at), and while
       // the install is on another version than the published definition:
       // that is how an install loses a permission the template dropped.
       const granted = await step(
         () => readGrants(graph, scope, identity.botAppId),
-        'list the permission grants of this chat',
-        CHAT_INSTALL_READ_GRAPH_PERMISSION,
+        `list the permission grants of this ${scope.kind}`,
+        scope.readPermission,
       );
       if ('outcome' in granted) return granted;
       const isComplete = names
-        .filter((name) => name.endsWith(CHAT_SCOPE_SUFFIX))
+        .filter((name) => name.endsWith(scope.rscSuffix))
         .every((name) => granted.value.includes(name));
       const isOnPublishedVersion =
         installation.version === undefined || publishedVersion === undefined || installation.version === publishedVersion;
@@ -566,8 +617,8 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
           upgrade(`${scope.path}/installedApps/${encodeURIComponent(installation.id)}/upgrade`, {
             consentedPermissionSet: { resourceSpecificPermissions },
           }),
-        'upgrade the app installation in this chat',
-        CHAT_CONSENT_GRAPH_PERMISSION,
+        `upgrade the app installation in this ${scope.kind}`,
+        scope.consentPermission,
       );
       if ('outcome' in upgraded) return upgraded;
       return { outcome: 'upgraded', installationId: installation.id, permissions: names };

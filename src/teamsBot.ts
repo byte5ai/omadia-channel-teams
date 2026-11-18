@@ -60,6 +60,7 @@ import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { PrivacyReceipt } from '@omadia/plugin-api';
 import { readAnswerVerbosity } from './kernel-types.js';
+import type { TeamsTurnOrigin } from './kernel-types.js';
 import type {
   CaptureDisclosure,
   ChatAgent,
@@ -307,13 +308,17 @@ function teamsContainerTeamId(channelData: unknown): string | undefined {
 export function teamsTurnOrigin(
   activity: {
     readonly conversation?:
-      | { readonly conversationType?: string | undefined; readonly isGroup?: boolean | undefined }
+      | {
+          readonly id?: string | undefined;
+          readonly conversationType?: string | undefined;
+          readonly isGroup?: boolean | undefined;
+        }
       | undefined;
     readonly channelData?: unknown;
   },
   sessionScope: string,
   userId: string | undefined,
-): TurnOrigin {
+): TeamsTurnOrigin {
   // #2043 — group or direct, as Teams states it. The kernel reads this and
   // nothing else to tell a group turn from a private request when the scope
   // is a `conversation` (a facilitator refuses everything that is not
@@ -333,10 +338,22 @@ export function teamsTurnOrigin(
       : parseSessionScope(sessionScope);
   const teamId = teamsContainerTeamId(activity.channelData);
   const principal = userId ? makePrincipal('user', userId) : undefined;
+  // #2043 — `channelConversationId` (channel-sdk 0.4.0): the conversation as
+  // TEAMS names it (`activity.conversation.id`), byte for byte, never trimmed
+  // or re-cased. It is the same string the message events of this activity
+  // carry as `conversationId`, and the id this plugin keys conversation
+  // references, the subscription lookup and posts by. For a channel that is
+  // the per-thread id `19:…@thread.tacv2;messageid=<root>`. The session
+  // scope is NOT that id (it is `teams-<botKey>-<id>` for a bot with its own
+  // identity), so the kernel must not derive one from the other.
+  const rawConversationId = activity.conversation?.id;
+  const channelConversationId =
+    typeof rawConversationId === 'string' && rawConversationId.trim().length > 0 ? rawConversationId : undefined;
   return {
     channelType: 'teams',
     scope,
     ...(conversationType ? { conversationType } : {}),
+    ...(channelConversationId ? { channelConversationId } : {}),
     ...(teamId ? { container: { kind: 'team' as const, id: teamId } } : {}),
     ...(principal ? { principal } : {}),
   };
