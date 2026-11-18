@@ -215,16 +215,20 @@ All of this is *Simulated*.
 
 ### The meeting permissions in the app package
 
-Since `TEMPLATE_REVISION` 2 the app package requests eleven RSC permissions (sixteen
-are allowed). New are `OnlineMeeting.ReadBasic.Chat`,
+Since `TEMPLATE_REVISION` 2 the app package requests `OnlineMeeting.ReadBasic.Chat`,
 `OnlineMeetingParticipant.Read.Chat`, `OnlineMeetingNotification.Send.Chat` and
-`ChannelMeeting.ReadBasic.Group`.
+`ChannelMeeting.ReadBasic.Group`. All four install into a team and into a chat (*Live*,
+2026-11-18). Revision 3 (0.36.2) removes `FileStorageContainer.Selected.Group`, which the
+team consent check refuses and nothing used; the package now requests ten RSC permissions
+(sixteen are allowed). See "RSC permissions: install proof" in
+`facilitator-live-verification.md`.
 
 - **Who has to agree with the template.** Nobody keeps a second list. The M365
   connector's provisioner reads the consented set at install from the **published**
   catalog definition
   (`GET /appCatalogs/teamsApps?$filter=id eq '…'&$expand=appDefinitions($select=id,authorization)`)
-  and sends it verbatim; `repairConsent` here uses the same query. A set that differs
+  and sends it verbatim; `repairConsent` here uses the same query (plus the definition's
+  `version`). A set that differs
   from the definition is answered with `400 ResourceSpecificPermissionsMismatch`, so
   neither side derives it from the template text. The connector needed no change.
 - **The package version.** Teams replaces a published package only by a higher version.

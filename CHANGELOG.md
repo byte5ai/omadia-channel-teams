@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.36.2
+
+An agent app built from the template could not be installed into a team: Graph's team
+consent check refuses `FileStorageContainer.Selected.Group` (`400`, found by a live
+bisect on 2026-11-18). The permission had been in the template since 2026-08-25 and
+nothing used it. Chat installs were not affected.
+
+- **Removed** `FileStorageContainer.Selected.Group` from
+  `appPackage/manifest.json.template`. The four meeting permissions stay; the template
+  requests ten RSC permissions. `appPackage/TEMPLATE_REVISION.txt` is 3.
+- **Consent repair follows the published definition**: `repairConsent` now also upgrades
+  an install whose version differs from the published one, and sends exactly the set of
+  the current definition. It answers `package_outdated` while the catalog still holds an
+  app from an earlier template revision. Before, an install from the revision 2 package
+  with all chat permissions granted was `not_needed` and would have stayed
+  `package_outdated` for good.
+- **Existing installs** from 0.36.0 / 0.36.1 (app version `1.2.<n>`) are reported as
+  `package_outdated` until the app is published again and the consent repaired.
+- **Test**: the template's RSC list is pinned against the permissions that were installed
+  live into a team and a chat. A new permission has to be installed once into a test team
+  and a test chat first (`docs/facilitator-live-verification.md`, "RSC permissions:
+  install proof").
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
 ## 0.36.1
 
 0.36.0 could not be installed and was withdrawn: the kernel's plugin zip ingest refuses

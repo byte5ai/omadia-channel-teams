@@ -72,17 +72,25 @@ fail. `webApplicationInfo.id` must equal the bot's Entra app id, i.e.
 
 ## Resource-specific permissions and the template revision
 
-The template requests eleven RSC permissions (Teams allows sixteen per app):
+The template requests ten RSC permissions (Teams allows sixteen per app):
 
 | Permission | For |
 |---|---|
 | `ChatMessage.Read.Chat`, `ChannelMessage.Read.Group` | every message of a chat / a team's channels without @mention |
 | `ChatMember.Read.Chat`, `ChannelMember.Read.Group` | the roster |
 | `TeamsActivity.Send.Chat`, `TeamsActivity.Send.Group` | activity feed notifications |
-| `FileStorageContainer.Selected.Group` | files |
 | `OnlineMeeting.ReadBasic.Chat`, `ChannelMeeting.ReadBasic.Group` | meeting start and end events, meeting details |
 | `OnlineMeetingParticipant.Read.Chat` | participant join and leave events, participant lookup |
 | `OnlineMeetingNotification.Send.Chat` | targeted in-meeting notification (requested, not used yet) |
+
+**Every permission in this list must have been installed live once**, into a test team
+and into a test chat, before a release ships it. Graph checks the set at install, not at
+publish, and its refusal names no permission. `FileStorageContainer.Selected.Group` was in
+this template until revision 2 and made every team install fail (`400`,
+`IsUserAuthorizedToGrantGroupResourceSpecificPermissionsRequest`); nothing used it. The
+record and the procedure are in `docs/facilitator-live-verification.md`
+("RSC permissions: install proof"); the test `requests only RSC permissions that were
+installed live into a team and a chat` holds the verified list.
 
 `TEMPLATE_REVISION` (a positive integer in the file `TEMPLATE_REVISION.txt`; the
 extension is needed, the plugin zip ingest refuses extension-less files) counts changes

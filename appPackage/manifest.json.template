@@ -95,10 +95,6 @@
         },
         {
           "type": "Application",
-          "name": "FileStorageContainer.Selected.Group"
-        },
-        {
-          "type": "Application",
           "name": "ChatMember.Read.Chat"
         },
         {

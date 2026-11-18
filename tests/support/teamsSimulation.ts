@@ -408,7 +408,9 @@ interface SimInstallation {
   consented: string[];
 }
 
-/** The RSC set of the app package template before the meeting permissions. */
+/** The RSC set of the app package template before the meeting permissions
+ *  (revisions 0 and 1). It still carried `FileStorageContainer.Selected.Group`,
+ *  which no team accepts at install. */
 export const LEGACY_TEMPLATE_RSC = [
   'ChannelMessage.Read.Group',
   'ChatMessage.Read.Chat',
@@ -419,14 +421,21 @@ export const LEGACY_TEMPLATE_RSC = [
   'ChannelMember.Read.Group',
 ];
 
-/** The RSC set of this repo's app package template (TEMPLATE_REVISION 2). */
-export const TEMPLATE_RSC = [
-  ...LEGACY_TEMPLATE_RSC,
+const MEETING_RSC = [
   'OnlineMeeting.ReadBasic.Chat',
   'OnlineMeetingParticipant.Read.Chat',
   'OnlineMeetingNotification.Send.Chat',
   'ChannelMeeting.ReadBasic.Group',
 ];
+
+/** The template of 0.36.0 / 0.36.1 (TEMPLATE_REVISION 2): eleven permissions. */
+export const REVISION_2_TEMPLATE_RSC = [...LEGACY_TEMPLATE_RSC, ...MEETING_RSC];
+
+/** The RSC set of this repo's app package template (TEMPLATE_REVISION 3):
+ *  revision 2 without `FileStorageContainer.Selected.Group`. */
+export const TEMPLATE_RSC = REVISION_2_TEMPLATE_RSC.filter(
+  (permission) => permission !== 'FileStorageContainer.Selected.Group',
+);
 
 /** What a chat install from the earlier package shows (live, byte5 tenant):
  *  the chat-scoped permissions only. */
@@ -456,7 +465,7 @@ export class SimulatedGraph {
   }
 
   private catalogOf(bot: SimBot): { declared: string[]; version: string } {
-    return this.published.get(bot.appId) ?? { declared: TEMPLATE_RSC, version: '1.2.0' };
+    return this.published.get(bot.appId) ?? { declared: TEMPLATE_RSC, version: '1.3.0' };
   }
 
   private readonly failures = new Map<string, { status: number; body: Record<string, unknown> }>();
@@ -522,6 +531,7 @@ export class SimulatedGraph {
             appDefinitions: [
               {
                 id: `def-${bot.appId.slice(0, 8)}-${catalog.version}`,
+                version: catalog.version,
                 authorization: {
                   requiredPermissionSet: {
                     resourceSpecificPermissions: catalog.declared.map((permissionValue) => ({ permissionValue, permissionType: 'Application' })),
