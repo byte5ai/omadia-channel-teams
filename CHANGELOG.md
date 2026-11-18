@@ -26,6 +26,11 @@ feature-detected, on an older kernel nothing changes.
 - **Posts as the own bot**: real @mentions resolved from the roster by Entra object
   id; text and card are separate activities, the outcome carries `messageId` and
   `cardMessageId`.
+- **Declared send capabilities**: the conversation send provider declares
+  `supports: { asChannelKey, mentions, poll }` and the targeted send provider
+  `supports: { asChannelKey }`. The kernel only uses a send option a provider declares;
+  without it every own-identity post is answered with `no_identity`. Message and
+  session events carry the plugin's own catalog id and channel type.
 - **Direct messages as the own bot**: `sendToUser(…, { asChannelKey })` uses that
   bot's own 1:1 or creates it by Entra object id (first contact, also after a
   restart). `403 ForbiddenOperationException` → `app_not_installed`, `403` with

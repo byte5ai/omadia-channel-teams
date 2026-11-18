@@ -28,6 +28,7 @@ import { TeamsGraphResolver } from './teamsGraphResolver.js';
 import { TeamsConversationMessages } from './teamsConversationMessages.js';
 import { createTeamsReadinessProvider } from './teamsReadiness.js';
 import { readTeamsAppTemplateInfo } from './teamsAppTemplate.js';
+import { registerTeamsSendProviders, stampChannel } from './teamsKernelRegistration.js';
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
 import type { NativeFacilitatorCoreApi } from './kernel-types.js';
@@ -65,9 +66,7 @@ import {
 } from './teamsCardFeatures.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import {
-  createTeamsConversationSendAdapter,
   createTeamsRosterAdapter,
-  createTeamsTargetedSendAdapter,
   TeamsConversationReferenceCache,
 } from './teamsGroupPrimitives.js';
 import { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
@@ -734,7 +733,7 @@ export async function activate(
         isAllMessagesSubscribed: (conversationId, channelKey) =>
           isAllMessagesSubscribed('teams', conversationId, channelKey),
         // The catalog id is authoritative here — the bot cannot know it.
-        emit: (event) => emitConversationMessage({ ...event, channelId: ctx.agentId }),
+        emit: (event) => emitConversationMessage(stampChannel(event, ctx.agentId)),
       }),
     );
   }
@@ -749,20 +748,16 @@ export async function activate(
     ctx.agentId,
     createTeamsRosterAdapter({ refs: conversationRefs, roster: teamsRosterProvider, sendProactive }),
   );
-  core.registerTargetedSendProvider?.(
-    ctx.agentId,
-    createTeamsTargetedSendAdapter({
-      sendProactive,
-      // #2043 — a DM "as bot X" (asChannelKey): per-bot references and first
-      // contact, never another bot.
-      direct: {
-        refs: conversationRefs,
-        openDirectConversation,
-        botLabel: (botAppId) =>
-          teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
-      },
-    }),
-  );
+  // Targeted and conversation send, with their declared capabilities
+  // (own identity, mentions, polls) — see teamsKernelRegistration.ts.
+  registerTeamsSendProviders(core, ctx.agentId, {
+    refs: conversationRefs,
+    sendProactive,
+    roster: teamsRosterProvider,
+    openDirectConversation,
+    botLabel: (botAppId) =>
+      teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
+  });
   // People directory (Conductor human steps resolve "Teresita Biel" → her address). Same
   // feature-detect lifecycle; Graph `/users` under the default bot's registration, needs
   // the User.Read.All application permission — without it the provider answers
@@ -770,10 +765,6 @@ export async function activate(
   core.registerPeopleDirectoryProvider?.(
     ctx.agentId,
     createTeamsPeopleDirectoryProvider({ resolver: graphResolver, log: (m: string) => core.log('warn', m) }),
-  );
-  core.registerConversationSendProvider?.(
-    ctx.agentId,
-    createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive, roster: teamsRosterProvider }),
   );
   // #2043 — readiness check: installation row, RSC grant, can post. Graph is
   // asked with the INSTANCE's registration (the Microsoft 365 integration's
@@ -821,7 +812,7 @@ export async function activate(
     ...(emitSessionEvent
       ? {
           // The catalog id is authoritative here — the bot cannot know it.
-          emit: (event: TeamsSessionEvent): void => emitSessionEvent({ ...event, channelId: ctx.agentId }),
+          emit: (event: TeamsSessionEvent): void => emitSessionEvent(stampChannel(event, ctx.agentId)),
         }
       : {}),
     onLifecycleChange: (conversationId, botKey) => announceCapabilities?.(conversationId, botKey),

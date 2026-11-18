@@ -33,6 +33,7 @@ import type { TeamsRosterProvider } from './teamsRoster.js';
 import type {
   ChatParticipant,
   FacilitatorDeliveryOutcome,
+  SendProviderCapabilities,
   TargetedMention,
   TargetedSendOptions,
 } from './kernel-types.js';
@@ -491,6 +492,11 @@ export function createTeamsTargetedSendAdapter(deps: {
 
   return {
     channelType: 'teams',
+    // Declared, because the kernel only hands an own-identity DM to a
+    // provider that says it honours `asChannelKey`. True only when the per-bot
+    // path is wired: without it a named sender is refused, never substituted,
+    // but there would be nothing to deliver with either.
+    supports: { asChannelKey: deps.direct !== undefined } satisfies SendProviderCapabilities,
     // Rest tuple for the same reason as `sendToConversation` below: the third
     // argument exists from channel-sdk 0.3.0 on.
     async sendToUser(
@@ -552,10 +558,21 @@ export function createTeamsConversationSendAdapter(deps: {
   // assignable to the narrower contract without a cast and without a version
   // floor; a kernel that does not know about it simply never calls it.
 }): ConversationSendProvider & {
+  supports: SendProviderCapabilities;
   sendTyping(conversationId: string, opts?: { asChannelKey?: string }): Promise<void>;
 } {
   return {
     channelType: 'teams',
+    // Declared, because the kernel only hands an own-identity post, mentions
+    // or a poll to a provider that says it implements them:
+    //   asChannelKey  the post goes out as exactly that bot or not at all
+    //   mentions      resolved against the chat roster, so only with one
+    //   poll          posted as a card; an invalid poll is refused
+    supports: {
+      asChannelKey: true,
+      mentions: deps.roster !== undefined,
+      poll: true,
+    } satisfies SendProviderCapabilities,
     // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
     // independently of the kernel and is compiled against whatever
     // `@omadia/channel-sdk` is installed. On an SDK that predates

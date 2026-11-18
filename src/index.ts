@@ -95,6 +95,12 @@ export {
   type PollOption,
 } from './teamsPollCard.js';
 export {
+  registerTeamsSendProviders,
+  stampChannel,
+  TEAMS_CHANNEL_TYPE,
+  type TeamsSendProviderDeps,
+} from './teamsKernelRegistration.js';
+export {
   readTeamsAppTemplateInfo,
   templateRevisionOfAppVersion,
   type TeamsAppTemplateInfo,

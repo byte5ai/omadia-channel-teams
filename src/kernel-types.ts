@@ -639,6 +639,23 @@ export interface TargetedPoll {
   hint?: string;
 }
 
+/**
+ * What a send provider declares it implements (channel-sdk
+ * `SendProviderCapabilities`). The kernel does not trust a provider to honour
+ * a send option it did not declare: without `asChannelKey: true` it never
+ * calls the provider for an own-identity send and answers `no_identity`.
+ * Absent = the provider implements none.
+ */
+export interface SendProviderCapabilities {
+  /** Honours `opts.asChannelKey`: posts as exactly that identity or returns
+   *  `unreachable`, never as another one. */
+  asChannelKey?: boolean;
+  /** Turns `message.mentions` into platform mentions. */
+  mentions?: boolean;
+  /** Posts `message.poll` as a poll and refuses an invalid one. */
+  poll?: boolean;
+}
+
 /** Third argument of `TargetedSendProvider.sendToUser`. */
 export interface TargetedSendOptions {
   /** Identity the DM must come from (`28:<appId>`). Never substituted. */
