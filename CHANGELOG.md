@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.36.0
+
+Native facilitators (byte5ai/omadia#2043; #43 and the baseline of #44). Needs the
+kernel with `@omadia/channel-sdk` 0.3.0 for the new behaviour; every kernel member is
+feature-detected, on an older kernel nothing changes.
+
+- **Every message in a moderated chat**: a bot that holds a message subscription for
+  a conversation (`isAllMessagesSubscribed`) emits each human message as a message
+  event with the author Teams states, instead of dropping it at the mention gate. No
+  turn starts for a message without @mention; a mentioned message is emitted and takes
+  the normal turn path. The subscription is per bot and conversation: other bots in the
+  same chat keep the gate, chats nobody moderates behave as before.
+- **Edits, deletions, reactions, card answers**: emitted as `edited` / `deleted` /
+  `reaction` / `card_answer`. The revision counts up per edit (in memory, see limits).
+- **Readiness check** (`teamsReadiness.ts`): app installed in the chat, RSC
+  `ChatMessage.Read.Chat` granted there, bot can post; one precise reason per missing
+  item. Reads `GET /chats/{id}/permissionGrants` under the bot's own registration,
+  which needs the Graph application permission `TeamsAppInstallation.ReadForChat.All`.
+  Without it the answer is `consent_unverifiable` and a facilitation does not start.
+- **Posts as the own bot**: `sendToConversation` renders real @mentions (resolved
+  against the chat roster), can carry a poll card and returns the activity id.
+- **Direct messages as the own bot**: `sendToUser(…, { asChannelKey })` uses that
+  bot's own 1:1 or opens it (first contact, also after a restart). Outcomes
+  `app_not_installed` and `blocked` instead of a silent miss. Never another bot, no
+  default-bot fallback. Without `asChannelKey` unchanged.
+- **Meetings (#44 baseline)**: meeting chats follow the same subscription rule; live
+  poll card (`teamsPollCard.ts`) whose clicks arrive as `card_answer` with the person
+  who clicked; meeting source with the capability snapshot (`teamsMeetingSource.ts`).
+  No presence, hand raise, audio or in-meeting surfaces.
+- **Docs**: `docs/teams-meeting-apis.md` (which Teams API delivers which input and
+  output, each statement labelled simulated / documented / assumed) and
+  `docs/facilitator-live-verification.md` (manual checklist for a real instance).
+- **Not verified against a live tenant.** There is no Teams test tenant. The tests
+  (`facilitatorScenarios.test.ts`, `teamsConversationMessages.test.ts`,
+  `teamsReadiness.test.ts`, `teamsOutboundAsOwnBot.test.ts`,
+  `teamsMeetingSource.test.ts`) run against a simulated Bot Framework, Bot Connector
+  and Graph with payloads in the documented shape.
+- Limits: edit revisions restart after a middleware restart; reactions reach a bot
+  only on its own messages (Teams); readiness is not available for team channels; the
+  poll rides on a structural `message.poll` field the kernel contract does not have
+  yet.
+
 ## 0.35.0
 
 Der Plugin-Katalog der Teams-Tabs läuft über den Kernel-Modus
