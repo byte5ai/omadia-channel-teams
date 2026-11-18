@@ -316,6 +316,8 @@ export function simulatedBot(
     emitMembershipEvent: (event: Record<string, unknown>) => void;
     /** What the agent answers; '' models the kernel's empty safety-net answer. */
     answerText?: string;
+    /** The whole answer object, for what rides along with an emptied text. */
+    answer?: Record<string, unknown>;
     meetingSessions?: TeamsMeetingSessions;
   },
 ): SimulatedBot {
@@ -326,7 +328,7 @@ export function simulatedBot(
     {
       chat: async (input: { userMessage: string }) => {
         turns.push(input.userMessage);
-        return { text: group?.answerText ?? 'ok' };
+        return group?.answer ?? { text: group?.answerText ?? 'ok' };
       },
     },
     {

@@ -10,9 +10,11 @@ feature-detected, on an older kernel nothing changes.
   a conversation (`isAllMessagesSubscribed`) emits each human message as a message
   event with the author Teams states, instead of dropping it at the mention gate. The
   adapter starts **no chat turn** in such a conversation, not for a mention either:
-  the engine drives every turn. An empty answer is never posted. The subscription is
-  per bot and conversation: other bots in the
-  same chat keep the gate, chats nobody moderates behave as before.
+  the engine drives every turn. An empty answer is never posted and never replaced by
+  the "no answer came back" text, also when only the AI disclosure sentence or
+  follow-up buttons are left of it (the kernel empties the answer of the mention that
+  opens a facilitation). The subscription is per bot and conversation: other bots in
+  the same chat keep the gate, chats nobody moderates behave as before.
 - **Edits, deletions, reactions, card answers**: emitted as `edited` / `deleted` /
   `reaction` / `card_answer`, keyed on the message id, the revision counted per edit.
   Each such activity is logged with its `eventType` and ids.

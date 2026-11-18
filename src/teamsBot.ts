@@ -2153,13 +2153,16 @@ export class TeamsBot extends TeamsActivityHandler {
           });
           return;
         }
-        // #2043 — an empty answer is never posted. The kernel answers a
-        // channel-started turn in a conversation an engine drives with an
-        // empty answer and no model call (a subscription can begin while a
-        // turn is already running); Teams would show an empty card.
+        // #2043 — an empty answer is never posted, and it is not answered
+        // with the "no answer came back" text either. The kernel empties the
+        // answer of the mention that opens a facilitation (the engine posts
+        // the handshake itself) and of every channel-started turn in a
+        // conversation an engine drives. Whatever else rides on that answer
+        // (follow-up buttons, recalled context, the AI disclosure) is chrome
+        // around a text that is not there, so none of it is posted.
         const hasAttachments =
           ((result as { attachments?: readonly unknown[] }).attachments?.length ?? 0) > 0;
-        if (result.text.trim().length === 0 && !result.interactive && !hasAttachments) {
+        if (isEmptyAnswerText(result.text, result.aiDisclosure?.text) && !result.interactive && !hasAttachments) {
           console.error(
             `[teams] empty answer not posted conv=${input.conversationId.slice(0, 24)}…`,
           );
@@ -2283,6 +2286,19 @@ async function sendTopicAsk(
   const card = buildTopicAskCard({ previousSummary, originalMessage });
   const activity = MessageFactory.attachment(card);
   await context.sendActivity(activity);
+}
+
+/**
+ * `true` when an answer carries no text of its own: empty, whitespace, or
+ * nothing but the AI disclosure sentence the kernel folds into `text` for
+ * wire-only channels (#643). Teams marks the answer itself, so a text that
+ * is only that sentence is an empty answer.
+ */
+export function isEmptyAnswerText(text: string | undefined, disclosureLine?: string): boolean {
+  const own = (text ?? '').trim();
+  if (own.length === 0) return true;
+  const disclosure = disclosureLine?.trim() ?? '';
+  return disclosure.length > 0 && own === disclosure;
 }
 
 function truncate(value: string, max: number): string {

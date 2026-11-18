@@ -109,6 +109,59 @@ describe('#43 mention gate under a message subscription', () => {
     );
   });
 
+  it('posts nothing for the emptied answer of the mention that opens a facilitation', async () => {
+    // The kernel keeps the rest of the answer object and empties `text`
+    // (`{ ...answer, text: '' }`); a streamed text is retracted before
+    // `done.answer === ''`. Teams does not stream: it sees the final answer
+    // only, so no placeholder exists that would have to be removed.
+    const DISCLOSURE = 'Diese Antwort wurde von einer KI erzeugt.';
+    const emptied: Record<string, unknown>[] = [
+      { text: '' },
+      { text: '\n' },
+      { text: '', followUps: [{ label: 'Mehr', prompt: 'mehr' }] },
+      { text: '', aiDisclosure: { text: DISCLOSURE } },
+      // Folded into an empty text, the disclosure sentence is all that is left.
+      { text: DISCLOSURE, aiDisclosure: { text: DISCLOSURE } },
+      { text: '', recalled: { items: [{ text: 'früher besprochen' }] }, memoryUsed: true },
+    ];
+    for (const answer of emptied) {
+      for (const conversationType of ['groupChat', 'personal'] as const) {
+        const kernel = new SimulatedKernel();
+        const sim = simulatedBot(kernel, {
+          captureConversationReference: () => {},
+          emitMembershipEvent: () => {},
+          answer,
+        });
+
+        await sim.deliver(
+          messageActivity({ bot: MIRA, from: ANNA, text: 'starte die Abstimmung', mention: true, conversationType }),
+        );
+
+        assert.equal(sim.turns.length, 1, 'the turn ran');
+        assert.deepEqual(
+          sim.sent.filter((activity) => (activity as { type?: string }).type !== 'typing'),
+          [],
+          `nothing is posted for ${JSON.stringify(answer)} in a ${conversationType} conversation`,
+        );
+      }
+    }
+  });
+
+  it('still posts an answer that has text', async () => {
+    const kernel = new SimulatedKernel();
+    const sim = simulatedBot(kernel, {
+      captureConversationReference: () => {},
+      emitMembershipEvent: () => {},
+      answer: { text: 'Welche Optionen gibt es?' },
+    });
+
+    await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true }));
+
+    const posted = sim.sent.filter((activity) => (activity as { type?: string }).type !== 'typing');
+    assert.equal(posted.length, 1);
+    assert.ok(JSON.stringify(posted[0]).includes('Welche Optionen gibt es?'));
+  });
+
   it('changes nothing in a chat without subscription', async () => {
     const kernel = new SimulatedKernel();
     kernel.subscribe(OTHER_GROUP_CHAT_ID, MIRA);
