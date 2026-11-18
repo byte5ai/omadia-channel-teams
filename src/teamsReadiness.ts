@@ -73,9 +73,14 @@ type Scope =
 
 interface Installation {
   id: string;
+  /** Catalog id of the app (`teamsApp.id`). */
+  catalogAppId?: string;
   consented: readonly string[];
   version?: string;
 }
+
+/** Permissions Graph can grant in a chat; `.Group` ones apply to a team. */
+const CHAT_SCOPE_SUFFIX = '.Chat';
 
 type Lookup<T> =
   | { state: 'read'; value: T }
@@ -137,8 +142,10 @@ async function findInstallation(
       const botId = definition?.bot?.id;
       if (typeof botId !== 'string' || botId.toLowerCase() !== botAppId) continue;
       if (typeof row['id'] !== 'string') continue;
+      const catalogAppId = (row['teamsApp'] as { id?: unknown } | undefined)?.id;
       return {
         id: row['id'],
+        ...(typeof catalogAppId === 'string' ? { catalogAppId } : {}),
         consented: permissionNames(row['consentedPermissionSet']),
         ...(typeof definition?.version === 'string' ? { version: definition.version } : {}),
       };
@@ -147,6 +154,45 @@ async function findInstallation(
     next = typeof link === 'string' ? link : undefined;
   }
   return undefined;
+}
+
+/**
+ * The RSC set the PUBLISHED definition of a catalog app declares:
+ * `GET /appCatalogs/teamsApps?$filter=id eq '…'&$expand=appDefinitions($select=id,authorization)`.
+ * This is the query Graph's install reference names for the set an install
+ * or upgrade must consent to, and the one the M365 connector's provisioner
+ * uses at install; an upgrade moves the install to that definition, so its
+ * set is the one that has to match.
+ */
+async function declaredPermissionSet(
+  graph: TeamsReadinessGraph,
+  catalogAppId: string,
+): Promise<{ permissionValue: string; permissionType: string }[]> {
+  const filter = encodeURIComponent(`id eq '${catalogAppId.replace(/'/g, "''")}'`);
+  const expand = encodeURIComponent('appDefinitions($select=id,authorization)');
+  const json = await graph.getJson(`/appCatalogs/teamsApps?$filter=${filter}&$expand=${expand}`);
+  const out: { permissionValue: string; permissionType: string }[] = [];
+  const seen = new Set<string>();
+  for (const app of rows(json)) {
+    // Re-checked client-side: a response that ignores the filter must not
+    // make us consent to another app's permissions.
+    if (app['id'] !== catalogAppId || !Array.isArray(app['appDefinitions'])) continue;
+    for (const definition of app['appDefinitions'] as { authorization?: { requiredPermissionSet?: unknown } }[]) {
+      const list = (definition?.authorization?.requiredPermissionSet as { resourceSpecificPermissions?: unknown } | undefined)
+        ?.resourceSpecificPermissions;
+      if (!Array.isArray(list)) continue;
+      for (const entry of list as { permissionValue?: unknown; permissionType?: unknown }[]) {
+        if (typeof entry?.permissionValue !== 'string' || typeof entry.permissionType !== 'string') continue;
+        const permissionType = entry.permissionType.toLowerCase();
+        if (permissionType !== 'application' && permissionType !== 'delegated') continue;
+        const key = `${permissionType}:${entry.permissionValue}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ permissionValue: entry.permissionValue, permissionType });
+      }
+    }
+  }
+  return out;
 }
 
 /** Application grants of this bot's app in the chat or team. */
@@ -196,12 +242,13 @@ export type ConsentRepairOutcome =
  *  a superset: a kernel that does not know it never calls it. */
 export interface TeamsReadinessProvider extends ChannelReadinessProvider {
   /**
-   * Fix `consent_missing` for an app that IS installed: Graph
-   * `POST /chats/{id}/installedApps/{installation}/upgrade` with the full
-   * `consentedPermissionSet` the app definition declares. The set must match
-   * the definition exactly, otherwise Graph answers 400
-   * `ResourceSpecificPermissionsMismatch`; it is therefore read from the
-   * installed definition, not from this repo's template.
+   * Bring an install to the full consent set of the published app: Graph
+   * `POST /chats/{id}/installedApps/{installation}/upgrade` with the complete
+   * `consentedPermissionSet` the definition declares. Fixes `consent_missing`
+   * and gives an install from an earlier package the permissions added since
+   * (the meeting RSC). The set must match the definition exactly, otherwise
+   * Graph answers 400 `ResourceSpecificPermissionsMismatch`; it is therefore
+   * read from the catalog, never from this repo's template.
    */
   repairConsent(conversationId: string, opts: { asChannelKey: string }): Promise<ConsentRepairOutcome>;
 }
@@ -355,31 +402,28 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
         if (!installation) {
           return { outcome: 'failed', code: 'app_not_installed', message: `the app of '${identity.label}' is not installed in this chat; there is nothing to upgrade.` };
         }
-        const granted = await readGrants(graph, scope, identity.botAppId);
-        if (granted.includes(scope.permission)) return { outcome: 'not_needed' };
-        // The set the INSTALLED definition declares; Graph rejects any other.
-        const detail = await graph.getJson(
-          `${scope.path}/installedApps/${encodeURIComponent(installation.id)}?$expand=teamsAppDefinition`,
-        );
-        const declared = (
-          detail['teamsAppDefinition'] as { authorization?: { requiredPermissionSet?: unknown } } | undefined
-        )?.authorization?.requiredPermissionSet as { resourceSpecificPermissions?: unknown } | undefined;
-        const declaredList = Array.isArray(declared?.resourceSpecificPermissions)
-          ? (declared.resourceSpecificPermissions as { permissionValue?: unknown; permissionType?: unknown }[])
-          : [];
-        const resourceSpecificPermissions = declaredList.flatMap((entry) =>
-          typeof entry.permissionValue === 'string'
-            ? [{ permissionValue: entry.permissionValue, permissionType: typeof entry.permissionType === 'string' ? entry.permissionType : 'Application' }]
-            : [],
-        );
+        if (!installation.catalogAppId) {
+          return { outcome: 'failed', code: 'graph_error', message: 'the installation row carries no catalog app id; the declared permission set cannot be read.' };
+        }
+        // The set of the PUBLISHED definition: the upgrade moves the install
+        // to it, and Graph compares the consented set against it.
+        const resourceSpecificPermissions = await declaredPermissionSet(graph, installation.catalogAppId);
         const names = resourceSpecificPermissions.map((entry) => entry.permissionValue);
         if (!names.includes(scope.permission)) {
           return {
             outcome: 'failed',
             code: 'package_outdated',
-            message: `the installed app version of '${identity.label}' does not declare ${scope.permission}; publish a current app package to the catalog first, then upgrade.`,
+            message: `the published app of '${identity.label}' does not declare ${scope.permission}; publish a current app package to the catalog first, then upgrade.`,
           };
         }
+        // Needed while any chat-scoped permission the definition declares is
+        // not granted here: an older install is brought to the FULL set, not
+        // only to the one permission the readiness check looks at.
+        const granted = await readGrants(graph, scope, identity.botAppId);
+        const isComplete = names
+          .filter((name) => name.endsWith(CHAT_SCOPE_SUFFIX))
+          .every((name) => granted.includes(name));
+        if (isComplete) return { outcome: 'not_needed' };
         await graph.postJson(`${scope.path}/installedApps/${encodeURIComponent(installation.id)}/upgrade`, {
           consentedPermissionSet: { resourceSpecificPermissions },
         });

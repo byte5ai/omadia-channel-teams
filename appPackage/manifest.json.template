@@ -104,6 +104,22 @@
         {
           "type": "Application",
           "name": "ChannelMember.Read.Group"
+        },
+        {
+          "type": "Application",
+          "name": "OnlineMeeting.ReadBasic.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "OnlineMeetingParticipant.Read.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "OnlineMeetingNotification.Send.Chat"
+        },
+        {
+          "type": "Application",
+          "name": "ChannelMeeting.ReadBasic.Group"
         }
       ]
     }

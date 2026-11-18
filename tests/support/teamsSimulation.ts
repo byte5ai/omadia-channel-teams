@@ -341,14 +341,12 @@ interface SimInstallation {
   bot: SimBot;
   id: string;
   version: string;
-  /** RSC the installed app definition declares. */
-  declared: string[];
   /** RSC consented for this install (what the grants show). */
   consented: string[];
 }
 
-/** The RSC set of this repo's app package template. */
-export const TEMPLATE_RSC = [
+/** The RSC set of the app package template before the meeting permissions. */
+export const LEGACY_TEMPLATE_RSC = [
   'ChannelMessage.Read.Group',
   'ChatMessage.Read.Chat',
   'TeamsActivity.Send.Group',
@@ -358,8 +356,21 @@ export const TEMPLATE_RSC = [
   'ChannelMember.Read.Group',
 ];
 
-/** What a chat install consents to today (live finding, byte5 tenant). */
-export const CHAT_RSC = ['ChatMessage.Read.Chat', 'ChatMember.Read.Chat', 'TeamsActivity.Send.Chat'];
+/** The RSC set of this repo's app package template (TEMPLATE_REVISION 2). */
+export const TEMPLATE_RSC = [
+  ...LEGACY_TEMPLATE_RSC,
+  'OnlineMeeting.ReadBasic.Chat',
+  'OnlineMeetingParticipant.Read.Chat',
+  'OnlineMeetingNotification.Send.Chat',
+  'ChannelMeeting.ReadBasic.Group',
+];
+
+/** What a chat install from the earlier package shows (live, byte5 tenant):
+ *  the chat-scoped permissions only. */
+export const LEGACY_CHAT_RSC = ['ChatMessage.Read.Chat', 'ChatMember.Read.Chat', 'TeamsActivity.Send.Chat'];
+
+/** The chat-scoped permissions of the current template. */
+export const CHAT_RSC = TEMPLATE_RSC.filter((permission) => permission.endsWith('.Chat'));
 
 /**
  * `fetch` for `TeamsGraphResolver`: the Entra token endpoint and, per chat or
@@ -373,16 +384,27 @@ export class SimulatedGraph {
   readonly requests: string[] = [];
   readonly upgrades: { scope: string; installationId: string; permissions: string[] }[] = [];
   private readonly installs = new Map<string, SimInstallation[]>();
+  /** What each bot's app declares in the catalog right now. */
+  private readonly published = new Map<string, { declared: string[]; version: string }>();
+
+  /** Publish a (new) app definition for `bot` to the tenant catalog. */
+  publish(bot: SimBot, declared: string[], version: string): void {
+    this.published.set(bot.appId, { declared, version });
+  }
+
+  private catalogOf(bot: SimBot): { declared: string[]; version: string } {
+    return this.published.get(bot.appId) ?? { declared: TEMPLATE_RSC, version: '1.2.0' };
+  }
+
   private readonly failures = new Map<string, { status: number; body: Record<string, unknown> }>();
 
   /** Install `bot`'s app in a chat (`scope` = chat id) or a team (team id). */
-  install(scope: string, bot: SimBot, opts: { consented?: string[]; declared?: string[]; version?: string } = {}): void {
+  install(scope: string, bot: SimBot, opts: { consented?: string[]; version?: string } = {}): void {
     const list = (this.installs.get(scope) ?? []).filter((entry) => entry.bot.appId !== bot.appId);
     list.push({
       bot,
       id: `inst-${bot.appId.slice(0, 8)}-${Buffer.from(scope).toString('base64url').slice(0, 12)}`,
-      version: opts.version ?? '1.3.0',
-      declared: opts.declared ?? TEMPLATE_RSC,
+      version: opts.version ?? this.catalogOf(bot).version,
       consented: opts.consented ?? CHAT_RSC,
     });
     this.installs.set(scope, list);
@@ -393,7 +415,7 @@ export class SimulatedGraph {
     this.failures.set(`${scope}|${resource}`, { status, body: graphError(code, message) });
   }
 
-  private installationRow(entry: SimInstallation, withDefinition: boolean): Record<string, unknown> {
+  private installationRow(entry: SimInstallation): Record<string, unknown> {
     return {
       id: entry.id,
       consentedPermissionSet: {
@@ -405,19 +427,7 @@ export class SimulatedGraph {
         externalId: `manifest-${entry.bot.appId.slice(0, 8)}`,
         distributionMethod: 'organization',
       },
-      teamsAppDefinition: {
-        version: entry.version,
-        bot: { id: entry.bot.appId },
-        ...(withDefinition
-          ? {
-              authorization: {
-                requiredPermissionSet: {
-                  resourceSpecificPermissions: entry.declared.map((permissionValue) => ({ permissionValue, permissionType: 'application' })),
-                },
-              },
-            }
-          : {}),
-      },
+      teamsAppDefinition: { version: entry.version, bot: { id: entry.bot.appId } },
     };
   }
 
@@ -427,6 +437,30 @@ export class SimulatedGraph {
     this.requests.push(`${method} ${url}`);
     if (url.startsWith('https://login.microsoftonline.com/')) {
       return json(200, { token_type: 'Bearer', expires_in: 3599, access_token: 'simulated-token' });
+    }
+    if (url.startsWith('https://graph.microsoft.com/v1.0/appCatalogs/teamsApps?')) {
+      const wanted = /id eq '([^']+)'/.exec(decodeURIComponent(url))?.[1];
+      const bots = [...this.installs.values()].flat().map((entry) => entry.bot);
+      const bot = bots.find((candidate) => `catalog-${candidate.appId.slice(0, 8)}` === wanted);
+      if (!bot) return json(200, { value: [] });
+      const catalog = this.catalogOf(bot);
+      return json(200, {
+        value: [
+          {
+            id: wanted,
+            appDefinitions: [
+              {
+                id: `def-${bot.appId.slice(0, 8)}-${catalog.version}`,
+                authorization: {
+                  requiredPermissionSet: {
+                    resourceSpecificPermissions: catalog.declared.map((permissionValue) => ({ permissionValue, permissionType: 'Application' })),
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      });
     }
     const match = /^https:\/\/graph\.microsoft\.com\/v1\.0\/(chats|teams)\/([^/]+)\/(installedApps|permissionGrants)(?:\/([^/?]+))?(\/upgrade)?(?:\?.*)?$/.exec(url);
     if (!match) return json(404, graphError('NotFound', 'NotFound'));
@@ -454,20 +488,25 @@ export class SimulatedGraph {
     }
     const installationId = match[4] ? decodeURIComponent(match[4]) : undefined;
     if (!installationId) {
-      return json(200, { value: installs.map((entry) => this.installationRow(entry, false)) });
+      return json(200, { value: installs.map((entry) => this.installationRow(entry)) });
     }
     const entry = installs.find((candidate) => candidate.id === installationId);
     if (!entry) return json(404, graphError('NotFound', 'NotFound'));
-    if (!match[5]) return json(200, this.installationRow(entry, true));
+    if (!match[5]) return json(200, this.installationRow(entry));
     if (method !== 'POST') return json(405, graphError('MethodNotAllowed', 'MethodNotAllowed'));
     const body = JSON.parse(String(init?.body ?? '{}')) as {
       consentedPermissionSet?: { resourceSpecificPermissions?: { permissionValue: string }[] };
     };
     const requested = (body.consentedPermissionSet?.resourceSpecificPermissions ?? []).map((p) => p.permissionValue);
-    if ([...requested].sort().join() !== [...entry.declared].sort().join()) {
+    // The upgrade moves the install to the published definition; the
+    // consented set must equal what that definition declares.
+    const catalog = this.catalogOf(entry.bot);
+    if ([...requested].sort().join() !== [...catalog.declared].sort().join()) {
       return json(400, graphError('BadRequest', 'ResourceSpecificPermissionsMismatch: the consented permission set does not match the app definition.'));
     }
-    entry.consented = [...entry.declared];
+    const applicable = match[1] === 'chats' ? '.Chat' : '.Group';
+    entry.consented = catalog.declared.filter((permission) => permission.endsWith(applicable));
+    entry.version = catalog.version;
     this.upgrades.push({ scope, installationId, permissions: requested });
     return new Response(null, { status: 204 });
   };

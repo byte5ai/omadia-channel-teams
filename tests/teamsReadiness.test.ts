@@ -16,6 +16,8 @@ import {
   CHAT_RSC,
   GROUP_CHAT_ID,
   JONAS,
+  LEGACY_CHAT_RSC,
+  LEGACY_TEMPLATE_RSC,
   messageActivity,
   MIRA,
   SimulatedGraph,
@@ -271,10 +273,10 @@ describe('#43 readiness provider', () => {
 });
 
 describe('#43 consent repair through the Graph upgrade', () => {
-  it('upgrades the installation with the full set the app definition declares', async () => {
+  it('upgrades the installation with the full set the published definition declares', async () => {
     const h = harness();
     seen(h, MIRA);
-    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: ['TeamsActivity.Send.Chat'], declared: TEMPLATE_RSC });
+    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: ['TeamsActivity.Send.Chat'], version: '1.0.1' });
     assert.equal((await h.check(MIRA)).canReadAllMessages, false);
 
     const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
@@ -284,7 +286,28 @@ describe('#43 consent repair through the Graph upgrade', () => {
     assert.equal((await h.check(MIRA)).ready, true);
   });
 
-  it('does nothing when the grant is already there', async () => {
+  it('brings an older install of the same app to the full set, meeting permissions included', async () => {
+    const h = harness();
+    seen(h, MIRA);
+    // Installed from the package before the meeting permissions: the chat
+    // can already be read, so the readiness check is green.
+    h.graph.publish(MIRA, LEGACY_TEMPLATE_RSC, '1.1.3');
+    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: LEGACY_CHAT_RSC });
+    assert.equal((await h.check(MIRA)).ready, true);
+    assert.deepEqual(await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key }), { outcome: 'not_needed' });
+
+    // The new package version is published to the catalog.
+    h.graph.publish(MIRA, TEMPLATE_RSC, '1.2.3');
+    const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+
+    assert.equal(outcome.outcome, 'upgraded');
+    assert.deepEqual(h.graph.upgrades.at(-1)?.permissions, TEMPLATE_RSC, 'the complete set, not only the new permissions');
+    const chat = encodeURIComponent(GROUP_CHAT_ID);
+    assert.ok(h.graph.requests.some((r) => r.startsWith(`POST https://graph.microsoft.com/v1.0/chats/${chat}/installedApps/`) && r.endsWith('/upgrade')));
+    assert.deepEqual(await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key }), { outcome: 'not_needed' });
+  });
+
+  it('does nothing when every chat permission of the definition is granted', async () => {
     const h = harness();
     seen(h, MIRA);
     h.graph.install(GROUP_CHAT_ID, MIRA, { consented: CHAT_RSC });
@@ -293,10 +316,11 @@ describe('#43 consent repair through the Graph upgrade', () => {
     assert.deepEqual(h.graph.upgrades, []);
   });
 
-  it('refuses when the installed app version does not declare the permission', async () => {
+  it('refuses when the published app does not declare the permission', async () => {
     const h = harness();
     seen(h, MIRA);
-    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: [], declared: ['TeamsActivity.Send.Chat'], version: '1.0.0' });
+    h.graph.publish(MIRA, ['TeamsActivity.Send.Chat'], '1.0.0');
+    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: [] });
 
     const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
 
