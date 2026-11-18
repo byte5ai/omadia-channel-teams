@@ -85,7 +85,7 @@ describe('#43 mention gate under a message subscription', () => {
       cardSubmitActivity({ bot: MIRA, from: ANNA, cardMessageId: '1731930004700', value: { kind: 'followup', prompt: 'mehr' } }),
     );
 
-    assert.deepEqual(kernel.events.map((e) => [e.kind, e.cardAnswer?.cardId]), [['card_answer', 'followup']]);
+    assert.deepEqual(kernel.events.map((e) => [e.kind, e.cardAnswer?.cardId, e.cardAnswer?.answererVerified]), [['card_answer', 'followup', true]]);
     assert.deepEqual(sim.turns, []);
   });
 
@@ -269,7 +269,7 @@ describe('#43 edits, deletions, reactions and card answers', () => {
     assert.ok(event);
     assert.equal(event.kind, 'card_answer');
     assert.equal(event.messageId, '1731930004567');
-    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'b', answererVerified: true } });
+    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'b' }, answererVerified: true });
     assert.equal(event.author.id, BERT.aadObjectId);
     assert.deepEqual(sim.turns, []);
     assert.deepEqual(sim.sent, []);
@@ -296,7 +296,7 @@ describe('#43 edits, deletions, reactions and card answers', () => {
     assert.equal(event.kind, 'card_answer');
     assert.equal(event.messageId, '1731930004600');
     assert.equal(event.author.id, BERT.aadObjectId);
-    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'a', answererVerified: true } });
+    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'a' }, answererVerified: true });
     assert.deepEqual(sim.turns, []);
     assert.deepEqual(sim.sent, [
       { type: 'invokeResponse', value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: 'Antwort übermittelt.' } } },
@@ -321,7 +321,7 @@ describe('#43 edits, deletions, reactions and card answers', () => {
 
     const event = kernel.events[0];
     assert.ok(event);
-    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'a', answererVerified: false } });
+    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'a' }, answererVerified: false });
     assert.match(event.author.id, /^8:teamsvisitor:/);
   });
 

@@ -522,13 +522,13 @@ export function createTeamsTargetedSendAdapter(deps: {
 
 
 /**
- * `TargetedDeliveryOutcome` of a group post, plus what a post with a card
- * needs (#2043): `cardMessageId` is the card's own message, the id poll
- * answers name. A superset of the kernel type; a kernel that does not know
- * the extra fields ignores them.
+ * The contract's delivery outcome for a group post. `cardMessageId` is the
+ * card's own message, the id poll answers name. One addition is not in the
+ * contract: an `unreachable` outcome carries `messageId` when the text was
+ * posted and only the card failed, so the caller does not post the text twice.
  */
 export type ConversationPostOutcome =
-  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string }
+  | Extract<FacilitatorDeliveryOutcome, { outcome: 'delivered' }>
   | (Extract<FacilitatorDeliveryOutcome, { outcome: 'unreachable' }> & { messageId?: string });
 
 /**
@@ -616,11 +616,11 @@ export function createTeamsConversationSendAdapter(deps: {
 
       // #2043 — a poll that cannot be rendered is refused before anything is
       // posted: half a poll in the chat is worse than a named failure.
-      const pollRequest = readPollRequest(message);
+      const pollRequest = readPollRequest(message.poll);
       if (pollRequest && 'problem' in pollRequest) {
         return { outcome: 'unreachable', code: 'channel_error', message: `invalid poll: ${pollRequest.problem}` };
       }
-      const mentions = (message as { mentions?: readonly TargetedMention[] }).mentions;
+      const mentions: readonly TargetedMention[] | undefined = message.mentions;
 
       // Text and card go out as SEPARATE activities and each returns its own
       // id (a combined activity may be split by Teams and then returns none).

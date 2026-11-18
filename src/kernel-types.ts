@@ -503,7 +503,9 @@ export interface ConversationMessageEvent {
   quoted?: boolean;
   forwarded?: boolean;
   reaction?: { name: string; removed: boolean };
-  cardAnswer?: { cardId: string; value: unknown };
+  /** `answererVerified: false` when the platform did not state who clicked
+   *  (no verified user id on the activity). */
+  cardAnswer?: { cardId: string; value: unknown; answererVerified?: boolean };
   /** ISO 8601 timestamp of the platform event. */
   occurredAt: string;
   /** The original platform event, opaque to the kernel and not stored. */
@@ -582,6 +584,17 @@ export interface TargetedMention {
   text: string;
 }
 
+/** A live poll riding on a message (`TargetedMessage.poll`, channel-sdk
+ *  0.3.0 / kernel K3). The kernel validates it before the provider sees it. */
+export interface TargetedPoll {
+  /** 1..128 characters; round-tripped as `cardAnswer.cardId`. */
+  pollId: string;
+  question: string;
+  /** 2..6 options, ids unique. */
+  options: readonly { id: string; label: string }[];
+  hint?: string;
+}
+
 /** Third argument of `TargetedSendProvider.sendToUser`. */
 export interface TargetedSendOptions {
   /** Identity the DM must come from (`28:<appId>`). Never substituted. */
@@ -589,9 +602,11 @@ export interface TargetedSendOptions {
 }
 
 /** `TargetedDeliveryOutcome` including the 0.3.0 additions (`messageId`,
- *  `app_not_installed`, `blocked`). */
+ *  `cardMessageId`, `app_not_installed`, `blocked`). A poll may go out as two
+ *  messages: `cardMessageId` is the card, and the `messageId` of every
+ *  `card_answer` event for it. */
 export type FacilitatorDeliveryOutcome =
-  | { outcome: 'delivered'; messageId?: string }
+  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string }
   | {
       outcome: 'unreachable';
       code:

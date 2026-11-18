@@ -214,10 +214,10 @@ export class TeamsConversationMessages {
   /**
    * An Adaptive Card click (`Action.Execute` invoke or `Action.Submit`
    * message); `replyToId` is the card. For a poll the card id is the poll id
-   * and the value `{ optionId, answererVerified }`. The answerer is verified
-   * when Teams states an Entra object id for `from`; an anonymous meeting
-   * participant has none and is passed on with `answererVerified: false`, so
-   * the engine can refuse to count the answer.
+   * and the value `{ optionId }`. `cardAnswer.answererVerified` says whether
+   * Teams stated an Entra object id for `from`; an anonymous meeting
+   * participant has none and is passed on with `false`, so the engine can
+   * refuse to count the answer.
    */
   emitCardAnswer(activity: InboundActivity): boolean {
     const poll = parsePollAnswerValue(activity.value);
@@ -228,8 +228,8 @@ export class TeamsConversationMessages {
       messageId: activity.replyToId ?? activity.id,
       revision: 0,
       cardAnswer: poll
-        ? { cardId: poll.pollId, value: { optionId: poll.optionId, answererVerified } }
-        : { cardId: genericCardId(data), value: data },
+        ? { cardId: poll.pollId, value: { optionId: poll.optionId }, answererVerified }
+        : { cardId: genericCardId(data), value: data, answererVerified },
     });
   }
 

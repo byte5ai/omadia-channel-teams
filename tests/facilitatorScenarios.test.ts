@@ -378,7 +378,7 @@ describe('scenario 8 — poll answers', () => {
     const before = i.kernel.events.length;
 
     const poll = { pollId: 'poll-budget', question: 'Budget freigeben?', options: [{ id: 'yes', label: 'Ja' }, { id: 'no', label: 'Nein' }] };
-    const posted = await i.post(MEETING_CHAT_ID, { text: 'Abstimmung', poll } as never, { asChannelKey: MIRA.key });
+    const posted = await i.post(MEETING_CHAT_ID, { text: 'Abstimmung', poll }, { asChannelKey: MIRA.key });
     assert.ok(posted.outcome === 'delivered' && posted.messageId && posted.cardMessageId);
     assert.notEqual(posted.outcome === 'delivered' ? posted.messageId : '', posted.outcome === 'delivered' ? posted.cardMessageId : '');
     const cardMessageId = posted.outcome === 'delivered' ? (posted.cardMessageId as string) : '';
@@ -403,11 +403,11 @@ describe('scenario 8 — poll answers', () => {
     assert.deepEqual(
       i.kernel.events.slice(before).map((e) => [e.kind, e.messageId, e.author.id, e.cardAnswer]),
       [
-        ['card_answer', cardMessageId, ANNA.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes', answererVerified: true } }],
-        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'no', answererVerified: true } }],
-        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes', answererVerified: true } }],
+        ['card_answer', cardMessageId, ANNA.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes' }, answererVerified: true }],
+        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'no' }, answererVerified: true }],
+        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes' }, answererVerified: true }],
         // An anonymous participant: no Entra object id, flagged as unverified.
-        ['card_answer', cardMessageId, '8:teamsvisitor:7d3a4e5f', { cardId: 'poll-budget', value: { optionId: 'no', answererVerified: false } }],
+        ['card_answer', cardMessageId, '8:teamsvisitor:7d3a4e5f', { cardId: 'poll-budget', value: { optionId: 'no' }, answererVerified: false }],
       ],
       'a changed answer is a second event; the engine decides which one counts',
     );

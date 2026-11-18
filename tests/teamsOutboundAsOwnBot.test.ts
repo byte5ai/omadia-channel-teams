@@ -130,7 +130,7 @@ describe('#43 sendToConversation as the own bot', () => {
 
     const outcome = await send(
       GROUP_CHAT_ID,
-      { text: '', poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] } } as never,
+      { text: '', poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] } },
       { asChannelKey: MIRA.key },
     );
 
@@ -156,7 +156,7 @@ describe('#43 sendToConversation as the own bot', () => {
 
     const outcome = await send(
       GROUP_CHAT_ID,
-      { text: 'x', poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }] } } as never,
+      { text: 'x', poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }] } },
       { asChannelKey: MIRA.key },
     );
 

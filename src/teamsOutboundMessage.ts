@@ -4,7 +4,7 @@
 
 import type { Activity } from 'botbuilder';
 
-import type { FacilitatorDeliveryOutcome, TargetedMention } from './kernel-types.js';
+import type { FacilitatorDeliveryOutcome, TargetedMention, TargetedPoll } from './kernel-types.js';
 import type { MentionEntity } from './teamsMentions.js';
 import { buildPollCard, validatePollInput, type BuildPollCardInput } from './teamsPollCard.js';
 
@@ -106,31 +106,26 @@ export function renderMentions(
 }
 
 /**
- * The poll a message asks for. The kernel's `TargetedMessage` has no field
- * for it yet, so it is read structurally: `{ pollId, question, options }`.
- * Returns `undefined` when the message carries no poll, and the reason when
- * it carries one that cannot be rendered.
+ * The poll of a message (`TargetedMessage.poll`), checked once more before
+ * anything is posted. The kernel validates it too; the adapter still refuses
+ * a poll it cannot render rather than post half of one. Returns `undefined`
+ * when the message carries no poll, and the reason when it cannot be rendered.
  */
-export function readPollRequest(message: unknown): { poll: BuildPollCardInput } | { problem: string } | undefined {
-  const raw = (message as { poll?: unknown } | null)?.poll;
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== 'object') return { problem: 'poll must be an object' };
-  const candidate = raw as Record<string, unknown>;
-  const options = Array.isArray(candidate['options']) ? candidate['options'] : [];
-  const poll: BuildPollCardInput = {
-    pollId: typeof candidate['pollId'] === 'string' ? candidate['pollId'] : '',
-    question: typeof candidate['question'] === 'string' ? candidate['question'] : '',
-    options: options.map((option) => {
-      const o = (option ?? {}) as Record<string, unknown>;
-      return {
-        id: typeof o['id'] === 'string' ? o['id'] : '',
-        label: typeof o['label'] === 'string' ? o['label'] : '',
-      };
-    }),
-    ...(typeof candidate['hint'] === 'string' ? { hint: candidate['hint'] } : {}),
+export function readPollRequest(
+  poll: TargetedPoll | undefined,
+): { poll: BuildPollCardInput } | { problem: string } | undefined {
+  if (poll === undefined || poll === null) return undefined;
+  const candidate: BuildPollCardInput = {
+    pollId: typeof poll.pollId === 'string' ? poll.pollId : '',
+    question: typeof poll.question === 'string' ? poll.question : '',
+    options: (Array.isArray(poll.options) ? poll.options : []).map((option) => ({
+      id: typeof option?.id === 'string' ? option.id : '',
+      label: typeof option?.label === 'string' ? option.label : '',
+    })),
+    ...(typeof poll.hint === 'string' ? { hint: poll.hint } : {}),
   };
-  const problem = validatePollInput(poll);
-  return problem ? { problem } : { poll };
+  const problem = validatePollInput(candidate);
+  return problem ? { problem } : { poll: candidate };
 }
 
 /**

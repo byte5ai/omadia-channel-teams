@@ -157,9 +157,9 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
    check, posts as the facilitator's own bot.
 2. A poll is an Adaptive Card with one `Action.Execute` per option. The click is
    emitted as `card_answer`: `cardAnswer.cardId` = poll id, `cardAnswer.value` =
-   `{ optionId, answererVerified }`, `messageId` = the card message, `author` =
-   `activity.from`. `answererVerified` is false when Teams states no `aadObjectId`
-   (anonymous participant). A poll click never becomes a chat turn; it is acknowledged
+   `{ optionId }`, `cardAnswer.answererVerified`, `messageId` = the card message,
+   `author` = `activity.from`. `answererVerified` is false when Teams states no
+   `aadObjectId` (anonymous participant). A poll click never becomes a chat turn; it is acknowledged
    with "Antwort übermittelt." or, when nobody is subscribed, "Diese Abstimmung ist
    nicht mehr aktiv.".
 3. The capability snapshot, per conversation:
@@ -212,7 +212,6 @@ added to the chat is invisible.
 |---|---|
 | The edit revision the adapter sends is counted in memory. | No consequence: the kernel assigns the stored revision itself (created = 0, each edit or deletion = highest stored + 1) and treats the adapter's number as a hint. |
 | Quoted and forwarded messages are recognised by attachment markers (`schema.skype.com/Reply`, `forwardedMessageReference`). | **Open**, from neither a page nor the evaluation. If Teams marks them differently such a message is an ordinary `created` event and the engine cannot tell it is a quote. |
-| The kernel's `TargetedMessage` has no poll field and `delivered` no `cardMessageId`. | The plugin reads `message.poll` and returns `cardMessageId` structurally; the kernel contract has to add both. |
 | A team channel is checked against its team only after the bot received an activity from that channel in the running process. | Before that the readiness check answers `team_unknown`. |
 | The instance's app registration must be served by this channel (its secret in the vault). | Otherwise the readiness check answers `graph_unavailable`. |
 

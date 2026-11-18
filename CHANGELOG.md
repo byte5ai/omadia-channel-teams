@@ -49,8 +49,8 @@ feature-detected, on an older kernel nothing changes.
   mention-free delivery in meeting chats and the consent upgrade (M1 to M6).
 - Limits: the edit revision the adapter sends is a hint (the kernel assigns the stored
   one); a team channel can be
-  checked only after the bot received an activity from it; polls and `cardMessageId`
-  ride on structural fields the kernel contract does not have yet.
+  checked only after the bot received an activity from it; `repairConsent` is not part
+  of the kernel's readiness contract yet.
 
 ## 0.35.0
 
