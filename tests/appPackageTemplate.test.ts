@@ -127,7 +127,6 @@ const RSC_GRANTS = [
   'ChatMessage.Read.Chat',
   'TeamsActivity.Send.Group',
   'TeamsActivity.Send.Chat',
-  'FileStorageContainer.Selected.Group',
   'ChatMember.Read.Chat',
   'ChannelMember.Read.Group',
   // #2043 / #44 — meetings: start/end, participants, in-meeting notification.
@@ -136,6 +135,32 @@ const RSC_GRANTS = [
   'OnlineMeetingNotification.Send.Chat',
   'ChannelMeeting.ReadBasic.Group',
 ];
+/**
+ * RSC permissions PROVEN TO INSTALL in the byte5 tenant on 2026-11-18, into a
+ * team (throw-away app "variant I": these ten, `POST /teams/{id}/installedApps`
+ * → 201) and into a chat (the full package into a meeting chat → 201). The
+ * record is the bisect table in `docs/facilitator-live-verification.md`.
+ *
+ * A permission is added here only AFTER a package that declares it was
+ * installed once into a test team and once into a test chat. Graph validates
+ * the set at install, not at publish, and names no permission when it refuses.
+ */
+const LIVE_VERIFIED_RSC: readonly string[] = [
+  'ChannelMessage.Read.Group',
+  'ChatMessage.Read.Chat',
+  'TeamsActivity.Send.Group',
+  'TeamsActivity.Send.Chat',
+  'ChatMember.Read.Chat',
+  'ChannelMember.Read.Group',
+  'OnlineMeeting.ReadBasic.Chat',
+  'OnlineMeetingParticipant.Read.Chat',
+  'OnlineMeetingNotification.Send.Chat',
+  'ChannelMeeting.ReadBasic.Group',
+];
+/** Refused by the team consent check (400, every variant that carried it).
+ *  It was in the template from 2026-08-25 until revision 2; no agent app from
+ *  those packages could be installed into a team. */
+const REFUSED_AT_TEAM_INSTALL: readonly string[] = ['FileStorageContainer.Selected.Group'];
 /** Teams allows 16 resource-specific permissions per app. */
 const MAX_RSC_PER_APP = 16;
 
@@ -327,6 +352,23 @@ describe('#19 W0 — appPackage icons + README', () => {
     // Revision 2 = the meeting permissions of #44. Raise it with every change
     // of the template that changes the published app definition.
     assert.ok(Number(revision) >= 2);
+  });
+
+  it('requests only RSC permissions that were installed live into a team and a chat', () => {
+    const requested = readTeamsAppTemplateInfo(appPackageDir)?.permissions ?? [];
+    assert.ok(requested.length > 0);
+    assert.deepEqual(
+      requested.filter((permission) => !LIVE_VERIFIED_RSC.includes(permission)),
+      [],
+      'install a package with this permission into a test team and a test chat first, record it in docs/facilitator-live-verification.md, then add it to LIVE_VERIFIED_RSC',
+    );
+    assert.deepEqual(
+      requested.filter((permission) => REFUSED_AT_TEAM_INSTALL.includes(permission)),
+      [],
+      'this permission makes every team install fail',
+    );
+    // Revision 3 = revision 2 without the refused permission.
+    assert.ok(Number(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION.txt'), 'utf8')) >= 3);
   });
 
   it('the plugin reads revision and permissions from the shipped template', () => {

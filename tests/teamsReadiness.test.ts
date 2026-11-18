@@ -20,6 +20,7 @@ import {
   JONAS,
   LEGACY_CHAT_RSC,
   LEGACY_TEMPLATE_RSC,
+  REVISION_2_TEMPLATE_RSC,
   messageActivity,
   MIRA,
   SimulatedGraph,
@@ -61,8 +62,8 @@ function harness(opts: { configured?: SimBot[]; withGraph?: boolean; reason?: st
           }),
     refs,
     ...(opts.reason ? { graphUnavailableReason: opts.reason } : {}),
-    // The shipped template: revision 2 with the meeting permissions.
-    template: { revision: 2, permissions: TEMPLATE_RSC },
+    // The shipped template: revision 3 (meeting permissions, no file permission).
+    template: { revision: 3, permissions: TEMPLATE_RSC },
   });
   return {
     graph,
@@ -193,7 +194,7 @@ describe('#43 readiness provider', () => {
       { installed: true, canReadAllMessages: true, canPost: true },
     );
     assert.deepEqual(report.missing.map((m) => m.code), ['package_outdated']);
-    assert.match(report.missing[0]?.message ?? '', /version 1\.0\.4, template revision 0; current is 2/);
+    assert.match(report.missing[0]?.message ?? '', /version 1\.0\.4, template revision 0; current is 3/);
     assert.match(report.missing[0]?.message ?? '', /repair the consent/);
   });
 
@@ -431,11 +432,11 @@ describe('#43 consent repair through the Graph upgrade', () => {
     const early = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
     assert.equal(early.outcome === 'failed' ? early.code : '', 'package_outdated');
     assert.match(early.outcome === 'failed' ? early.message : '', /does not declare OnlineMeeting\.ReadBasic\.Chat/);
-    assert.match(early.outcome === 'failed' ? early.message : '', /template revision 2/);
+    assert.match(early.outcome === 'failed' ? early.message : '', /template revision 3/);
     assert.deepEqual(h.graph.upgrades, []);
 
     // The new package version is published to the catalog.
-    h.graph.publish(MIRA, TEMPLATE_RSC, '1.2.4');
+    h.graph.publish(MIRA, TEMPLATE_RSC, '1.3.4');
     const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
 
     assert.equal(outcome.outcome, 'upgraded');
@@ -443,6 +444,40 @@ describe('#43 consent repair through the Graph upgrade', () => {
     const chat = encodeURIComponent(GROUP_CHAT_ID);
     assert.ok(h.graph.requests.some((r) => r.startsWith(`POST https://graph.microsoft.com/v1.0/chats/${chat}/installedApps/`) && r.endsWith('/upgrade')));
     assert.equal((await h.check(MIRA)).ready, true, 'the upgraded install is at the current revision');
+    assert.deepEqual(await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key }), { outcome: 'not_needed' });
+  });
+
+  it('brings an install from the revision 2 package to the definition without the file permission', async () => {
+    // 0.36.1 shipped revision 2 with eleven permissions. Revision 3 drops
+    // FileStorageContainer.Selected.Group. In a chat the grants do not change
+    // (the dropped permission is team-scoped), so only the version tells the
+    // install from a current one.
+    const h = harness();
+    seen(h, MIRA);
+    h.graph.publish(MIRA, REVISION_2_TEMPLATE_RSC, '1.2.1');
+    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: CHAT_RSC });
+
+    const before = await h.check(MIRA);
+    assert.deepEqual(before.missing.map((m) => m.code), ['package_outdated']);
+    assert.match(before.missing[0]?.message ?? '', /version 1\.2\.1, template revision 2; current is 3/);
+
+    // The catalog still holds revision 2: every chat permission is declared
+    // and granted, and still there is nothing to upgrade to yet.
+    const early = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+    assert.equal(early.outcome === 'failed' ? early.code : '', 'package_outdated');
+    assert.match(early.outcome === 'failed' ? early.message : '', /version 1\.2\.1\) is built from template revision 2; current is 3/);
+    assert.deepEqual(h.graph.upgrades, []);
+
+    // Revision 3 is published: ten permissions.
+    h.graph.publish(MIRA, TEMPLATE_RSC, '1.3.1');
+    const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+
+    assert.equal(outcome.outcome, 'upgraded');
+    const sent = h.graph.upgrades.at(-1)?.permissions ?? [];
+    assert.deepEqual(sent, TEMPLATE_RSC, 'exactly the set of the published definition');
+    assert.equal(sent.length, 10);
+    assert.ok(!sent.includes('FileStorageContainer.Selected.Group'), 'the removed permission is not consented again');
+    assert.equal((await h.check(MIRA)).ready, true);
     assert.deepEqual(await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key }), { outcome: 'not_needed' });
   });
 

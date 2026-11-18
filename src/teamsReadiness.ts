@@ -168,42 +168,70 @@ async function findInstallation(
 }
 
 /**
- * The RSC set the PUBLISHED definition of a catalog app declares:
- * `GET /appCatalogs/teamsApps?$filter=id eq '…'&$expand=appDefinitions($select=id,authorization)`.
+ * The version and the RSC set of the PUBLISHED definition of a catalog app:
+ * `GET /appCatalogs/teamsApps?$filter=id eq '…'&$expand=appDefinitions($select=id,version,authorization)`.
  * This is the query Graph's install reference names for the set an install
  * or upgrade must consent to, and the one the M365 connector's provisioner
  * uses at install; an upgrade moves the install to that definition, so its
  * set is the one that has to match.
  */
-async function declaredPermissionSet(
-  graph: TeamsReadinessGraph,
-  catalogAppId: string,
-): Promise<{ permissionValue: string; permissionType: string }[]> {
+async function publishedDefinition(graph: TeamsReadinessGraph, catalogAppId: string): Promise<PublishedDefinition> {
   const filter = encodeURIComponent(`id eq '${catalogAppId.replace(/'/g, "''")}'`);
-  const expand = encodeURIComponent('appDefinitions($select=id,authorization)');
+  const expand = encodeURIComponent('appDefinitions($select=id,version,authorization)');
   const json = await graph.getJson(`/appCatalogs/teamsApps?$filter=${filter}&$expand=${expand}`);
-  const out: { permissionValue: string; permissionType: string }[] = [];
-  const seen = new Set<string>();
-  for (const app of rows(json)) {
+  const definitions: CatalogDefinition[] = rows(json)
     // Re-checked client-side: a response that ignores the filter must not
     // make us consent to another app's permissions.
-    if (app['id'] !== catalogAppId || !Array.isArray(app['appDefinitions'])) continue;
-    for (const definition of app['appDefinitions'] as { authorization?: { requiredPermissionSet?: unknown } }[]) {
-      const list = (definition?.authorization?.requiredPermissionSet as { resourceSpecificPermissions?: unknown } | undefined)
-        ?.resourceSpecificPermissions;
-      if (!Array.isArray(list)) continue;
-      for (const entry of list as { permissionValue?: unknown; permissionType?: unknown }[]) {
-        if (typeof entry?.permissionValue !== 'string' || typeof entry.permissionType !== 'string') continue;
-        const permissionType = entry.permissionType.toLowerCase();
-        if (permissionType !== 'application' && permissionType !== 'delegated') continue;
-        const key = `${permissionType}:${entry.permissionValue}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({ permissionValue: entry.permissionValue, permissionType });
-      }
-    }
+    .filter((app) => app['id'] === catalogAppId && Array.isArray(app['appDefinitions']))
+    .flatMap((app) => app['appDefinitions'] as CatalogDefinition[])
+    .filter((definition) => Boolean(definition) && typeof definition === 'object');
+  // The upgrade moves the install to the CURRENT definition, and Graph wants
+  // exactly its set: a permission an earlier definition declared and the
+  // current one dropped must not be sent. Organization apps carry one
+  // definition; should there be several, the highest version is the current.
+  const current = definitions.reduce<CatalogDefinition | undefined>(
+    (best, candidate) => (best === undefined || compareAppVersions(candidate.version, best.version) > 0 ? candidate : best),
+    undefined,
+  );
+  const list = (current?.authorization?.requiredPermissionSet as { resourceSpecificPermissions?: unknown } | undefined)
+    ?.resourceSpecificPermissions;
+  const permissions: { permissionValue: string; permissionType: string }[] = [];
+  const seen = new Set<string>();
+  for (const entry of (Array.isArray(list) ? list : []) as { permissionValue?: unknown; permissionType?: unknown }[]) {
+    if (typeof entry?.permissionValue !== 'string' || typeof entry.permissionType !== 'string') continue;
+    const permissionType = entry.permissionType.toLowerCase();
+    if (permissionType !== 'application' && permissionType !== 'delegated') continue;
+    const key = `${permissionType}:${entry.permissionValue}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    permissions.push({ permissionValue: entry.permissionValue, permissionType });
   }
-  return out;
+  return { permissions, ...(typeof current?.version === 'string' ? { version: current.version } : {}) };
+}
+
+interface CatalogDefinition {
+  version?: unknown;
+  authorization?: { requiredPermissionSet?: unknown };
+}
+
+interface PublishedDefinition {
+  permissions: { permissionValue: string; permissionType: string }[];
+  /** `teamsAppDefinition.version` of the published definition, when stated. */
+  version?: string;
+}
+
+/** Orders dotted numeric app versions; a missing or non-numeric one is lowest. */
+function compareAppVersions(a: unknown, b: unknown): number {
+  const parts = (value: unknown): number[] | undefined =>
+    typeof value === 'string' && /^\d+(\.\d+)*$/.test(value.trim()) ? value.trim().split('.').map(Number) : undefined;
+  const left = parts(a);
+  const right = parts(b);
+  if (!left || !right) return left ? 1 : right ? -1 : 0;
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 /** Application grants of this bot's app in the chat or team. */
@@ -400,8 +428,9 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
         });
       }
       // An install made from an earlier app package: the chat can be read,
-      // but permissions the template added since (the meeting ones) are not
-      // there. The kernel's fix is `repairConsent`.
+      // but the permission set differs from the shipped template (revision 2
+      // added the meeting permissions, revision 3 dropped one that no team
+      // accepts). The kernel's fix is `repairConsent`.
       const installedRevision =
         installation.state === 'read' ? templateRevisionOfAppVersion(installation.value?.version) : undefined;
       if (
@@ -412,7 +441,7 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       ) {
         missing.push({
           code: 'package_outdated',
-          message: `'${label}' is installed in this ${scope.kind} from an earlier app package (version ${installation.state === 'read' ? (installation.value?.version ?? '?') : '?'}, template revision ${String(installedRevision)}; current is ${String(deps.template.revision)}). Permissions added since are not granted here. Fix: repair the consent, which upgrades the installation to the published package.`,
+          message: `'${label}' is installed in this ${scope.kind} from an earlier app package (version ${installation.state === 'read' ? (installation.value?.version ?? '?') : '?'}, template revision ${String(installedRevision)}; current is ${String(deps.template.revision)}). The permission set of the app changed since. Fix: repair the consent, which upgrades the installation to the published package.`,
         });
       }
       if (postIssue) missing.push(postIssue);
@@ -481,12 +510,13 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       // The set of the PUBLISHED definition: the upgrade moves the install
       // to it, and Graph compares the consented set against it.
       const declared = await step(
-        () => declaredPermissionSet(graph, catalogAppId),
+        () => publishedDefinition(graph, catalogAppId),
         'read the published app definition from the tenant app catalog',
         APP_CATALOG_GRAPH_PERMISSION,
       );
       if ('outcome' in declared) return declared;
-      const resourceSpecificPermissions = declared.value;
+      const resourceSpecificPermissions = declared.value.permissions;
+      const publishedVersion = declared.value.version;
       const names = resourceSpecificPermissions.map((entry) => entry.permissionValue);
       // What the published app has to declare before an upgrade is worth it:
       // the read permission, and every chat permission of the shipped template.
@@ -502,9 +532,22 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
           message: `the published app of '${identity.label}' does not declare ${undeclared.join(', ')}. Publish the current app package${deps.template ? ` (template revision ${String(deps.template.revision)})` : ''} to the tenant app catalog first, then repair again.`,
         };
       }
+      // The published app itself is from an earlier template: nothing new
+      // would be declared, and a permission the template dropped since would
+      // stay. (The `undeclared` check above cannot see a removal.)
+      const publishedRevision = templateRevisionOfAppVersion(publishedVersion);
+      if (deps.template && publishedRevision !== undefined && publishedRevision < deps.template.revision) {
+        return {
+          outcome: 'failed',
+          code: 'package_outdated',
+          message: `the published app of '${identity.label}' (version ${publishedVersion ?? '?'}) is built from template revision ${String(publishedRevision)}; current is ${String(deps.template.revision)}. Publish the current app package to the tenant app catalog first, then repair again.`,
+        };
+      }
       // Needed while any chat-scoped permission the definition declares is
-      // not granted here: an older install is brought to the FULL set, not
-      // only to the one permission the readiness check looks at.
+      // not granted here (an older install is brought to the FULL set, not
+      // only to the one permission the readiness check looks at), and while
+      // the install is on another version than the published definition:
+      // that is how an install loses a permission the template dropped.
       const granted = await step(
         () => readGrants(graph, scope, identity.botAppId),
         'list the permission grants of this chat',
@@ -514,7 +557,9 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       const isComplete = names
         .filter((name) => name.endsWith(CHAT_SCOPE_SUFFIX))
         .every((name) => granted.value.includes(name));
-      if (isComplete) return { outcome: 'not_needed' };
+      const isOnPublishedVersion =
+        installation.version === undefined || publishedVersion === undefined || installation.version === publishedVersion;
+      if (isComplete && isOnPublishedVersion) return { outcome: 'not_needed' };
       const upgrade = graph.postJson.bind(graph);
       const upgraded = await step(
         () =>

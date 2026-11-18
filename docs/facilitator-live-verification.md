@@ -101,7 +101,7 @@ and the meeting events are still open.
   (Graph `installedApps/{id}/upgrade` with the full consented set).
 - **Expect:** afterwards the grant list of the chat shows the permission and the
   readiness check passes.
-- **Do:** with an agent app from the current package (`TEMPLATE_REVISION` 2) in a
+- **Do:** with an agent app from the current package (`TEMPLATE_REVISION` 2 or later) in a
   **scheduled** meeting, start and end the meeting.
 - **Expect:** two log lines
   `[teams] meeting event name=application/vnd.microsoft.meetingStart … recorded=true`
@@ -152,6 +152,66 @@ repeat:
   and for teams (Teams admin center, or Graph as an admin).
 - **Expect:** both allow app consent.
 - **Settles:** the documented prerequisite for customer tenants. Record the values.
+
+## RSC permissions: install proof
+
+**Rule: every RSC permission the app package template requests must have been installed
+once into a test team and once into a test chat before a release ships it.** Graph
+accepts any declared set at publish and checks it only at install. A refusal is a `400`
+that names the backend request (`IsUserAuthorizedToGrantGroupResourceSpecificPermissionsRequest`)
+and no permission, so a refused set can only be found by installing variants.
+
+Procedure for a new permission:
+
+1. Build a throw-away app from a generated agent package: new manifest id, the RSC list
+   to test, everything else unchanged. Publish it to the tenant app catalog.
+2. Install it into the test team (`POST /teams/{id}/installedApps` with the full declared
+   set as `consentedPermissionSet`) and into a test chat
+   (`POST /chats/{id}/installedApps`). Both must answer `201`.
+3. Read the grants of the team and the chat: the new permission must be listed.
+4. Remove the installs and the catalog app.
+5. Add a row to the table below and the permission to `LIVE_VERIFIED_RSC` in
+   `tests/appPackageTemplate.test.ts`. That test fails for a permission that is in the
+   template and not in the list.
+
+### Record: bisect of 2026-11-18 (byte5 tenant, test team)
+
+Found at the first team install of a facilitator's app. All installs were made with the
+instance's app credentials and the full declared set; successful ones were removed again.
+
+| Variant | RSC set | Team install |
+|---|---|---|
+| current package (0.36.1, revision 2) | all 11 | **400** |
+| A | 11 minus `ChannelMeeting.ReadBasic.Group` | **400** |
+| C | the 7 of the 0.35.0 template | **400** (also refused in the Teams client) |
+| D | `ChannelMessage.Read.Group`, `TeamsActivity.Send.Group`, `ChatMessage.Read.Chat`, `TeamsActivity.Send.Chat`, `ChatMember.Read.Chat` | 201 |
+| E | D + `ChannelMember.Read.Group` | 201 |
+| F | D + `FileStorageContainer.Selected.Group` | **400** |
+| G | D + `ChannelMeeting.ReadBasic.Group` | 201 |
+| H | D + `OnlineMeeting.ReadBasic.Chat`, `OnlineMeetingParticipant.Read.Chat`, `OnlineMeetingNotification.Send.Chat` | 201 |
+| I | all 11 minus `FileStorageContainer.Selected.Group` (the revision 3 set) | **201** |
+
+- **Refused:** `FileStorageContainer.Selected.Group`, in every variant that carried it. It
+  had been in the template since 2026-08-25, so no agent app from those packages could be
+  installed into a team. Nothing in this plugin, the M365 connector or the kernel used
+  it. Removed in revision 3 (0.36.2).
+- **Team, verified:** the ten permissions of variant I. With I installed, the team's
+  grants for the bot were `ChannelMessage.Read.Group`, `TeamsActivity.Send.Group`,
+  `ChannelMember.Read.Group`, `ChannelMeeting.ReadBasic.Group`.
+- **Chat, verified:** the revision 2 package (all eleven) installed into a meeting chat
+  with `201`. The chat check accepts the three meeting permissions.
+- **Not tested:** whether the refusal is specific to this tenant or team (the permission
+  belongs to SharePoint Embedded and may need a container type registered in the
+  tenant), and an install of the exact revision 3 package through the product.
+
+### Installs from the revision 2 package (0.36.0 / 0.36.1)
+
+Such an install (version `1.2.<n>`) is reported as `package_outdated` once 0.36.2 runs.
+In a chat nothing is missing in practice: the removed permission is team-scoped. To clear
+it, publish the agent's app again (the kernel builds version `1.3.<n>` with ten
+permissions), then run the consent repair: it upgrades the install to the published
+definition and sends exactly that definition's set. While the catalog still holds the
+revision 2 app, the repair answers `package_outdated` and changes nothing. *Simulated.*
 
 ## Scenario walk-through
 
