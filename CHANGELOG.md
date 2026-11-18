@@ -13,34 +13,42 @@ feature-detected, on an older kernel nothing changes.
   the normal turn path. The subscription is per bot and conversation: other bots in the
   same chat keep the gate, chats nobody moderates behave as before.
 - **Edits, deletions, reactions, card answers**: emitted as `edited` / `deleted` /
-  `reaction` / `card_answer`. The revision counts up per edit (in memory, see limits).
-- **Readiness check** (`teamsReadiness.ts`): app installed in the chat, RSC
-  `ChatMessage.Read.Chat` granted there, bot can post; one precise reason per missing
-  item. Reads `GET /chats/{id}/permissionGrants` under the bot's own registration,
-  which needs the Graph application permission `TeamsAppInstallation.ReadForChat.All`.
-  Without it the answer is `consent_unverifiable` and a facilitation does not start.
-- **Posts as the own bot**: `sendToConversation` renders real @mentions (resolved
-  against the chat roster), can carry a poll card and returns the activity id.
+  `reaction` / `card_answer`, keyed on the message id, the revision counted per edit.
+  Each such activity is logged with its `eventType` and ids.
+- **Readiness check** (`teamsReadiness.ts`): runs with the instance's Graph client
+  (the Microsoft 365 integration's registration), because the per-agent bot
+  registrations hold no Graph permissions. Ready = installation row for the bot's app
+  and a grant with `clientAppId` = bot app id and `ChatMessage.Read.Chat` (team:
+  `ChannelMessage.Read.Group`); can-post = own conversation reference plus the last
+  send result. `repairConsent` upgrades an install that lacks the grant
+  (`installedApps/{id}/upgrade` with the full consented set).
+- **Posts as the own bot**: real @mentions resolved from the roster by Entra object
+  id; text and card are separate activities, the outcome carries `messageId` and
+  `cardMessageId`.
 - **Direct messages as the own bot**: `sendToUser(…, { asChannelKey })` uses that
-  bot's own 1:1 or opens it (first contact, also after a restart). Outcomes
-  `app_not_installed` and `blocked` instead of a silent miss. Never another bot, no
-  default-bot fallback. Without `asChannelKey` unchanged.
-- **Meetings (#44 baseline)**: meeting chats follow the same subscription rule; live
-  poll card (`teamsPollCard.ts`) whose clicks arrive as `card_answer` with the person
-  who clicked; meeting source with the capability snapshot (`teamsMeetingSource.ts`).
-  No presence, hand raise, audio or in-meeting surfaces.
-- **Docs**: `docs/teams-meeting-apis.md` (which Teams API delivers which input and
-  output, each statement labelled simulated / documented / assumed) and
-  `docs/facilitator-live-verification.md` (manual checklist for a real instance).
-- **Not verified against a live tenant.** There is no Teams test tenant. The tests
-  (`facilitatorScenarios.test.ts`, `teamsConversationMessages.test.ts`,
-  `teamsReadiness.test.ts`, `teamsOutboundAsOwnBot.test.ts`,
-  `teamsMeetingSource.test.ts`) run against a simulated Bot Framework, Bot Connector
-  and Graph with payloads in the documented shape.
-- Limits: edit revisions restart after a middleware restart; reactions reach a bot
-  only on its own messages (Teams); readiness is not available for team channels; the
-  poll rides on a structural `message.poll` field the kernel contract does not have
-  yet.
+  bot's own 1:1 or creates it by Entra object id (first contact, also after a
+  restart). `403 ForbiddenOperationException` → `app_not_installed`, `403` with
+  `MessageWritesBlocked` → `blocked`, neither retried; 429 / 412 / 502 / 504 retried
+  with backoff. Never another bot, no default-bot fallback. Without `asChannelKey`
+  unchanged.
+- **Meetings (#44 baseline)**: meeting chats follow the same subscription rule; poll
+  card with `Action.Execute` (`teamsPollCard.ts`), answers arrive as `card_answer`
+  with `answererVerified` false for a participant without an Entra identity; meeting
+  source with the capability snapshot (`teamsMeetingSource.ts`). `reactions`,
+  presence, lifecycle, hand raise and audio are not declared. The meeting RSC are
+  **not** added to the app package in this version; `docs/teams-meeting-apis.md`
+  says why and what adding them costs (one Graph upgrade per agent app and chat).
+- **Docs**: `docs/teams-meeting-apis.md` (findings per topic, each labelled live /
+  docs / simulated / open, with sources) and `docs/facilitator-live-verification.md`
+  (owner steps M1 to M6 and the scenario walk-through).
+- **Verification status.** There is no Teams test tenant. The tests run against a
+  simulated Bot Framework, Bot Connector and Graph; the evaluation of 2026-11-18 added
+  read-only evidence from the byte5 tenant. Still open: channel delivery, edit / delete
+  / reaction events under RSC, the returned message id, the first-contact error bodies,
+  mention-free delivery in meeting chats and the consent upgrade (M1 to M6).
+- Limits: edit revisions restart after a middleware restart; a team channel can be
+  checked only after the bot received an activity from it; polls and `cardMessageId`
+  ride on structural fields the kernel contract does not have yet.
 
 ## 0.35.0
 

@@ -1,183 +1,209 @@
 # Live verification of native facilitators in Teams
 
-Manual checklist for byte5ai/omadia-channel-teams#43 and #44 (epic
+Owner checklist for byte5ai/omadia-channel-teams#43 and #44 (epic
 byte5ai/omadia#2043, kernel spec §6.2, §6.3 and acceptance criterion 13).
 
-There is no Teams test tenant, so the automated tests
-(`tests/facilitatorScenarios.test.ts` and the module tests next to it) run against a
-simulated Bot Framework, Bot Connector and Graph. They prove what the plugin does
-with a payload in the documented shape. They do **not** prove that Teams sends that
-payload. This checklist closes that gap on a real instance. Each section is one
-scenario of the automated suite; a scenario counts as verified only when every
-"Expected" line was observed.
+There is no Teams test tenant. The automated tests run against a simulated Bot
+Framework, Bot Connector and Graph, and the evaluation of 2026-11-18 collected
+read-only evidence from the byte5 tenant (see
+[`teams-meeting-apis.md`](./teams-meeting-apis.md)). What neither could settle is listed
+here as six owner steps, **M1 to M6**. Each step is one action in Teams; the observation
+settles the open point. After that, the scenario walk-through checks the facilitator end
+to end.
 
 Record for each run: date, instance, plugin version, Teams client (desktop, web,
 mobile) and who ran it.
 
 ## Preparation
 
-1. An omadia instance with the kernel of #2043, `@omadia/channel-teams` ≥ 0.36.0 and
-   the facilitator engine plugin.
-2. Two facilitators with their own Teams identity, here called **Mira** and
-   **Jonas**, and one ordinary agent with its own Teams identity, here **Otto**.
-   Each has its own app registration, Azure bot and Teams app package.
-3. The app packages are generated from `appPackage/manifest.json.template` of this
-   version (they request `ChatMessage.Read.Chat`).
-4. Each facilitator's app registration has the Graph application permission
-   `TeamsAppInstallation.ReadForChat.All` with admin consent. Without it the readiness
-   check answers `consent_unverifiable` (that outcome is checked in scenario 2).
-5. Four test people: **A** (initiator), **B**, **C**, **D**. D has never used any of
-   the three apps.
-6. Access to the middleware log. The lines to look for start with `[teams]`.
+1. An omadia instance with the kernel of #2043, `@omadia/channel-teams` ≥ 0.36.0 and the
+   facilitator engine plugin.
+2. Two facilitators with their own Teams identity, here **Mira** and **Jonas**, and one
+   ordinary agent with its own identity, here **Otto**.
+3. The instance's app registration (the one of the Microsoft 365 integration) is served
+   by the Teams channel and holds `TeamsAppInstallation.ReadWriteForChat.All` and
+   `…ReadWriteAndConsentForChat.All` (it does in byte5). The facilitator bots' own
+   registrations need no Graph permission.
+4. Access to the middleware log (`fly logs -a odoo-bot-middleware`). The lines to look
+   for start with `[teams]`.
 
-## Scenario 1: message without mention
+## Owner steps M1 to M6
 
-1. A creates a group chat with B and C and adds the app **Mira** to it. Teams shows a
-   consent dialog for the app's permissions; A accepts.
-2. A starts a decision with a ranked vote: `@Mira …`.
-   - Expected: Mira answers with the handshake and names what it perceives.
-3. A votes with a mention (`@Mira A > B > C`). B votes **without** a mention
-   (`B > A > C`). C votes without a mention.
-   - Expected: every vote is echoed to its author ("Recorded for you: …").
-   - Expected: the status after each vote names the right missing people.
-   - Expected in the log: `non-mention recorded, no turn` for B's and C's messages and
-     no `drop non-mention` line for this chat.
-4. In a second group chat with Mira added but **no** running facilitation, B writes a
-   message without a mention.
-   - Expected: no reaction, and the log shows `drop non-mention` for that chat.
-5. B edits their vote in the first chat (`A > B > C`).
-   - Expected: Mira confirms the change to B, and the count uses the edited vote.
-   - This is the only check of an assumption the documentation leaves open: that Teams
-     sends edit events for a message that did not mention the bot.
-6. B deletes a message that was a vote.
-   - Expected: the facilitator treats the vote as withdrawn (engine behaviour); in the
-     log no error.
-7. A replies to B's vote with "quote" and writes "Anna agrees too" style text for C.
-   - Expected: nothing is recorded for C. If something is recorded, note the exact
-     message: the quote markers the plugin looks for are an assumption.
+### M1: channel delivery
 
-## Scenario 2: missing consent
+- **Do:** in a channel of a team where an agent app is installed, post one message
+  without a mention.
+- **Expect:** one `[teams] drop non-mention … type=channel` line (or, with a
+  facilitation running there, `non-mention recorded, no turn`).
+- **Settles:** delivery in channels under `ChannelMessage.Read.Group`, which is
+  documented but was never observed.
 
-1. Create a group chat and add **Mira** using a tenant or chat where resource-specific
-   consent for chats is disabled, or with an old app package without
-   `ChatMessage.Read.Chat`.
-2. A tries to start a facilitation with `@Mira …`.
-   - Expected: Mira does not start. It says that the permission
-     `ChatMessage.Read.Chat` is not granted in this chat and what to do.
-3. Remove `TeamsAppInstallation.ReadForChat.All` from Mira's app registration (or use
-   a facilitator without it), restart the middleware, and try again in a chat where
-   consent **is** given.
-   - Expected: Mira does not start and says that the consent could not be confirmed,
-     naming `TeamsAppInstallation.ReadForChat.All`.
-4. Restore the permission, restart, try again.
+### M2: edit, delete and reaction under RSC
+
+- **Do:** in a test group chat with an agent app, post a message without a mention,
+  edit it, react to it with a thumbs-up, delete it. Then react to a message **the bot**
+  posted.
+- **Expect in the log**, one line each:
+  `[teams] messageUpdate eventType=editMessage … id=<id of the original message>`,
+  `[teams] messageDelete eventType=softDeleteMessage … id=<same id>`, and for the
+  reaction to the bot's post `[teams] messageReaction … replyToId=<id of the bot's post>`.
+- **Note:** whether a `messageReaction` line appears for the reaction to **your own**
+  message. That is the open question.
+- **Settles:** that edit and delete events arrive for messages the bot only saw through
+  RSC, that they carry the original message id, and whether reactions to other people's
+  messages are delivered. If they are, `reactions` can be declared in the capability
+  snapshot.
+
+### M3: returned message id
+
+- **Do:** after one facilitator post, take the stored message id of that post and
+  compare it with the id in "Copy link" of the same message in Teams.
+- **Expect:** the same id.
+- **Settles:** that the id the bot gets back is the id everybody else sees.
+
+### M4: first-contact errors
+
+- **Do:** with a colleague who never opened the facilitator's app, let a private
+  reminder become due.
+- **Expect:** no direct message; log line
+  `[teams] direct message as 'Mira' not delivered: app_not_installed`; the group gets
+  the neutral reminder.
+- **Do:** the colleague installs the app, then blocks the bot. Let the next reminder
+  become due.
+- **Expect:** `… not delivered: blocked`.
+- **Note:** if either line says `channel_error` instead, copy the error text: the plugin
+  matches `ForbiddenOperationException` and `MessageWritesBlocked` only. Also note
+  whether a colleague who is in a group chat that has the app, but never opened it, does
+  get the message.
+- **Settles:** the exact error bodies and the install precondition.
+
+### M5: meeting
+
+- **Do:** schedule a meeting, add an agent app to it, post in the meeting chat without
+  a mention.
+- **Expect:** a log line with a `19:meeting_…` conversation id (`drop non-mention`, or
+  `non-mention recorded, no turn` with a facilitation running).
+- **Do:** in a chat whose install lacks `ChatMessage.Read.Chat`, run the consent repair
+  (Graph `installedApps/{id}/upgrade` with the full consented set).
+- **Expect:** afterwards the grant list of the chat shows the permission and the
+  readiness check passes.
+- **Later, once the meeting RSC are in the app package:** expect `meetingStart` /
+  `meetingEnd` and join/leave activities in a scheduled meeting, and none of them in a
+  Meet-now call.
+- **Settles:** mention-free delivery in meeting chats and the consent semantics of the
+  upgrade call.
+
+### M6: tenant RSC switch
+
+- **Do:** as an administrator, read the resource-specific consent settings for chats
+  and for teams (Teams admin center, or Graph as an admin).
+- **Expect:** both allow app consent.
+- **Settles:** the documented prerequisite for customer tenants. Record the values.
+
+## Scenario walk-through
+
+One section per scenario of `tests/facilitatorScenarios.test.ts`. A scenario counts as
+verified only when every "Expected" line was observed.
+
+### 1. Message without mention
+
+1. Create a group chat with three people and add **Mira**.
+2. Start a decision with a ranked vote: `@Mira …`.
+   - Expected: the handshake; it says what Mira perceives.
+3. One person votes with a mention, two without.
+   - Expected: every vote is echoed to its author and the status names the right
+     missing people.
+   - Expected in the log: `non-mention recorded, no turn` for the two votes.
+4. In a second chat with Mira but no facilitation, write without a mention.
+   - Expected: no reaction; log `drop non-mention`.
+5. Edit a vote, then quote somebody's vote and write "Anna agrees too".
+   - Expected: the edit is confirmed to its author and counts; nothing is recorded for
+     the quoted person. If something is, note the message: the quote markers are an
+     open point.
+
+### 2. Missing consent
+
+1. Add Mira to a chat from an old app package without `ChatMessage.Read.Chat`.
+2. Try to start a facilitation.
+   - Expected: Mira does not start and says the permission is not granted here and that
+     the installation has to be upgraded.
+3. Run the consent repair, try again.
    - Expected: the facilitation starts.
-5. Try to start a facilitation in a **team channel**.
-   - Expected: Mira does not start and says channels are not supported.
+4. Try in a chat where Mira's app is not installed at all.
+   - Expected: it says the app is not installed there.
 
-## Scenario 3: first-contact DM
+### 3. First-contact direct message
 
-1. In the facilitation of scenario 1, let a reminder become due while C has not
-   voted. C has the app Mira available (added to the chat) but never wrote to Mira
-   1:1.
-   - Expected: C receives a direct message **from Mira** (name and avatar of Mira, not
-     of Otto or the default bot).
-   - Expected: the group gets only a neutral reminder that does not name C.
-2. Repeat with D, who was added to the chat after the app and has never opened it.
-   - Expected, one of two outcomes, note which:
-     - D receives the DM, or
-     - no DM arrives, the log shows the outcome `app_not_installed`, and the group gets
-       the neutral reminder. No other bot writes to D.
-   - This is where the documented rule "the app must be installed for the user" meets
-     reality: whether membership in a chat that has the app is enough is not something
-     the simulation can know.
+- See M4. Additionally: a person who already has Mira's app receives the private
+  reminder **from Mira** (name and avatar), and the group gets only a neutral reminder
+  that names nobody.
 
-## Scenario 4: blocked DM
+### 4. Blocked direct message
 
-1. B opens the 1:1 chat with Mira and blocks the bot (chat menu → Block), or
-   uninstalls the app for themselves.
-2. Let a reminder for B become due.
-   - Expected: no DM. The log shows the outcome `blocked`. The group gets the neutral
-     reminder. No other bot writes to B.
-   - Note the exact error text in the log: the plugin recognises `MessageWritesBlocked`
-     and `ConversationBlockedByUser`. Any other text ends as `channel_error` and has to
-     be added to `src/teamsOutboundMessage.ts`.
-3. B unblocks Mira. Let the next reminder become due.
-   - Expected: the DM arrives again.
+- See M4. Additionally: after the person unblocks Mira the next reminder arrives, and
+  at no point does another bot write to them.
 
-## Scenario 5: restart
+### 5. Restart
 
-1. Run scenario 1 until two of four people have voted.
-2. Restart the middleware.
-3. Without anybody mentioning Mira, the third person votes.
-   - Expected: the vote is recorded and echoed, the status is correct.
-4. Let Mira post something on its own (status on request, reminder).
-   - Expected: the post arrives, as Mira.
-5. A person who voted **before** the restart edits their vote for the second time.
+1. Run scenario 1 until two of four people voted, then restart the middleware.
+2. The third person votes without a mention.
+   - Expected: recorded and echoed.
+3. Mira posts on its own (status, reminder).
+   - Expected: it arrives, as Mira.
+4. Somebody who edited a vote before the restart edits it again.
    - Expected: the latest text counts. Known limit: the plugin numbers this edit as
-     revision 1 again. If the engine keeps the older edit instead, that is the kernel
-     gap listed in `docs/teams-meeting-apis.md`.
-6. Let a DM reminder become due for someone who received one before the restart.
-   - Expected: it arrives in the same 1:1 chat as before.
+     revision 1 again.
 
-## Scenario 6: two facilitator bots in one chat
+### 6. Two facilitator bots in one chat
 
-1. Add **Mira** and **Jonas** to the same group chat. Start one facilitation with each.
-2. B writes one message without a mention.
-   - Expected: each facilitator handles it for its own facilitation; every post shows
-     the name and avatar of the bot it belongs to; no post of Mira appears under Jonas
-     or the other way round.
-3. Add **Otto** (ordinary agent) to the chat. B writes a message without a mention.
-   - Expected: Otto stays silent (log: `drop non-mention`), the facilitators record it.
-4. `@Otto` a question.
-   - Expected: only Otto answers.
-5. Run Mira in a second chat at the same time.
-   - Expected: status and results never mix between the two chats.
+1. Add **Mira** and **Jonas** to one chat and start a facilitation with each.
+2. Write one message without a mention.
+   - Expected: each handles it for its own facilitation; every post carries the right
+     name and avatar.
+3. Add **Otto**; write without a mention, then `@Otto` a question.
+   - Expected: Otto stays silent on the first and is the only one to answer the second.
+   - Expected: no facilitator reacts to anything a bot wrote.
 
-## Scenario 7: scheduled meeting chat
+### 7. Scheduled meeting chat
 
-1. A schedules a Teams meeting with B and C and adds the app **Mira** to the meeting
-   (meeting details → Apps, or in the meeting chat). Accept the consent dialog.
-2. Before the meeting, A starts a facilitation in the meeting chat.
-   - Expected: the readiness check passes. If it fails with "Graph does not know this
-     chat", note it: that a meeting chat is a chat for
-     `/chats/{id}/permissionGrants` is an assumption.
-   - Expected: the handshake says Mira reads the chat and the polls and does **not**
-     hear the call.
-3. Join the meeting. B writes a topic into the meeting chat without a mention.
+1. Schedule a meeting, add Mira, start a facilitation in the meeting chat.
+   - Expected: the readiness check passes; the handshake says Mira reads the chat and
+     the polls and does **not** hear the call.
+2. During the meeting write a topic into the chat without a mention.
    - Expected: it is collected.
-4. Start a call from an ordinary group chat that has a running facilitation ("Meet
-   now" in the chat) and write into the chat during the call.
-   - Expected: the facilitation continues as before. Note whether the conversation of
-     the call chat is the same chat (assumption in `docs/teams-meeting-apis.md`).
+3. Start a call from an ordinary group chat with a running facilitation and write into
+   the chat.
+   - Expected: the facilitation continues; no lifecycle events are expected for an
+     ad-hoc call.
 
-## Scenario 8: poll answers
+### 8. Poll answers
 
-1. In the meeting chat, let Mira run a live poll.
-   - Expected: a card with the question and one button per option, posted by Mira.
-2. A, B and C each click an option, on desktop and at least one on mobile.
-   - Expected: each answer is recorded for the person who clicked, and echoed to them.
-   - Expected: no "Something went wrong" under the card.
-3. B clicks a different option afterwards.
-   - Expected: the engine applies its rule for changed answers and says so to B.
-4. A forwards the card or quotes it and writes "C votes yes".
-   - Expected: nothing is recorded for C.
+1. Let Mira run a live poll.
+   - Expected: a text message and, as a separate message, a card with one button per
+     option.
+2. Three people click, at least one on mobile.
+   - Expected: each sees "Antwort übermittelt." and gets their answer echoed.
+3. One person clicks a different option afterwards.
+   - Expected: the engine applies its rule for changed answers.
+4. An anonymous participant (joined through the link without signing in) clicks.
+   - Expected: the answer is not counted as a verified vote.
+5. Click the card after the facilitation ended.
+   - Expected: "Diese Abstimmung ist nicht mehr aktiv."
 
-## Scenario 9: a participant joining late
+### 9. A participant joining late
 
-1. During the meeting, A adds D to the meeting (so D joins the meeting chat).
-   - Expected: Mira welcomes D and counts D as a participant from now on.
-2. D writes a vote without a mention.
-   - Expected: recorded for D.
-3. A person joins the call through the link **without** being added to the chat.
-   - Expected: Mira does not notice. This is the documented limit of the baseline:
-     participant events need `OnlineMeetingParticipant.Read.Chat`, which the app
-     package does not request.
+1. Add a person to the meeting chat while the facilitation runs.
+   - Expected: Mira welcomes them and counts them from now on.
+2. They vote without a mention.
+   - Expected: recorded for them.
+3. A person joins the call through the link without being added to the chat.
+   - Expected: Mira does not notice. This is the stated limit of the baseline.
 
 ## After the run
 
 - Every "Expected" that did not hold becomes an issue in
   `byte5ai/omadia-channel-teams` with the log lines.
-- Update the labels in `docs/teams-meeting-apis.md`: a row confirmed here is no longer
-  "Simulated" or "Assumed".
-- Acceptance criterion 13 of the kernel spec and the tenant criteria of #43 and #44
-  stay open until this checklist was run completely.
+- In `teams-meeting-apis.md`, change the label of each settled row from "Open" or
+  "Simulated" to "Live" with the date.
+- Acceptance criterion 13 of the kernel spec and the criteria of #43 and #44 that need
+  a real Teams instance stay open until M1 to M6 and the walk-through are done.

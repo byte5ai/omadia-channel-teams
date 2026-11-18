@@ -66,26 +66,33 @@ degrades silently to the Bot-Framework-derived labels (one log line per
 failure class explains what is missing). Resolution is cached (10 min
 TTL) and never blocks the dashboard render.
 
-### Optional: facilitators (all messages of a chat, Graph consent)
+### Optional: facilitators (all messages of a chat)
 
 A facilitator's bot receives every message of a chat it moderates, not only
-the ones that mention it. Three things have to be true in that chat, and the
-bot checks them before it starts and says which one is missing:
+the ones that mention it. Before it starts it checks three things and says
+which one is missing:
 
 1. Its Teams app is installed in the chat.
 2. The chat granted the resource-specific permission `ChatMessage.Read.Chat`
-   (requested by the app package; Teams asks for consent when the app is added).
-3. The bot's app registration has the Graph **application permission**
-   `TeamsAppInstallation.ReadForChat.All` (admin consent), so the bot can read
-   the chat's permission grants. Without it the check answers "consent could
-   not be confirmed" and no facilitation starts.
+   to that app. The grant belongs to the install: an install made from an
+   older package does not gain it by itself and has to be upgraded (Graph
+   `installedApps/{id}/upgrade` with the full consented set).
+3. The bot holds a conversation reference for the chat and its last post
+   there did not fail.
+
+The check reads Graph with the **instance's** app registration (the one of the
+Microsoft 365 integration), which needs
+`TeamsAppInstallation.ReadWriteForChat.All` and
+`TeamsAppInstallation.ReadWriteAndConsentForChat.All` (team channels: the
+`…ForTeam.All` counterparts). The per-agent bot registrations need no Graph
+permission.
 
 Private reminders are sent by the facilitator's own bot. A person who never
 installed that bot's app, or blocked it, gets none; the group then gets a
 neutral reminder. See [`docs/teams-meeting-apis.md`](./docs/teams-meeting-apis.md)
-for meetings and [`docs/facilitator-live-verification.md`](./docs/facilitator-live-verification.md)
-for the manual verification checklist. None of this was verified against a
-live tenant yet.
+for the evidence behind each behaviour and for meetings, and
+[`docs/facilitator-live-verification.md`](./docs/facilitator-live-verification.md)
+for the owner steps M1 to M6 that are still open.
 
 ### Optional: auto-invite agent apps into a team (Graph consent)
 

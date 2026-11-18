@@ -1,136 +1,240 @@
-# Teams meeting APIs for native facilitators
+# Teams APIs for native facilitators: chat, direct messages and meetings
 
-Evaluation for byte5ai/omadia-channel-teams#44 (epic byte5ai/omadia#2043, kernel
-spec §6.1 and §6.3): which Teams API delivers which input or output to a
-facilitator in a scheduled meeting and in an ad-hoc call, and what this plugin
-implements in 0.36.0.
+Evaluation for byte5ai/omadia-channel-teams#43 and #44 (epic byte5ai/omadia#2043,
+kernel spec §6.1 to §6.3): which Teams API delivers which input or output to a
+facilitator, and what this plugin implements in 0.36.0.
 
 ## How far to trust this document
 
-**Nothing in this document was verified against a live Teams tenant.** There is no
-Teams test tenant for this project. Every statement carries one of three labels:
+There is no Teams test tenant. The findings come from an evaluation on 2026-11-18
+that read Microsoft Learn and collected **read-only** evidence from the production
+instance in the byte5 tenant (middleware log, read-only SQL, Graph GET with the
+instance's own app, directory reads). Nothing was sent into Teams for it. Every
+statement carries one label:
 
 | Label | Meaning |
 |---|---|
-| **Simulated** | Implemented in this plugin and covered by automated tests that feed it activities and error responses in the payload shape Microsoft documents. This proves the plugin handles such a payload. It does not prove Teams sends it in that situation. |
-| **Documented** | Stated in Microsoft Learn, read on 2026-11-18. The page is linked. Not exercised by this project. |
-| **Assumed** | Stated by neither a test nor a page we read. Treat as a hypothesis until someone checks it. |
+| **Live** | Observed read-only in the byte5 tenant on 2026-11-18. |
+| **Docs** | Stated on a Microsoft Learn page fetched that day; cited as [Dn], list at the end. |
+| **Simulated** | Implemented here and covered by tests against a simulated Bot Framework, Bot Connector and Graph with payloads in the documented or observed shape. Proves what the plugin does with such a payload, not that Teams sends it. |
+| **Open** | Neither observed nor documented. The owner step that settles it (M1 to M6) is named; see [`facilitator-live-verification.md`](./facilitator-live-verification.md). |
 
-The manual checklist in [`facilitator-live-verification.md`](./facilitator-live-verification.md)
-is how a **Simulated** or **Assumed** row becomes verified on a real instance.
+## 1. All messages without @mention
 
-## Result in one table
+| Finding | Evidence |
+|---|---|
+| With RSC `ChatMessage.Read.Chat` a bot receives "all user messages in the group chat where the app is installed"; with `ChannelMessage.Read.Group` those of the team's channels. | Docs [D1] |
+| Non-mention messages arrive today: 97 `drop non-mention … type=groupChat` log lines in 100 minutes against 7 mention turns. | Live |
+| Every chat with an omadia agent app shows the grants `ChatMessage.Read.Chat`, `ChatMember.Read.Chat`, `TeamsActivity.Send.Chat` for that app. The age of the chat does not matter, the install does. | Live |
+| Channel delivery. The team install shows `ChannelMessage.Read.Group`, but there was no channel traffic to observe. | Docs [D1]; **Open → M1** |
+| A 1:1 between two people with an agent app (`19:…@unq.gbl.spaces`, Graph `chatType: oneOnOne`) arrives as `conversationType=groupChat`. | Live |
+| Only user messages are delivered. Messages written by other bots never are, also with RSC. | Docs [D1][D5]; Live (after each of 7 bot replies no other bot logged anything) |
+| Consent is per install and all-or-nothing. An install made from a package without the permission does not gain it by itself. | Docs [D1][D2]; Live (installs at versions 1.0.1 to 1.3.0 keep the set they were installed with) |
+| Tenant switches for app-only RSC exist. Their current value could not be read app-only; in byte5 they are evidently on. For customer tenants this is a setup prerequisite. | Docs [D2]; **Open → M6** |
 
-Capability names are the ones of the kernel contract (`SessionCapabilitySnapshot`).
-"Scheduled" is a meeting created in the calendar, "ad-hoc" is "Meet now" or a call
-started from a chat.
+**Implemented.** The mention gate is lifted only for a bot that holds a message
+subscription for that conversation; it then emits every human message as a message
+event and starts a turn only on an @mention. Nothing concludes the size of a chat from
+`conversationType`. *Simulated.*
 
-### Inputs
+## 2. Edits, deletions, reactions
 
-| Capability | Teams mechanism | Scheduled | Ad-hoc | In 0.36.0 | Evidence |
-|---|---|---|---|---|---|
-| `text` | Bot Framework `message` activities in the meeting chat. Without @mention only with RSC `ChatMessage.Read.Chat` granted in that chat. | yes | yes, if the call has a chat the app is installed in | **yes** | Plugin: Simulated. RSC delivers all messages of a group chat: Documented [1]. That a meeting chat counts as such a group chat: **Assumed** ([1] does not mention meeting chats). |
-| `message_edits` | `messageUpdate` with `channelData.eventType` `editMessage` / `undeleteMessage`, `messageDelete` with `softDeleteMessage`. | yes | yes | **yes** | Plugin: Simulated. Event shapes: Documented [2]. Whether they arrive for messages that did not mention the bot: **Assumed** ([2] gives the scope as "All" and says nothing about RSC). |
-| `reactions` | `messageReaction` with `reactionsAdded` / `reactionsRemoved`, `replyToId` is the message. | partly | partly | **yes, with a limit** | Plugin: Simulated. Teams sends the event only for reactions to messages **the bot itself sent**: Documented [3]. A reaction to another person's message never reaches the bot. |
-| `card_answers` | `Action.Submit` on an Adaptive Card arrives as a `message` activity with `value`; `from` is the person who clicked. | yes | yes | **yes** (poll card) | Plugin: Simulated. That `from` is always the clicking person: **Assumed**, it is how Bot Framework activities work but we read no page that states it for cards in meeting chats. |
-| `presence` (join / leave) | Bot events `onTeamsMeetingParticipantsJoin` / `Leave`; needs RSC `OnlineMeetingParticipant.Read.Chat` and the participant event subscription of the app. | scheduled only | no | no | Documented [4] ("Participant events are supported only for scheduled meetings"). Not implemented: the RSC permission is not in the app package. |
-| `presence` (meeting start / end) | Bot events for meeting start and end; RSC `OnlineMeeting.ReadBasic.Chat`. | yes, also channel meetings | not stated | no | Documented [4]. Not implemented, same reason. |
-| `hand_raise` | No bot API or event. | no | no | no | Documented by absence: [4] lists none. |
-| `transcribed_speech` (live) | Real-time media bot that joins the call and receives audio; transcription is then our own job. Needs C#/.NET, the `Microsoft.Graph.Communications.Calls.Media` library and a Windows Server VM in Azure with a public IP. | possible | possible | no | Documented [5]. Out of reach for a Node.js plugin; this is #584. |
-| `transcribed_speech` (after the meeting) | Graph transcripts, RSC `OnlineMeetingTranscript.Read.Chat` for scheduled private meetings, `CallTranscripts.Read.All` for ad-hoc calls. Available once generated **after** the meeting ends. | after the end | after the end | no | Documented [6]. No live transcript API is described there. |
-| `shared_documents` | Files posted in the chat arrive as attachments of the `message` activity. | yes | yes | no | The plugin already stores attachments for agent turns; they are not part of message events. **Assumed** for meeting chats. |
+| Finding | Evidence |
+|---|---|
+| Edit = `messageUpdate` + `channelData.eventType: editMessage`; undelete = `messageUpdate` + `undeleteMessage`; soft delete = `messageDelete` + `softDeleteMessage`. Scope "All". | Docs [D6] |
+| That `activity.id` is the id of the original message, and that these events also come for messages the bot only saw through RSC. The samples use the same id; no page states either. | **Open → M2** |
+| There is no dedicated edit timestamp; only the activity `timestamp`. | Docs [D6] |
+| `messageReaction` "is sent when a user adds or removes reactions to a message, which was sent by your agent". Fields `reactionsAdded` / `reactionsRemoved`, `replyToId` = the message. | Docs [D7] |
+| Reactions to **other people's** messages. | **Open → M2** |
 
-### Outputs
+**Implemented.** Handlers for all four events; the event is keyed on `activity.id`, the
+revision counts up per edit, `occurredAt` is the activity `timestamp`. Reaction events
+that arrive are emitted, but **`reactions` is not declared in the capability
+snapshot**: only reactions to the bot's own posts are documented, and the snapshot
+cannot say "own messages only". An engine may use a reaction to its own post (for
+example confirming an echo) and must not build on reactions to participants' messages.
+Every such activity is logged with its `eventType` and ids, so M2 is answered by
+reading the log. *Simulated.*
 
-| Capability | Teams mechanism | Scheduled | Ad-hoc | In 0.36.0 | Evidence |
-|---|---|---|---|---|---|
-| `text` | Proactive post into the meeting chat as the facilitator's own bot. | yes | yes | **yes** | Plugin: Simulated. |
-| `mentions` | `<at>` token plus mention entity with the member id from the chat roster. | yes | yes | **yes** | Plugin: Simulated. That Teams notifies the person: **Assumed**. |
-| `cards`, `polls` | Adaptive Card with one `Action.Submit` per option, posted into the chat. | yes | yes | **yes** | Plugin: Simulated. |
-| `private_messages` | 1:1 conversation of the bot with the person; first contact needs the app installed for that person. | yes | yes | **yes** | Plugin: Simulated. Requirement and the 403 answers: Documented [7]. |
-| `pinned_surface` | Meeting tab, side panel, stage (`shareAppContentToStage`), or the in-meeting notification (`OnlineMeetingNotification.Send.Chat`). All need a web surface or extra RSC. | possible | partly | no | Documented [4]. Not implemented. |
-| `voice` | Real-time media bot (see `transcribed_speech`, live). | possible | possible | no | Documented [5]. #584. |
-| `screen` | Share to stage through the Teams client SDK in a meeting app. | possible | not stated | no | Documented [4]. Not implemented. |
+## 3. Proactive first-contact direct message
 
-## What 0.36.0 implements
+| Finding | Evidence |
+|---|---|
+| The app must be installed for the user in the personal scope before a proactive message; being a member of a team that has the app also counts. | Docs [D8] |
+| Create the conversation with `bot.id`, `members[0].id`, `channelData.tenant.id`. The member id may be the user's Entra object id. A `29:…` id is per bot and cannot be reused across bots. UPN and e-mail never work. | Docs [D8] |
+| Service URL: from an inbound activity, or the global `https://smba.trafficmanager.net/teams/` for proactive sends. All 24 stored references use `…/emea/<tenant>/`. | Docs [D8]; Live |
+| App not installed for the user → `403` with `ForbiddenOperationException`. Blocked or uninstalled → `403` with `subCode: MessageWritesBlocked` (`errorCode 209`). | Docs [D8]; **Open → M4** for the exact bodies |
+| Retry `429`, `412`, `502`, `504` with exponential backoff. Limits per bot per thread: 7 sends/s, 60 per 30 s, 1800 per hour. | Docs [D10] |
+| Whether being in a group chat that has the app is enough for a 1:1. | **Open → M4** |
+| Neither instance holds a `…ForUser.All` permission, so installing the app for a user on demand, and even checking whether it is installed, is not possible today. | Live |
 
-The baseline of the spec: **the chat of the meeting, and cards**.
+**Implemented.** `sendToUser(…, { asChannelKey })`: the bot's own stored 1:1, else a
+conversation created with the Entra object id. `ForbiddenOperationException` →
+`app_not_installed`, `MessageWritesBlocked` → `blocked`, neither is retried. The four
+transient statuses are retried at most three times (0.5 s, 1 s, 2 s) and never in a way
+that could post twice. Error codes no page names are not matched and end as
+`channel_error`. Never another bot. *Simulated.*
 
-1. **Facilitator bot in the meeting chat.** A meeting chat reaches the bot as a
-   group chat (`conversationType: groupChat`, id `19:meeting_…@thread.v2`), so the
-   rule of #43 applies unchanged: the kernel subscribes the facilitator's bot to the
-   conversation, the bot then emits every human message as a message event, starts a
-   turn only on an @mention, and posts as its own bot. Other bots in the same chat
-   keep their mention gate. *Simulated; the conversation type and id format of a
-   meeting chat are Assumed.*
-2. **Poll cards with authenticated answers.** `buildPollCard` renders a question with
-   up to six options. A click is emitted as a `card_answer` message event:
-   `cardAnswer.cardId` is the poll id, `cardAnswer.value` is `{ optionId }`,
-   `messageId` is the card message, `author` is `activity.from`. The payload of the
-   click carries no person, so a name in it cannot count. A poll click never becomes a
-   chat turn. *Simulated.*
-3. **Capability snapshot.** `createTeamsMeetingSource` is registered as the meeting
-   source. For a meeting chat it reports modality `online`, inputs `text`,
-   `message_edits`, `reactions`, `card_answers`, outputs `text`, `mentions`, `cards`,
-   `polls`, `private_messages`. For a chat the asked bot is not in it reports nothing,
-   and the kernel falls back to its chat baseline. A snapshot is pushed once when a bot
-   is added to a chat. *Simulated.*
+**Precondition, not solved here:** the person must have the facilitator's app. Install
+on demand would need `TeamsAppInstallation.ReadWriteForUser.All` on the instance's
+app; that is an owner decision.
 
-With this snapshot the facilitator's handshake has to say that it reads the chat and
-the polls and **does not hear the call** (spec §9 criterion 18).
+## 4. Several bots in one chat
 
-## What is deliberately not in 0.36.0
+| Finding | Evidence |
+|---|---|
+| Each bot installed in a chat receives every human message: 17 messages produced exactly 3 simultaneous log lines each in a chat with four agent apps. | Live |
+| Bots never see each other's messages. | Docs [D1]; Live |
+| The same app can be installed twice in one chat (organisation and sideloaded). | Live |
 
-- **Presence and late joiners through meeting events.** The app package does not
-  request `OnlineMeetingParticipant.Read.Chat`. Adding an RSC permission changes
-  every generated app package and needs the app to be updated and consented again in
-  each chat [1], so it is a rollout decision and not a silent code change. Until
-  then a late joiner is visible in two ways only: the `conversationUpdate` when a
-  person is **added to the chat** (already emitted as a membership event), and their
-  first message. Joining the call without being added to the chat is invisible.
-- **`hybrid` modality.** Teams does not tell a bot whether several people sit in one
-  room. The snapshot never claims it.
-- **Hand raise.** No API.
-- **Audio in and out.** Needs a .NET media bot on Windows Server; tracked in #584.
-- **Pinned agenda, timer, parking lot as a surface.** Would need a meeting tab or the
-  in-meeting notification permission. The facilitator uses chat posts instead.
-- **Team channels.** The readiness check answers `unsupported_conversation` for
-  channel conversations: the grant lookup works on `/chats/{id}` only. Channel
-  meetings are therefore not supported.
+**Implemented.** Subscription, events, references and posts are keyed by the receiving
+bot. N bots deliver N copies of a message; removing duplicates by
+`(conversation id, message id)` across bots is the kernel's job. *Simulated.*
 
-## Ad-hoc calls
+## 5. Readiness check
 
-For "Meet now" and calls started from a chat the documentation we read is thin:
+| Finding | Evidence |
+|---|---|
+| `GET /chats/{id}/installedApps?$select=id,consentedPermissionSet&$expand=teamsApp(…),teamsAppDefinition($select=version;$expand=bot($select=id))` answers 200; about 35 store apps come back per chat; `consentedPermissionSet` only when selected. | Live |
+| `GET /chats/{id}/permissionGrants` answers 200, one row per permission. **`clientAppId` is the Entra application (client) id, `clientId` the service principal object id.** The reference page has them the other way round. | Live (checked against the directory); Docs [D14] is wrong on this |
+| `GET /teams/{id}/permissionGrants` and `/installedApps` answer 200. | Live |
+| The instance's app holds `TeamsAppInstallation.ReadWriteForChat.All`, `…ReadWriteAndConsentForChat.All` and the team counterparts. The **per-agent bot apps hold no Graph application permissions**. | Live |
+| "Can this bot post here" has no read-only answer. | Docs (no such API) |
+| `POST /chats/{id}/installedApps/{id}/upgrade` with `consentedPermissionSet` exists; the set must match the app definition exactly, else `400 ResourceSpecificPermissionsMismatch`. Consent semantics of the upgrade are not spelled out. | Docs [D9]; **Open → M5** |
 
-- Participant events exist for scheduled meetings only [4].
-- Meeting details are documented for scheduled meetings, "Meet now", one-on-one and
-  group calls [4].
-- Whether a call started from an existing group chat keeps using that chat's
-  conversation id, so that a facilitation running in the chat simply continues during
-  the call: **Assumed**. If it holds, the baseline works in such a call without any
-  change, because the bot only ever deals with the chat.
-- Whether a "Meet now" meeting created outside a chat has a chat the app can be
-  installed in before people join: **Assumed**.
+**Implemented.** The check runs with the **instance's** Graph client (the registration
+of the Microsoft 365 integration, `microsoft_app_id`), not the facilitator bot's.
+Ready = an installation row whose app definition carries the bot **and** a grant with
+`clientAppId` = bot app id and `ChatMessage.Read.Chat` (team channel:
+`ChannelMessage.Read.Group` on the team, known once the bot received an activity from
+the channel). `canPost` = the bot's own conversation reference exists and its last
+post there did not fail. Reasons: `no_identity`, `app_not_installed`,
+`consent_missing`, `graph_forbidden`, `graph_error`, `graph_unavailable`,
+`team_unknown`, `cannot_post`. `repairConsent` performs the Graph upgrade with the set
+the installed definition declares. *Simulated; the upgrade and reading the declared
+set from `teamsAppDefinition.authorization` are Open → M5.*
+
+## 6. Mentions and returned ids in proactive posts
+
+| Finding | Evidence |
+|---|---|
+| `<at>Name</at>` in the text plus an `entities` item `{type: "mention", mentioned: {id, name}, text: "<at>Name</at>"}`; the entity text must equal the body text exactly. Users can be mentioned by `29:` id, Entra object id or UPN. | Docs [D5] |
+| A send returns a `ResourceResponse` with `id`. If text and attachment go in one activity Teams may split it and then returns no id. | Docs [D6][D16] |
+| Whether the returned id equals the id other clients and Graph show for the message. | **Open → M3** |
+
+**Implemented.** Mentions are resolved from the chat roster by Entra object id; a person
+not in the chat stays plain text. Text and card are **separate activities**; the outcome
+carries `messageId` (the text, or the card when there is no text) and `cardMessageId`.
+*Simulated.*
+
+## 7. Meetings
+
+| Capability | Verdict | Requirement and evidence |
+|---|---|---|
+| Bot in the meeting chat, posts and cards | yes, with condition | `groupChat` scope; added by organiser or presenter. Docs [D17][D18]. One stored reference proves meeting chat activities reach the endpoint as `conversationType=groupChat` (`19:meeting_…@thread.v2`, Graph `chatType: meeting`). Live |
+| All meeting chat messages without mention | **Open → M5**, likely yes | Docs only say the RSC of a chat "apply to" its meeting [D2]. Microsoft's own Facilitator app holds exactly this grant in byte5 chats. Live |
+| Card answer with a verified answerer | yes, with condition | `Action.Execute` arrives as an `adaptiveCard/action` invoke; `from.id` and `from.aadObjectId` are set by Teams. Anonymous users have no `aadObjectId` but may interact with cards. Docs [D18][D19] |
+| Native Teams poll (Polls / Forms) | not possible | No bot API. Docs |
+| Roster and meeting details on demand | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat`; participant lookup only below 350 participants; details also for Meet now, 1:1 and group calls. Docs [D19] |
+| Meeting start and end events | yes, with condition | RSC `OnlineMeeting.ReadBasic.Chat`; "supported for scheduled and channel meetings". Docs [D19] |
+| Participant join and leave events | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat` **and** the event subscription in the Developer Portal; scheduled meetings only; the bot must be in the meeting before people join. Docs [D19] |
+| In-meeting and targeted notification | yes, with condition | Needs a web view in `validDomains`; targeted needs RSC `OnlineMeetingNotification.Send.Chat`, at most 50 recipients, `29:` ids. Docs [D20] |
+| Side panel, stage | yes, with condition | A tab with meeting context; stage needs delegated RSC. Docs [D21] |
+| Hand raise | **not possible for a bot** | No bot event. Only delegated client-side RSC in a tab. Docs [D2] |
+| Real-time audio and video | **not possible on this stack** | Application-hosted media needs C#/.NET on Windows Server in Azure with a public IP per VM; "C++ and Node.js APIs don't support access to real-time media"; developer preview. Docs [D22][D23] |
+| Transcript after the meeting | yes, with condition | RSC `OnlineMeetingTranscript.Read.Chat`. Docs [D2] |
+
+**Scheduled meeting versus ad-hoc call.** Apps are supported in scheduled meetings,
+1:1 and group calls, Meet now and webinars; not in instant channel meetings,
+shared-channel meetings or end-to-end encrypted calls [D17]. Start/end events exist for
+scheduled and channel meetings, join/leave for scheduled meetings only. An ad-hoc call
+therefore gives chat and cards and an on-demand roster, and **no lifecycle events**.
+
+**Implemented in 0.36.0 (the baseline).**
+
+1. The meeting chat is the group chat path: same subscription rule, same readiness
+   check, posts as the facilitator's own bot.
+2. A poll is an Adaptive Card with one `Action.Execute` per option. The click is
+   emitted as `card_answer`: `cardAnswer.cardId` = poll id, `cardAnswer.value` =
+   `{ optionId, answererVerified }`, `messageId` = the card message, `author` =
+   `activity.from`. `answererVerified` is false when Teams states no `aadObjectId`
+   (anonymous participant). A poll click never becomes a chat turn; it is acknowledged
+   with "Antwort übermittelt." or, when nobody is subscribed, "Diese Abstimmung ist
+   nicht mehr aktiv.".
+3. The capability snapshot, per conversation:
+   - **always:** inputs `text`, `message_edits`, `card_answers`; outputs `text`,
+     `mentions`, `cards`, `polls`, `private_messages`. Modality `online` for a meeting
+     chat, `chat` otherwise. The roster is available through the kernel's roster
+     provider.
+   - **not declared yet:** `presence` and meeting lifecycle (see the decision below).
+   - **never declared:** `hand_raise`, `transcribed_speech`, `voice`, `screen`,
+     `pinned_surface`, and modality `hybrid` (Teams does not tell a bot whether people
+     share a room). `reactions` is not declared either, see section 2.
+
+All of this is *Simulated*.
+
+### Decision: the meeting RSC are not added to the app package in 0.36.0
+
+`OnlineMeeting.ReadBasic.Chat`, `OnlineMeetingParticipant.Read.Chat` and
+`OnlineMeetingNotification.Send.Chat` are **not** in
+`appPackage/manifest.json.template`. Reasons:
+
+- Nothing in this version consumes them. Requesting permissions without a consumer
+  widens every agent app for no gain.
+- Join and leave events also need an event subscription that is set per app in the
+  Developer Portal; whether apps provisioned through Graph can set it is unknown.
+- New RSC means a new package version per agent app, and existing installs keep their
+  old consent set. Each needs **one Graph upgrade call per (agent app, chat)** with the
+  exact consented set, and the consent semantics of that call are unverified (M5).
+
+When they are added (7 RSC declared today, 16 allowed, 10 afterwards):
+
+1. Add the three permissions to the template and publish a new package version per
+   agent app to the catalog.
+2. For every (agent app, chat):
+   `POST /chats/{chat-id}/installedApps/{installation-id}/upgrade` with
+   `consentedPermissionSet.resourceSpecificPermissions` equal to the **complete** set of
+   the new definition. Needs `TeamsAppInstallation.ReadWriteAndConsentForChat.All`,
+   which the instance's app already holds. A set that differs from the definition is
+   answered with `400 ResourceSpecificPermissionsMismatch`. `repairConsent` in
+   `src/teamsReadiness.ts` does this call for one chat.
+3. Set the participant event subscription per app, then add the handlers and declare
+   `presence` for scheduled meetings only.
+
+Until then a late joiner is visible when they are **added to the chat** (membership
+event) and by their first message. Joining the call through the link without being
+added to the chat is invisible.
 
 ## Known limits of the implementation
 
 | Limit | Consequence |
 |---|---|
-| Edit revisions are counted in memory per bot, conversation and message. | After a restart of the middleware the next edit of an already edited message is emitted with revision 1 again. The kernel should order revisions by `occurredAt` or assign them itself. |
-| Reactions reach the bot only on its own messages [3]. | "Confirm the echo with a reaction" works, because the echo is the bot's message. A reaction to another person's ballot is never seen. |
-| Quoted and forwarded messages are recognised by attachment markers (`schema.skype.com/Reply`, `forwardedMessageReference`). | **Assumed** from payloads seen in the field, not from a page. If Teams marks them differently, such a message is emitted as an ordinary `created` event and the engine cannot tell it is a quote. |
-| The kernel's `TargetedMessage` has no poll field. | The plugin reads `message.poll` structurally. The kernel contract has to add it before an engine can post a poll through the official type. |
-| Consent is read from Graph `GET /chats/{id}/permissionGrants`, which needs `TeamsAppInstallation.ReadForChat.All` (application) or RSC `TeamsAppInstallation.Read.Chat` [8]. Neither is in the app package or documented setup today. | Until one is granted the readiness check answers `consent_unverifiable` and a facilitation does not start. |
+| Edit revisions are counted in memory per bot, conversation and message. | After a restart the next edit of an already edited message is emitted as revision 1 again; `occurredAt` still orders them. The kernel should assign revisions itself. |
+| Quoted and forwarded messages are recognised by attachment markers (`schema.skype.com/Reply`, `forwardedMessageReference`). | **Open**, from neither a page nor the evaluation. If Teams marks them differently such a message is an ordinary `created` event and the engine cannot tell it is a quote. |
+| The kernel's `TargetedMessage` has no poll field and `delivered` no `cardMessageId`. | The plugin reads `message.poll` and returns `cardMessageId` structurally; the kernel contract has to add both. |
+| A team channel is checked against its team only after the bot received an activity from that channel in the running process. | Before that the readiness check answers `team_unknown`. |
+| The instance's app registration must be served by this channel (its secret in the vault). | Otherwise the readiness check answers `graph_unavailable`. |
 
 ## Sources
 
-Microsoft Learn, read 2026-11-18.
+Microsoft Learn, fetched 2026-11-18. Numbering follows the evaluation note.
 
-1. Receive all messages with RSC: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-messages-with-rsc>
-2. Message edit, undelete and soft delete events: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/conversation-messages>
-3. Conversation events, `messageReaction`: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/subscribe-to-conversation-events>
-4. Meeting apps APIs: <https://learn.microsoft.com/en-us/microsoftteams/platform/apps-in-teams-meetings/meeting-apps-apis>
-5. Real-time media bots: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/real-time-media-concepts> and <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/requirements-considerations-application-hosted-media-bots>
-6. Meeting transcripts: <https://learn.microsoft.com/en-us/microsoftteams/platform/graph-api/meeting-transcripts/overview-transcripts>
-7. Proactive messages: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages>
-8. List permission grants of a chat: <https://learn.microsoft.com/en-us/graph/api/chat-list-permissiongrants>
+- [D1] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-messages-with-rsc>
+- [D2] <https://learn.microsoft.com/en-us/microsoftteams/platform/graph-api/rsc/resource-specific-consent>
+- [D5] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-and-group-conversations>
+- [D6] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/conversation-messages>
+- [D7] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/subscribe-to-conversation-events>
+- [D8] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages>
+- [D9] <https://learn.microsoft.com/en-us/graph/api/chat-teamsappinstallation-upgrade?view=graph-rest-1.0>
+- [D10] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/rate-limit>
+- [D13] <https://learn.microsoft.com/en-us/graph/api/chat-list-installedapps?view=graph-rest-1.0>
+- [D14] <https://learn.microsoft.com/en-us/graph/api/resources/resourcespecificpermissiongrant?view=graph-rest-1.0>
+- [D15] <https://learn.microsoft.com/en-us/graph/api/chat-list-permissiongrants?view=graph-rest-1.0>
+- [D16] <https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-api-reference?view=azure-bot-service-4.0>
+- [D17] <https://learn.microsoft.com/en-us/microsoftteams/platform/apps-in-teams-meetings/teams-apps-in-meetings>
+- [D18] <https://learn.microsoft.com/en-us/microsoftteams/platform/apps-in-teams-meetings/build-extensible-conversation-for-meeting-chat> and <https://learn.microsoft.com/en-us/microsoftteams/platform/task-modules-and-cards/cards/cards-actions>
+- [D19] <https://learn.microsoft.com/en-us/microsoftteams/platform/apps-in-teams-meetings/meeting-apps-apis>
+- [D20] <https://learn.microsoft.com/en-us/microsoftteams/platform/apps-in-teams-meetings/in-meeting-notification-for-meeting>
+- [D21] <https://learn.microsoft.com/en-us/microsoftteams/platform/apps-in-teams-meetings/build-apps-for-teams-meeting-stage>
+- [D22] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/requirements-considerations-application-hosted-media-bots>
+- [D23] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/real-time-media-concepts>
