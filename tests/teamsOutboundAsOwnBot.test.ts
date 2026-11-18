@@ -17,6 +17,8 @@ import {
   BERT,
   botNotInstalledError,
   connectorError,
+  conversationBlockedError,
+  documentedNotInstalledError,
   directConversationId,
   GROUP_CHAT_ID,
   JONAS,
@@ -274,42 +276,75 @@ describe('#43 sendToUser as the own bot', () => {
     assert.notEqual(connector.sent[0]?.conversationId, jonasDm);
   });
 
-  it('returns app_not_installed when the user never installed the bot', async () => {
+  it('returns app_not_installed for the live answer (403 BadArgument) and for the documented one', async () => {
+    for (const failure of [botNotInstalledError(), documentedNotInstalledError()]) {
+      const { connector, sendToUser } = directHarness();
+      connector.failDirect(MIRA, ANNA, failure);
+
+      const outcome = await sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+      assert.equal(outcome.outcome, 'unreachable');
+      assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'app_not_installed');
+      assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /'Mira' is not installed for this user/);
+      assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /sharing a group chat with it is not enough/);
+      assert.deepEqual(connector.sent, [], 'no other bot steps in');
+    }
+  });
+
+  it('does not read every 403 BadArgument as not installed', async () => {
     const { connector, sendToUser } = directHarness();
-    connector.failDirect(MIRA, ANNA, botNotInstalledError());
+    connector.failDirect(MIRA, ANNA, connectorError(403, 'BadArgument', 'Invalid tenant id'));
 
     const outcome = await sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
 
-    assert.equal(outcome.outcome, 'unreachable');
-    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'app_not_installed');
-    assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /'Mira' is not installed for this user/);
-    assert.deepEqual(connector.sent, [], 'no other bot steps in');
+    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'channel_error');
   });
 
-  it('returns blocked when the user blocked the bot, on first contact and on a known 1:1', async () => {
-    const first = directHarness();
-    first.connector.failDirect(MIRA, ANNA, messageWritesBlockedError());
-    const firstOutcome = await first.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
-    assert.equal(firstOutcome.outcome === 'unreachable' ? firstOutcome.code : '', 'blocked');
+  it('blocked shows on the send, not on creating the conversation: first contact', async () => {
+    const { connector, sendToUser } = directHarness();
+    connector.block(MIRA, ANNA);
 
-    const known = directHarness();
-    capture(known.refs, MIRA, ANNA, directConversationId(`${MIRA.appId}|${ANNA.aadObjectId}`), true);
-    known.connector.failDirect(MIRA, ANNA, messageWritesBlockedError());
-    const knownOutcome = await known.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
-    assert.equal(knownOutcome.outcome === 'unreachable' ? knownOutcome.code : '', 'blocked');
-    assert.deepEqual(known.connector.sent, []);
+    const outcome = await sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+    assert.equal(connector.opened.length, 1, 'the conversation was created (201 while blocked)');
+    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'blocked');
+    assert.deepEqual(connector.sent, []);
+  });
+
+  it('blocked on a known 1:1, and delivered again after the user unblocks', async () => {
+    const { connector, refs, sendToUser } = directHarness();
+    capture(refs, MIRA, ANNA, directConversationId(`${MIRA.appId}|${ANNA.aadObjectId}`), true);
+    connector.block(MIRA, ANNA);
+
+    const blocked = await sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+    connector.unblock(MIRA, ANNA);
+    const after = await sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+    assert.equal(blocked.outcome === 'unreachable' ? blocked.code : '', 'blocked');
+    assert.equal(after.outcome, 'delivered');
+  });
+
+  it('still maps the documented MessageWritesBlocked shape to blocked', async () => {
+    const { connector, sendToUser } = directHarness();
+    connector.block(MIRA, ANNA, messageWritesBlockedError());
+
+    const outcome = await sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'blocked');
   });
 
   it('never retries a 403: one attempt, no waiting', async () => {
-    for (const failure of [botNotInstalledError(), messageWritesBlockedError()]) {
-      const h = directHarness();
-      h.connector.failDirect(MIRA, ANNA, failure);
+    const notInstalled = directHarness();
+    notInstalled.connector.failDirect(MIRA, ANNA, botNotInstalledError());
+    await notInstalled.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+    assert.equal(notInstalled.connector.opened.length, 1);
+    assert.deepEqual(notInstalled.waits, []);
 
-      await h.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
-
-      assert.equal(h.connector.opened.length, 1);
-      assert.deepEqual(h.waits, []);
-    }
+    const blocked = directHarness();
+    blocked.connector.block(MIRA, ANNA, conversationBlockedError());
+    await blocked.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+    assert.equal(blocked.connector.opened.length, 1);
+    assert.deepEqual(blocked.waits, []);
   });
 
   it('retries 429, 412, 502 and 504 with exponential backoff and then delivers once', async () => {
@@ -336,7 +371,7 @@ describe('#43 sendToUser as the own bot', () => {
     assert.deepEqual(h.waits, [500, 1000, 2000]);
   });
 
-  it('does not match error codes no documentation names', async () => {
+  it('does not match error codes neither seen live nor documented', async () => {
     const h = directHarness();
     h.connector.failDirect(MIRA, ANNA, connectorError(403, 'BotNotInConversationRoster', 'The bot is not part of the conversation roster.'));
 

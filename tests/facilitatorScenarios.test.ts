@@ -32,7 +32,6 @@ import {
   meetingParticipantActivity,
   membersAddedActivity,
   messageActivity,
-  messageWritesBlockedError,
   MIRA,
   OTHER_GROUP_CHAT_ID,
   SimulatedConnector,
@@ -263,7 +262,7 @@ describe('scenario 3 — first-contact DM', () => {
 describe('scenario 4 — blocked DM', () => {
   it('a person who blocked the bot yields blocked, and no other bot writes to them', async () => {
     const i = startInstance();
-    i.connector.failDirect(MIRA, BERT, messageWritesBlockedError());
+    i.connector.block(MIRA, BERT);
 
     const outcome = await i.dm(dmTarget(BERT), { text: 'Deine Stimme fehlt noch.' }, { asChannelKey: MIRA.key });
 

@@ -11,11 +11,23 @@ import { buildPollCard, validatePollInput, type BuildPollCardInput } from './tea
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 
-/** The two 403 answers Teams documents for a 1:1 the bot may not write to
- *  (send-proactive-messages). Other codes seen in the wild are not on any
- *  page we read and are deliberately not matched. */
-const BLOCKED_MARKER = 'messagewritesblocked';
-const NOT_INSTALLED_MARKER = 'forbiddenoperationexception';
+/**
+ * The 403 answers of Teams for a 1:1 the bot may not write to.
+ *
+ * LIVE (byte5 tenant, 2026-11-18), these are what the service really sends:
+ *   not installed  403 {"error":{"code":"BadArgument","message":"Bot is not
+ *                  installed in user's personal scope"}} on create-conversation
+ *   blocked        403 {"error":{"code":"ConversationBlockedByUser","message":
+ *                  "User blocked the conversation with the bot."}} on SEND;
+ *                  create-conversation still answers 201 while blocked
+ * DOCUMENTED (send-proactive-messages), kept as additional matches:
+ *   not installed  403 ForbiddenOperationException
+ *   blocked        403 subCode MessageWritesBlocked
+ * `BadArgument` alone is too broad a code, so it counts only together with
+ * the message.
+ */
+const BLOCKED_MARKERS: readonly string[] = ['conversationblockedbyuser', 'messagewritesblocked'];
+const NOT_INSTALLED_MARKERS: readonly string[] = ["not installed in user's personal scope", 'forbiddenoperationexception'];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Statuses Teams asks bots to retry with exponential backoff (rate-limit). */
@@ -164,11 +176,11 @@ function errorHaystack(err: unknown): string {
 
 /**
  * Map a Bot Connector failure of a 1:1 send to the kernel's outcome.
- *   403 + subCode MessageWritesBlocked  → blocked
- *   403 + ForbiddenOperationException   → app_not_installed
- * Neither is ever retried. Teams answers MessageWritesBlocked both when the
- * user blocked the bot and when they uninstalled it; the response does not
- * say which, and both mean "remind in the group instead".
+ *   403 + ConversationBlockedByUser (live) / MessageWritesBlocked (docs) → blocked
+ *   403 + "not installed in user's personal scope" (live) /
+ *         ForbiddenOperationException (docs)                  → app_not_installed
+ * Neither is ever retried. A block shows on the SEND, not on creating the
+ * conversation, so `blocked` can also come back for a first contact.
  * A 404 is reported as user_not_found; that reading is ours, no page states it.
  */
 export function classifyDirectSendError(
@@ -178,18 +190,18 @@ export function classifyDirectSendError(
   const status = connectorStatus(err);
   const haystack = errorHaystack(err);
   const detail = err instanceof Error ? err.message : String(err);
-  if (status === HTTP_FORBIDDEN && haystack.includes(BLOCKED_MARKER)) {
+  if (status === HTTP_FORBIDDEN && BLOCKED_MARKERS.some((marker) => haystack.includes(marker))) {
     return {
       outcome: 'unreachable',
       code: 'blocked',
       message: `the user blocked '${botLabel}' or removed its app; Teams refuses direct messages from it (${detail})`,
     };
   }
-  if (status === HTTP_FORBIDDEN && haystack.includes(NOT_INSTALLED_MARKER)) {
+  if (status === HTTP_FORBIDDEN && NOT_INSTALLED_MARKERS.some((marker) => haystack.includes(marker))) {
     return {
       outcome: 'unreachable',
       code: 'app_not_installed',
-      message: `the app of '${botLabel}' is not installed for this user, so a first direct message is not possible (${detail})`,
+      message: `the app of '${botLabel}' is not installed for this user, so a first direct message is not possible. It counts as installed when the user added it personally or is a member of a team that has it; sharing a group chat with it is not enough (${detail})`,
     };
   }
   if (status === HTTP_NOT_FOUND) {

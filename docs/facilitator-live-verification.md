@@ -61,7 +61,12 @@ mobile) and who ran it.
 - **Expect:** the same id.
 - **Settles:** that the id the bot gets back is the id everybody else sees.
 
-### M4: first-contact errors
+### M4: first-contact errors (done 2026-11-18, bodies confirmed)
+
+The Bot Connector answers were verified live: not installed =
+`403 BadArgument "Bot is not installed in user's personal scope"`, blocked =
+`403 ConversationBlockedByUser` on the send. What remains is to see the product path
+end to end:
 
 - **Do:** with a colleague who never opened the facilitator's app, let a private
   reminder become due.
@@ -71,11 +76,11 @@ mobile) and who ran it.
 - **Do:** the colleague installs the app, then blocks the bot. Let the next reminder
   become due.
 - **Expect:** `… not delivered: blocked`.
-- **Note:** if either line says `channel_error` instead, copy the error text: the plugin
-  matches `ForbiddenOperationException` and `MessageWritesBlocked` only. Also note
-  whether a colleague who is in a group chat that has the app, but never opened it, does
-  get the message.
-- **Settles:** the exact error bodies and the install precondition.
+- **Note:** if either line says `channel_error` instead, copy the error text.
+- **Known from the live run:** a colleague who only shares a group chat with the app
+  gets no direct message (`app_not_installed`); a colleague who is a member of a team
+  where the app is installed does.
+- **Settles:** that the plugin's own send path produces these outcomes.
 
 ### M5: meeting
 

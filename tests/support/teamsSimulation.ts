@@ -601,8 +601,25 @@ export function referenceFor(bot: SimBot, conversationId: string, from: SimUser 
   };
 }
 
-/** Teams' answer when the user blocked the bot or removed its app: 403 with
- *  `subCode: MessageWritesBlocked` in the inner error. */
+/**
+ * LIVE (byte5 tenant, 2026-11-18): the answer to a SEND into a 1:1 the user
+ * blocked. Creating the conversation still answers 201 while blocked.
+ */
+export function conversationBlockedError(): Error {
+  return connectorError(403, 'ConversationBlockedByUser', 'User blocked the conversation with the bot.');
+}
+
+/**
+ * LIVE (byte5 tenant, 2026-11-18): the answer to create-conversation when
+ * the app is not installed for the user. The code is `BadArgument`, not the
+ * `ForbiddenOperationException` the documentation names.
+ */
+export function botNotInstalledError(): Error {
+  return connectorError(403, 'BadArgument', "Bot is not installed in user's personal scope");
+}
+
+/** DOCUMENTED shape for a blocked or uninstalled bot: 403 with
+ *  `subCode: MessageWritesBlocked` in the inner error. Not seen live. */
 export function messageWritesBlockedError(): Error {
   const body = {
     error: {
@@ -617,9 +634,9 @@ export function messageWritesBlockedError(): Error {
   return Object.assign(new Error('Forbidden'), { statusCode: 403, code: 'Forbidden', body, details: body });
 }
 
-/** Teams' answer to a first 1:1 message when the app is not installed in the
- *  user's personal scope: 403 `ForbiddenOperationException`. */
-export function botNotInstalledError(): Error {
+/** DOCUMENTED shape for "not installed": 403 ForbiddenOperationException.
+ *  Not seen live. */
+export function documentedNotInstalledError(): Error {
   return connectorError(403, 'ForbiddenOperationException', "Bot is not installed in user's personal scope");
 }
 
@@ -641,6 +658,17 @@ export class SimulatedConnector {
   readonly opened: { asBot: string; userId: string; serviceUrl?: string }[] = [];
   private readonly directFailures = new Map<string, Error>();
 
+  /** The user blocked the bot: creating the 1:1 still works, the SEND fails. */
+  block(bot: SimBot, user: SimUser, err: Error = conversationBlockedError()): void {
+    this.sendFailures.set(directConversationId(`${bot.appId}|${user.aadObjectId}`), err);
+  }
+
+  unblock(bot: SimBot, user: SimUser): void {
+    this.sendFailures.delete(directConversationId(`${bot.appId}|${user.aadObjectId}`));
+  }
+
+  private readonly sendFailures = new Map<string, Error>();
+
   /** `times` limits the failure to that many attempts (a transient error). */
   failDirect(bot: SimBot, user: SimUser, err: Error, times = Number.POSITIVE_INFINITY): void {
     this.directFailures.set(`${bot.appId}|${user.aadObjectId}`, err);
@@ -661,6 +689,8 @@ export class SimulatedConnector {
     return {
       activity: { conversation: { id: conversationId }, recipient: { id: asBot }, serviceUrl: SERVICE_URL },
       sendActivity: async (activity: Record<string, unknown>) => {
+        const blocked = this.sendFailures.get(conversationId);
+        if (blocked) throw blocked;
         const id = newMessageId();
         this.sent.push({ asBot, conversationId, activity, id });
         return { id };

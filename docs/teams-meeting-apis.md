@@ -14,7 +14,7 @@ statement carries one label:
 
 | Label | Meaning |
 |---|---|
-| **Live** | Observed read-only in the byte5 tenant on 2026-11-18. |
+| **Live** | Observed in the byte5 tenant on 2026-11-18: read-only evidence from the running instance, and a live verification the same day (12:17 to 12:41 UTC) with test spaces that had one human member. |
 | **Docs** | Stated on a Microsoft Learn page fetched that day; cited as [Dn], list at the end. |
 | **Simulated** | Implemented here and covered by tests against a simulated Bot Framework, Bot Connector and Graph with payloads in the documented or observed shape. Proves what the plugin does with such a payload, not that Teams sends it. |
 | **Open** | Neither observed nor documented. The owner step that settles it (M1 to M6) is named; see [`facilitator-live-verification.md`](./facilitator-live-verification.md). |
@@ -61,20 +61,23 @@ reading the log. *Simulated.*
 
 | Finding | Evidence |
 |---|---|
-| The app must be installed for the user in the personal scope before a proactive message; being a member of a team that has the app also counts. | Docs [D8] |
+| The app must be installed for the user before a proactive message. A personal install counts, and so does **membership of a team where the app is installed**. Sharing a **group chat** with the app does **not** count. | Docs [D8]; **Live** (create-conversation: 201 for a personal install and for team membership, 403 for six bots the user only shares group chats with) |
 | Create the conversation with `bot.id`, `members[0].id`, `channelData.tenant.id`. The member id may be the user's Entra object id. A `29:…` id is per bot and cannot be reused across bots. UPN and e-mail never work. | Docs [D8] |
 | Service URL: from an inbound activity, or the global `https://smba.trafficmanager.net/teams/` for proactive sends. All 24 stored references use `…/emea/<tenant>/`. | Docs [D8]; Live |
-| App not installed for the user → `403` with `ForbiddenOperationException`. Blocked or uninstalled → `403` with `subCode: MessageWritesBlocked` (`errorCode 209`). | Docs [D8]; **Open → M4** for the exact bodies |
+| App not installed for the user → `403 {"error":{"code":"BadArgument","message":"Bot is not installed in user's personal scope"}}` on create-conversation. | **Live.** The documentation names `ForbiddenOperationException` instead [D8]; that shape was not seen. |
+| User blocked the bot → `403 {"error":{"code":"ConversationBlockedByUser","message":"User blocked the conversation with the bot."}}` on the **send**. Create-conversation still answers `201` while blocked. After unblocking, a send answers `201` again. | **Live.** The documentation names `subCode: MessageWritesBlocked` (`errorCode 209`) instead [D8]; that shape was not seen. |
 | Retry `429`, `412`, `502`, `504` with exponential backoff. Limits per bot per thread: 7 sends/s, 60 per 30 s, 1800 per hour. | Docs [D10] |
-| Whether being in a group chat that has the app is enough for a 1:1. | **Open → M4** |
 | Neither instance holds a `…ForUser.All` permission, so installing the app for a user on demand, and even checking whether it is installed, is not possible today. | Live |
 
 **Implemented.** `sendToUser(…, { asChannelKey })`: the bot's own stored 1:1, else a
-conversation created with the Entra object id. `ForbiddenOperationException` →
-`app_not_installed`, `MessageWritesBlocked` → `blocked`, neither is retried. The four
+conversation created with the Entra object id. `403` with "not installed in user's
+personal scope" → `app_not_installed`; `403` with `ConversationBlockedByUser` →
+`blocked`, also on a first contact, because the block shows on the send. The documented
+`ForbiddenOperationException` and `MessageWritesBlocked` are matched as well. Neither
+outcome is retried. `BadArgument` alone is not read as "not installed". The four
 transient statuses are retried at most three times (0.5 s, 1 s, 2 s) and never in a way
-that could post twice. Error codes no page names are not matched and end as
-`channel_error`. Never another bot. *Simulated.*
+that could post twice. Anything else ends as `channel_error`. Never another bot.
+*Simulated with the live response bodies; the product path itself was not run live.*
 
 **Precondition, not solved here:** the person must have the facilitator's app. Install
 on demand would need `TeamsAppInstallation.ReadWriteForUser.All` on the instance's
