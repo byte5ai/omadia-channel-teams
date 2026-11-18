@@ -138,8 +138,8 @@ carries `messageId` (the text, or the card when there is no text) and `cardMessa
 | Native Teams poll (Polls / Forms) | not possible | No bot API. Docs |
 | Roster and meeting details on demand | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat`; participant lookup only below 350 participants; details also for Meet now, 1:1 and group calls. Docs [D19] |
 | Meeting start and end events | yes, with condition | RSC `OnlineMeeting.ReadBasic.Chat`; "supported for scheduled and channel meetings". Docs [D19] |
-| Participant join and leave events | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat` **and** the event subscription in the Developer Portal; scheduled meetings only; the bot must be in the meeting before people join. Docs [D19] |
-| In-meeting and targeted notification | yes, with condition | Needs a web view in `validDomains`; targeted needs RSC `OnlineMeetingNotification.Send.Chat`, at most 50 recipients, `29:` ids. Docs [D20] |
+| Participant join and leave events | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat` **and** the event subscription in the Developer Portal (no manifest field or API documented); scheduled meetings only; the bot must be in the meeting before people join. Docs [D19] |
+| In-meeting and targeted notification | possible, **not built** | Needs a web page of the app in `validDomains`; targeted needs RSC `OnlineMeetingNotification.Send.Chat`, at most 50 recipients, `29:` ids only. Docs [D20] |
 | Side panel, stage | yes, with condition | A tab with meeting context; stage needs delegated RSC. Docs [D21] |
 | Hand raise | **not possible for a bot** | No bot event. Only delegated client-side RSC in a tab. Docs [D2] |
 | Real-time audio and video | **not possible on this stack** | Application-hosted media needs C#/.NET on Windows Server in Azure with a public IP per VM; "C++ and Node.js APIs don't support access to real-time media"; developer preview. Docs [D22][D23] |
@@ -151,7 +151,7 @@ shared-channel meetings or end-to-end encrypted calls [D17]. Start/end events ex
 scheduled and channel meetings, join/leave for scheduled meetings only. An ad-hoc call
 therefore gives chat and cards and an on-demand roster, and **no lifecycle events**.
 
-**Implemented in 0.36.0 (the baseline).**
+**Implemented in 0.36.0.**
 
 1. The meeting chat is the group chat path: same subscription rule, same readiness
    check, posts as the facilitator's own bot.
@@ -159,52 +159,113 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
    emitted as `card_answer`: `cardAnswer.cardId` = poll id, `cardAnswer.value` =
    `{ optionId }`, `cardAnswer.answererVerified`, `messageId` = the card message,
    `author` = `activity.from`. `answererVerified` is false when Teams states no
-   `aadObjectId` (anonymous participant). A poll click never becomes a chat turn; it is acknowledged
-   with "Antwort übermittelt." or, when nobody is subscribed, "Diese Abstimmung ist
-   nicht mehr aktiv.".
-3. The capability snapshot, per conversation:
+   `aadObjectId` (anonymous participant). A poll click never becomes a chat turn; it is
+   acknowledged with "Antwort übermittelt." or, when nobody is subscribed, "Diese
+   Abstimmung ist nicht mehr aktiv.".
+3. **Meeting events.** The four `event` activities are handled and passed to the kernel
+   as session events through `core.emitSessionEvent` (feature-detected):
+
+   | Teams activity name | Session event | Needs |
+   |---|---|---|
+   | `application/vnd.microsoft.meetingStart` | `session_started` | RSC `OnlineMeeting.ReadBasic.Chat` (channel meeting: `ChannelMeeting.ReadBasic.Group`) |
+   | `application/vnd.microsoft.meetingEnd` | `session_ended` | same |
+   | `application/vnd.microsoft.meetingParticipantJoin` | `participant_joined` | RSC `OnlineMeetingParticipant.Read.Chat` **and** the Developer Portal subscription |
+   | `application/vnd.microsoft.meetingParticipantLeave` | `participant_left` | same |
+
+   Shape: `{ channelId, channelType, conversationId, sessionRef, kind, participants?,
+   occurredAt }`. `sessionRef` is `channelData.meeting.id` (Teams says not to use
+   `value.Id` of the event; without a meeting id the meeting chat id is used).
+   `participants` are `value.members[].user` with the Entra object id. `occurredAt` is
+   `value.StartTime` / `value.EndTime` for start and end, else the activity timestamp.
+   The documentation prints the start and end names with a leading space; names are
+   trimmed before dispatch. Docs [D19] for names and fields; *Simulated*, nothing
+   observed live.
+4. **The capability snapshot**, per conversation and bot:
    - **always:** inputs `text`, `message_edits`, `card_answers`; outputs `text`,
      `mentions`, `cards`, `polls`, `private_messages`. Modality `online` for a meeting
-     chat, `chat` otherwise. The roster is available through the kernel's roster
-     provider.
-   - **not declared yet:** `presence` and meeting lifecycle (see the decision below).
+     chat or while a meeting or call is running, `chat` otherwise. The roster is
+     available through the kernel's roster provider.
+   - **`presence`, only while it is proven.** All three must hold, none is assumed:
+     a scheduled meeting is running in this chat (its start event said `Scheduled` or
+     `Recurring`, or a participant event arrived, which exists for scheduled meetings
+     only); a join or leave event has actually arrived for this meeting; and the install
+     in this chat holds both `OnlineMeeting.ReadBasic.Chat` and
+     `OnlineMeetingParticipant.Read.Chat`, read from Graph. It is withdrawn when the
+     meeting ends, and every occurrence has to prove it again.
+   - **Meet-now, group calls, 1:1 calls:** the "always" set. Teams sends them no
+     participant events.
    - **never declared:** `hand_raise`, `transcribed_speech`, `voice`, `screen`,
      `pinned_surface`, and modality `hybrid` (Teams does not tell a bot whether people
      share a room). `reactions` is not declared either, see section 2.
+   - The meeting lifecycle has no capability name in the kernel contract. It reaches the
+     kernel as the session events above and as a snapshot pushed at start, at end, and
+     at the first participant event of a meeting.
 
 All of this is *Simulated*.
 
-### Decision: the meeting RSC are not added to the app package in 0.36.0
+### The meeting permissions in the app package
 
-`OnlineMeeting.ReadBasic.Chat`, `OnlineMeetingParticipant.Read.Chat` and
-`OnlineMeetingNotification.Send.Chat` are **not** in
-`appPackage/manifest.json.template`. Reasons:
+Since `TEMPLATE_REVISION` 2 the app package requests eleven RSC permissions (sixteen
+are allowed). New are `OnlineMeeting.ReadBasic.Chat`,
+`OnlineMeetingParticipant.Read.Chat`, `OnlineMeetingNotification.Send.Chat` and
+`ChannelMeeting.ReadBasic.Group`.
 
-- Nothing in this version consumes them. Requesting permissions without a consumer
-  widens every agent app for no gain.
-- Join and leave events also need an event subscription that is set per app in the
-  Developer Portal; whether apps provisioned through Graph can set it is unknown.
-- New RSC means a new package version per agent app, and existing installs keep their
-  old consent set. Each needs **one Graph upgrade call per (agent app, chat)** with the
-  exact consented set, and the consent semantics of that call are unverified (M5).
+- **Who has to agree with the template.** Nobody keeps a second list. The M365
+  connector's provisioner reads the consented set at install from the **published**
+  catalog definition
+  (`GET /appCatalogs/teamsApps?$filter=id eq '…'&$expand=appDefinitions($select=id,authorization)`)
+  and sends it verbatim; `repairConsent` here uses the same query. A set that differs
+  from the definition is answered with `400 ResourceSpecificPermissionsMismatch`, so
+  neither side derives it from the template text. The connector needed no change.
+- **The package version.** Teams replaces a published package only by a higher version.
+  The kernel derives an agent app's version from the agent's identity revision alone, so
+  a template change would republish nothing. `appPackage/TEMPLATE_REVISION` exists for
+  that: the generator has to fold it into the version (for example
+  `1.<TEMPLATE_REVISION>.<identity revision>`). **That change is in the kernel and is
+  not made yet.**
+- **Existing installs.** Facilitators are new agents; their apps are provisioned from
+  the new template, nothing has to be mass-upgraded. An agent app that was installed
+  from the earlier package keeps the consent set it was installed with (live: installs
+  at versions 1.0.1 to 1.3.0 show exactly the permissions they were installed with).
+  That is fine: those agents do not use meeting events and keep working as before. To
+  bring one such install to the full set, call `repairConsent` for that chat. It runs
+  `POST /chats/{chat-id}/installedApps/{installation-id}/upgrade` with the complete
+  `consentedPermissionSet` of the published definition and needs
+  `TeamsAppInstallation.ReadWriteAndConsentForChat.All` and `AppCatalog.ReadWrite.All`
+  on the instance's app, both held in byte5. The consent semantics of the upgrade call
+  are **Open → M5**.
 
-When they are added (7 RSC declared today, 16 allowed, 10 afterwards):
+### The participant event subscription is a manual step
 
-1. Add the three permissions to the template and publish a new package version per
-   agent app to the catalog.
-2. For every (agent app, chat):
-   `POST /chats/{chat-id}/installedApps/{installation-id}/upgrade` with
-   `consentedPermissionSet.resourceSpecificPermissions` equal to the **complete** set of
-   the new definition. Needs `TeamsAppInstallation.ReadWriteAndConsentForChat.All`,
-   which the instance's app already holds. A set that differs from the definition is
-   answered with `400 ResourceSpecificPermissionsMismatch`. `repairConsent` in
-   `src/teamsReadiness.ts` does this call for one chat.
-3. Set the participant event subscription per app, then add the handlers and declare
-   `presence` for scheduled meetings only.
+Docs [D19]: "A bot can receive the participant events only if subscribed to these events
+in Developer Portal." The page gives portal steps only. The app manifest schema has no
+property for it (`meetingExtensionDefinition` is mentioned with
+`supportsAnonymousGuestUsers` only), and neither a Graph API nor a Developer Portal API
+for it is documented. So it **cannot be set for apps provisioned through Graph**, and it
+is unknown whether the portal setting survives a catalog update of the package
+(**Open → M5**).
 
-Until then a late joiner is visible when they are **added to the chat** (membership
-event) and by their first message. Joining the call through the link without being
-added to the chat is invisible.
+Consequences, as implemented: meeting start and end work without it. `presence` is
+declared only after a join or leave event has actually been seen for the running
+meeting, which is the only proof that the subscription is set. The manual portal step
+per agent app is in [`facilitator-live-verification.md`](./facilitator-live-verification.md).
+
+### Targeted in-meeting notification: not built
+
+`POST /v1/meetings/{meetingId}/notification` with `type: targetedMeetingNotification`
+needs more than the RSC `OnlineMeetingNotification.Send.Chat` (which the package now
+requests): its only content type is a dialog that renders a **web page** of the app
+(`content.value.url`, listed in `validDomains`; "if an empty string or no URL is
+provided, nothing is rendered"), and recipients must be `29:` ids, Entra object ids are
+not accepted. Docs [D20]. This plugin has no meeting web surface, so nothing is sent.
+The same holds for the non-targeted in-meeting alert (`externalResourceUrl`). The
+facilitator uses chat posts and private messages instead.
+
+### Still not possible
+
+A late joiner who joins the call **without** being added to the chat is visible only
+through the participant event, so only in a scheduled meeting with the portal
+subscription set. Hand raise has no bot event. Audio needs a .NET media bot (#584).
 
 ## Known limits of the implementation
 

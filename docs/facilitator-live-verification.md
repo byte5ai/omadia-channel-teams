@@ -87,11 +87,44 @@ mobile) and who ran it.
   (Graph `installedApps/{id}/upgrade` with the full consented set).
 - **Expect:** afterwards the grant list of the chat shows the permission and the
   readiness check passes.
-- **Later, once the meeting RSC are in the app package:** expect `meetingStart` /
-  `meetingEnd` and join/leave activities in a scheduled meeting, and none of them in a
-  Meet-now call.
-- **Settles:** mention-free delivery in meeting chats and the consent semantics of the
-  upgrade call.
+- **Do:** with an agent app from the current package (`TEMPLATE_REVISION` 2) in a
+  **scheduled** meeting, start and end the meeting.
+- **Expect:** two log lines
+  `[teams] meeting event name=application/vnd.microsoft.meetingStart … recorded=true`
+  and `…meetingEnd … recorded=true`.
+- **Do:** set the participant event subscription for that agent app (see "Manual
+  Developer Portal step" below), add the app to a new scheduled meeting **before**
+  anybody joins, then let two people join and one leave.
+- **Expect:** `…meetingParticipantJoin … recorded=true` and
+  `…meetingParticipantLeave … recorded=true`, and from then on the facilitator's
+  handshake or status mentions that it sees who is in the meeting.
+- **Do:** repeat start, join and end in a **Meet-now** call started from a group chat.
+- **Expect:** no participant lines. Note whether start and end lines appear; the
+  documentation names scheduled and channel meetings only.
+- **Do:** publish a new package version of an existing agent app to the catalog and
+  check its portal subscription again.
+- **Note:** whether the setting is still there.
+- **Settles:** mention-free delivery in meeting chats, the consent semantics of the
+  upgrade call, the exact event names and fields, and whether the portal subscription
+  survives a catalog update.
+
+#### Manual Developer Portal step (per agent app)
+
+Teams sends participant join and leave events only to an app that subscribed to them
+in Developer Portal. There is no manifest field and no documented API for it, so it
+cannot be set while an agent is provisioned. Once per agent app that should see who is
+in a meeting:
+
+1. Open <https://dev.teams.microsoft.com/>, **Apps**, and open the agent's app (import
+   it from the organisation's catalog if it is not listed).
+2. In the section **Meeting event subscriptions** select **Participant join** and
+   **Participant leave**.
+3. Select **Save**.
+4. Under **Configure → Permissions** check that `OnlineMeetingParticipant.Read.Chat`
+   is listed (it is, for packages from `TEMPLATE_REVISION` 2 on).
+
+Without this step everything else works; the facilitator just does not declare that it
+sees who joins and leaves.
 
 ### M6: tenant RSC switch
 
@@ -196,8 +229,12 @@ verified only when every "Expected" line was observed.
    - Expected: Mira welcomes them and counts them from now on.
 2. They vote without a mention.
    - Expected: recorded for them.
-3. A person joins the call through the link without being added to the chat.
-   - Expected: Mira does not notice. This is the stated limit of the baseline.
+3. In a scheduled meeting with the portal subscription set, a person joins the call
+   twenty minutes late.
+   - Expected in the log: `…meetingParticipantJoin … recorded=true`; the engine knows
+     they arrived late.
+4. The same in a Meet-now call, or without the portal subscription.
+   - Expected: Mira does not notice until the person writes. This is the stated limit.
 
 ## After the run
 

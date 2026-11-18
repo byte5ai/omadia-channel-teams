@@ -32,13 +32,25 @@ feature-detected, on an older kernel nothing changes.
   `MessageWritesBlocked` → `blocked`, neither retried; 429 / 412 / 502 / 504 retried
   with backoff. Never another bot, no default-bot fallback. Without `asChannelKey`
   unchanged.
-- **Meetings (#44 baseline)**: meeting chats follow the same subscription rule; poll
-  card with `Action.Execute` (`teamsPollCard.ts`), answers arrive as `card_answer`
-  with `answererVerified` false for a participant without an Entra identity; meeting
-  source with the capability snapshot (`teamsMeetingSource.ts`). `reactions`,
-  presence, lifecycle, hand raise and audio are not declared. The meeting RSC are
-  **not** added to the app package in this version; `docs/teams-meeting-apis.md`
-  says why and what adding them costs (one Graph upgrade per agent app and chat).
+- **Meetings (#44)**: meeting chats follow the same subscription rule; poll card with
+  `Action.Execute` (`teamsPollCard.ts`), answers arrive as `card_answer` with
+  `answererVerified` false for a participant without an Entra identity. Meeting start,
+  end and participant join / leave are passed to the kernel as session events
+  (`teamsMeetingSessions.ts`, `core.emitSessionEvent`, feature-detected) and a fresh
+  capability snapshot is pushed at start and end. The snapshot
+  (`teamsMeetingSource.ts`) declares `presence` only while it is proven: a scheduled
+  meeting is running, a join or leave event arrived for it, and the install holds both
+  meeting permissions (read from Graph). Meet-now and calls keep chat and cards.
+  `reactions`, hand raise and audio are never declared. Targeted in-meeting
+  notification is not built (it needs a web page of the app).
+- **App package**: the template requests `OnlineMeeting.ReadBasic.Chat`,
+  `OnlineMeetingParticipant.Read.Chat`, `OnlineMeetingNotification.Send.Chat` and
+  `ChannelMeeting.ReadBasic.Group` (eleven RSC permissions of sixteen allowed).
+  `appPackage/TEMPLATE_REVISION` is 2; the package generator has to fold it into the
+  app version, otherwise a template change republishes nothing. Agent apps installed
+  from the earlier package keep their consent set until `repairConsent` upgrades the
+  install; that is fine for agents that do not use meeting events. Participant events
+  additionally need a manual per-app setting in Developer Portal.
 - **Docs**: `docs/teams-meeting-apis.md` (findings per topic, each labelled live /
   docs / simulated / open, with sources) and `docs/facilitator-live-verification.md`
   (owner steps M1 to M6 and the scenario walk-through).
@@ -46,7 +58,8 @@ feature-detected, on an older kernel nothing changes.
   simulated Bot Framework, Bot Connector and Graph; the evaluation of 2026-11-18 added
   read-only evidence from the byte5 tenant. Still open: channel delivery, edit / delete
   / reaction events under RSC, the returned message id, the first-contact error bodies,
-  mention-free delivery in meeting chats and the consent upgrade (M1 to M6).
+  mention-free delivery in meeting chats, the meeting events and the consent upgrade
+  (M1 to M6).
 - Limits: the edit revision the adapter sends is a hint (the kernel assigns the stored
   one); a team channel can be
   checked only after the bot received an activity from it; `repairConsent` is not part
