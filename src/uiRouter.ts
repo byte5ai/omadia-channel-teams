@@ -26,6 +26,52 @@ export interface TeamsUiShellRouterOptions {
   /** Absolute URL path the pages fetch the catalogue from. Default
    *  `/p/channel-teams/catalog`. */
   readonly catalogUrl?: string;
+  /** Absolute URL path of the hub page, the tab that is always available.
+   *  Default `/p/channel-teams/hub`. */
+  readonly hubUrl?: string;
+}
+
+/** One entry of the tab picker on the configuration page. */
+export interface TabConfigChoice {
+  /** `<pluginId>::<path>`; also the tab's entity id source. */
+  value: string;
+  title: string;
+  href: string;
+}
+
+/** `value` of the choice that pins the plugin overview. */
+export const TAB_CONFIG_HUB_VALUE = 'channel-teams::/hub';
+
+/**
+ * The choices of the tab picker: every plugin surface of the catalogue, then
+ * ALWAYS the plugin overview.
+ *
+ * The list must never be empty. Teams opens this page when somebody adds the
+ * app to a channel, and its Save button stays disabled until the page calls
+ * `setValidityState(true)`. An agent without plugin surfaces used to produce
+ * an empty picker, so Save never enabled and the dialog looked like a failed
+ * install although the agent was added. The overview is a tab every agent
+ * has, so there is always something valid to save.
+ *
+ * Serialised into the page with `toString()`, so it must stay
+ * self-contained: no imports, no closures.
+ */
+export function tabConfigChoices(
+  routes: readonly { pluginId?: unknown; path?: unknown; title?: unknown; href?: unknown }[],
+  hubHref: string,
+): TabConfigChoice[] {
+  const choices: TabConfigChoice[] = [];
+  for (const route of routes) {
+    if (typeof route.pluginId !== 'string' || typeof route.href !== 'string' || route.href.length === 0) continue;
+    const path = typeof route.path === 'string' && route.path.length > 0 ? route.path : '/';
+    choices.push({
+      value: route.pluginId + '::' + path,
+      title: typeof route.title === 'string' && route.title.length > 0 ? route.title : route.pluginId,
+      href: route.href,
+    });
+  }
+  choices.push({ value: 'channel-teams::/hub', title: 'Plugin overview', href: hubHref });
+  return choices;
 }
 
 export interface TeamsCatalogRouterOptions {
@@ -121,6 +167,7 @@ export function createTeamsUiShellRouter(
 ): Router {
   const router = Router();
   const catalogUrl = opts.catalogUrl ?? '/p/channel-teams/catalog';
+  const hubUrl = opts.hubUrl ?? '/p/channel-teams/hub';
 
   router.get(
     '/hub',
@@ -209,18 +256,25 @@ export function createTeamsUiShellRouter(
         (function () {
           ${catalogLoaderJs(catalogUrl)}
           var log = function (m) { try { console.log('[tab-config]', m); } catch (e) {} };
+          var tabConfigChoices = ${tabConfigChoices.toString()};
           var start = function () {
             var select = document.getElementById('tab-config-select');
             omadiaLoadCatalog().then(function (result) {
               var t = result.teams;
-              result.routes.forEach(function (r) {
+              var choices = tabConfigChoices(result.routes, ${JSON.stringify(hubUrl)});
+              choices.forEach(function (c) {
                 var opt = document.createElement('option');
-                opt.value = r.pluginId + '::' + r.path;
-                opt.textContent = r.title;
-                opt.setAttribute('data-href', r.href);
+                opt.value = c.value;
+                opt.textContent = c.title;
+                opt.setAttribute('data-href', c.href);
                 select.appendChild(opt);
               });
-              document.getElementById('omadia-status').textContent = '';
+              // Only the overview is on offer: say so instead of showing a
+              // lone entry without explanation.
+              document.getElementById('omadia-status').textContent =
+                choices.length === 1
+                  ? 'This agent has no plugin surfaces yet. You can pin the plugin overview, or close this dialog.'
+                  : '';
               t.pages.config.registerOnSaveHandler(function (saveEvent) {
                 var raw = select.value || '';
                 var parts = raw.split('::');
@@ -232,6 +286,7 @@ export function createTeamsUiShellRouter(
                 log('save → ' + contentUrl);
                 t.pages.config.setConfig({
                   contentUrl: contentUrl,
+                  websiteUrl: contentUrl,
                   entityId: pluginId + ':' + routePath,
                   suggestedDisplayName: chosen.text,
                 }).then(function () {
@@ -241,6 +296,8 @@ export function createTeamsUiShellRouter(
                   saveEvent.notifyFailure(err && err.message);
                 });
               });
+              // The picker is never empty (see tabConfigChoices), so Save is
+              // enabled as soon as the page has loaded.
               t.pages.config.setValidityState(Boolean(select.value));
               select.addEventListener('change', function () {
                 t.pages.config.setValidityState(Boolean(select.value));
@@ -263,6 +320,10 @@ export function createTeamsUiShellRouter(
               <h1 class="text-xl font-semibold">Configure Tab</h1>
               <p class="text-sm text-slate-500">
                 Pick which plugin surface this Tab should show.
+              </p>
+              <p class="mt-2 text-sm text-slate-700" data-testid="tab-config-optional">
+                A tab is optional. The agent is already added and answers in
+                this team or chat; you can close this dialog without saving.
               </p>
             </header>
             <p id="omadia-status" class="text-sm text-slate-500">Loading…</p>

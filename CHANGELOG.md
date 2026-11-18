@@ -51,6 +51,12 @@ feature-detected, on an older kernel nothing changes.
   from the earlier package keep their consent set until `repairConsent` upgrades the
   install; that is fine for agents that do not use meeting events. Participant events
   additionally need a manual per-app setting in Developer Portal.
+- **Tab configuration page**: adding an agent app to a channel from the Teams app
+  dialog opens `/p/channel-teams/tab-config`. For an agent without plugin surfaces the
+  picker was empty, so Save never enabled and the install looked failed although it had
+  succeeded. The picker now always offers the plugin overview, Save is enabled, and the
+  page says that a tab is optional and the agent is already added. The app package
+  template is unchanged (`configurableTabs` stays; the tab catalogue needs it).
 - **Docs**: `docs/teams-meeting-apis.md` (findings per topic, each labelled live /
   docs / simulated / open, with sources) and `docs/facilitator-live-verification.md`
   (owner steps M1 to M6 and the scenario walk-through).

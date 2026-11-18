@@ -262,6 +262,8 @@ export {
 export {
   createTeamsCatalogRouter,
   createTeamsUiShellRouter,
+  TAB_CONFIG_HUB_VALUE,
+  tabConfigChoices,
   type DiscoveredUiRoute,
 } from './uiRouter.js';
 

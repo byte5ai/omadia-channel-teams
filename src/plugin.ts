@@ -958,6 +958,7 @@ export async function activate(
   }
   const teamsShellRouter = createTeamsUiShellRouter({
     catalogUrl: TEAMS_CATALOG_MOUNT_PATH,
+    hubUrl: `${TEAMS_UI_MOUNT_PATH}/hub`,
   });
   const teamsCatalogRouter = createTeamsCatalogRouter({
     webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',
