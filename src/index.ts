@@ -71,7 +71,73 @@ export {
   createTeamsTargetedSendAdapter,
   TeamsConversationReferenceCache,
   toSdkConversationType,
+  type ConversationPostOutcome,
 } from './teamsGroupPrimitives.js';
+// #2043 — native facilitators: authenticated inbound message events and the
+// live poll card. Re-exported for the tests under tests/.
+export {
+  plainMessageText,
+  platformAuthor,
+  readQuoteInfo,
+  receivingBotKey,
+  TeamsConversationMessages,
+  type TeamsConversationMessageSink,
+} from './teamsConversationMessages.js';
+export {
+  buildPollCard,
+  cardActionData,
+  parsePollAnswerValue,
+  POLL_ANSWER_VALUE_TYPE,
+  POLL_ANSWER_VERB,
+  validatePollInput,
+  type BuildPollCardInput,
+  type PollAnswerValue,
+  type PollOption,
+} from './teamsPollCard.js';
+export {
+  registerTeamsSendProviders,
+  stampChannel,
+  TEAMS_CHANNEL_TYPE,
+  type TeamsSendProviderDeps,
+} from './teamsKernelRegistration.js';
+export {
+  readTeamsAppTemplateInfo,
+  templateRevisionOfAppVersion,
+  type TeamsAppTemplateInfo,
+} from './teamsAppTemplate.js';
+export {
+  APP_CATALOG_GRAPH_PERMISSION,
+  CHANNEL_READ_ALL_RSC_PERMISSION,
+  CHAT_CONSENT_GRAPH_PERMISSION,
+  CHAT_INSTALL_READ_GRAPH_PERMISSION,
+  CHAT_READ_ALL_RSC_PERMISSION,
+  createTeamsReadinessProvider,
+  TEAM_INSTALL_READ_GRAPH_PERMISSION,
+  type ConsentRepairOutcome,
+  type TeamsReadinessDeps,
+  type TeamsReadinessGraph,
+  type TeamsReadinessProvider,
+} from './teamsReadiness.js';
+export {
+  createTeamsMeetingSource,
+  isTeamsMeetingChat,
+  MEETING_LIFECYCLE_RSC_PERMISSION,
+  MEETING_PARTICIPANT_RSC_PERMISSION,
+  type TeamsMeetingSourceDeps,
+} from './teamsMeetingSource.js';
+export {
+  MEETING_END_EVENT,
+  MEETING_PARTICIPANT_JOIN_EVENT,
+  MEETING_PARTICIPANT_LEAVE_EVENT,
+  MEETING_START_EVENT,
+  participantsOf,
+  sessionEventKind,
+  TeamsMeetingSessions,
+  type TeamsMeetingSessionSink,
+  type TeamsMeetingState,
+  type TeamsSessionEvent,
+  type TeamsSessionEventKind,
+} from './teamsMeetingSessions.js';
 export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 
@@ -208,6 +274,8 @@ export {
 export {
   createTeamsCatalogRouter,
   createTeamsUiShellRouter,
+  TAB_CONFIG_HUB_VALUE,
+  tabConfigChoices,
   type DiscoveredUiRoute,
 } from './uiRouter.js';
 

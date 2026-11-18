@@ -5,6 +5,8 @@ import {
   TeamsActivityHandler,
   TurnContext,
   type Activity,
+  type AdaptiveCardInvokeResponse,
+  type AdaptiveCardInvokeValue,
   type SigninStateVerificationQuery,
 } from 'botbuilder';
 import {
@@ -22,6 +24,9 @@ import type {
   TurnOrigin,
 } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
+import type { TeamsConversationMessages } from './teamsConversationMessages.js';
+import type { TeamsMeetingSessions } from './teamsMeetingSessions.js';
+import { parsePollAnswerValue } from './teamsPollCard.js';
 import { pickChatAgentForTurn } from './agentForTurn.js';
 
 /**
@@ -43,6 +48,10 @@ interface TurnAgentResolution {
    */
   readonly refused?: true;
 }
+
+/** #2043 / #44 — acknowledgement of a poll click. */
+export const POLL_ANSWER_SENT_TEXT = 'Antwort übermittelt.';
+export const POLL_NOT_ACTIVE_TEXT = 'Diese Abstimmung ist nicht mehr aktiv.';
 
 /** byte5ai/omadia#1598 — what a user sees when no agent serves the chat. */
 export const NO_AGENT_FOR_CONVERSATION_TEXT =
@@ -575,6 +584,114 @@ export class TeamsBot extends TeamsActivityHandler {
       this.handleMembershipChange(context, 'removed');
       await next();
     });
+
+    // #2043 — edits, deletions and reactions in a conversation this bot
+    // moderates become message events. Never a turn, never a reply.
+    this.onTeamsMessageEditEvent(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'edited');
+      await next();
+    });
+    this.onTeamsMessageUndeleteEvent(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'edited');
+      await next();
+    });
+    this.onTeamsMessageSoftDeleteEvent(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'deleted');
+      await next();
+    });
+    // #2043 / #44 — meeting start/end and participant join/leave become
+    // session events. One handler each; all four end in the same record.
+    const onMeetingEvent = async (context: TurnContext, next: () => Promise<void>): Promise<void> => {
+      this.groupPrimitives?.captureConversationReference(context);
+      const event = this.meetingSessions?.handle(context.activity);
+      console.error(
+        `[teams] meeting event name=${(context.activity.name ?? '-').trim()} conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… recorded=${String(event !== undefined)}`,
+      );
+      await next();
+    };
+    this.onTeamsMeetingStartEvent((_meeting, context, next) => onMeetingEvent(context, next));
+    this.onTeamsMeetingEndEvent((_meeting, context, next) => onMeetingEvent(context, next));
+    this.onTeamsMeetingParticipantsJoinEvent((_meeting, context, next) => onMeetingEvent(context, next));
+    this.onTeamsMeetingParticipantsLeaveEvent((_meeting, context, next) => onMeetingEvent(context, next));
+
+    // One handler for added AND removed: the activity carries both lists.
+    this.onMessageReaction(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'reaction');
+      await next();
+    });
+  }
+
+  /**
+   * #2043 / #44 — a poll click (`Action.Execute`) arrives as an
+   * `adaptiveCard/action` invoke. It is an answer for the engine, never a
+   * question for the agent: emit it and acknowledge. Whether the answer
+   * counts is the engine's decision; the acknowledgement only says whether
+   * anybody is listening.
+   */
+  protected override async onAdaptiveCardInvoke(
+    context: TurnContext,
+    invokeValue: AdaptiveCardInvokeValue,
+  ): Promise<AdaptiveCardInvokeResponse> {
+    if (!parsePollAnswerValue(invokeValue)) return super.onAdaptiveCardInvoke(context, invokeValue);
+    this.groupPrimitives?.captureConversationReference(context);
+    const isRecorded = this.conversationMessages?.emitCardAnswer(context.activity) === true;
+    return {
+      statusCode: 200,
+      type: 'application/vnd.microsoft.activity.message',
+      value: (isRecorded ? POLL_ANSWER_SENT_TEXT : POLL_NOT_ACTIVE_TEXT) as unknown as Record<string, unknown>,
+    };
+  }
+
+  /**
+   * #2043 / #44 — Microsoft's own samples show the meeting start and end
+   * event names with a leading space. The SDK dispatches on the exact name,
+   * so a padded name would fall through silently; it is trimmed first.
+   */
+  protected override async dispatchEventActivity(context: TurnContext): Promise<void> {
+    const name = context.activity.name;
+    if (typeof name === 'string' && name !== name.trim()) {
+      context.activity.name = name.trim();
+    }
+    await super.dispatchEventActivity(context);
+  }
+
+  private meetingSessions?: TeamsMeetingSessions;
+
+  attachMeetingSessions(sessions: TeamsMeetingSessions): void {
+    this.meetingSessions = sessions;
+  }
+
+  /** #2043 — late-bound like the proactive sender: present only when the
+   *  kernel offers `emitConversationMessage` + `isAllMessagesSubscribed`. */
+  private conversationMessages?: TeamsConversationMessages;
+
+  attachConversationMessages(messages: TeamsConversationMessages): void {
+    this.conversationMessages = messages;
+  }
+
+  private emitMessageLifecycleEvent(
+    context: TurnContext,
+    kind: 'edited' | 'deleted' | 'reaction',
+  ): void {
+    const activity = context.activity;
+    // Logged whether or not anybody is subscribed: which of these events
+    // Teams delivers for messages the bot only saw through RSC, and for
+    // reactions to other people's messages, is settled by reading this line
+    // (docs/facilitator-live-verification.md, step M2).
+    const eventType = (activity.channelData as { eventType?: unknown } | undefined)?.eventType;
+    console.error(
+      `[teams] ${activity.type ?? '-'} eventType=${typeof eventType === 'string' ? eventType : '-'} conv=${(activity.conversation?.id ?? '-').slice(0, 24)}… id=${activity.id ?? '-'} replyToId=${activity.replyToId ?? '-'}`,
+    );
+    const messages = this.conversationMessages;
+    if (!messages) return;
+    this.groupPrimitives?.captureConversationReference(context);
+    if (kind === 'edited') {
+      messages.emitEdited(activity);
+    } else if (kind === 'deleted') {
+      messages.emitDeleted(activity);
+    } else {
+      messages.emitReactions(activity);
+    }
   }
 
   /** #330 B2 — translate a Bot-Framework conversationUpdate into the SDK's
@@ -908,6 +1025,29 @@ export class TeamsBot extends TeamsActivityHandler {
     const isCardAction =
       typeof context.activity.value === 'object' &&
       context.activity.value !== null;
+    // #2043 — a bot that moderates this conversation receives every human
+    // message, and the ENGINE drives every turn there. So under a
+    // subscription the adapter only records: the message event goes out and
+    // no chat turn starts, not for a mention and not for a card click
+    // either. The subscription is per bot AND conversation: another bot in
+    // the same chat is not subscribed and keeps the gate below.
+    const isSubscribed = this.conversationMessages?.isSubscribed(context.activity) === true;
+    if (isSubscribed) {
+      if (isCardAction) {
+        this.conversationMessages?.emitCardAnswer(context.activity);
+      } else {
+        this.conversationMessages?.emitCreated(context.activity);
+      }
+      console.error(
+        `[teams] recorded for the engine, no turn conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… type=${conversationType}`,
+      );
+      return;
+    }
+    // A poll click is an answer for the engine, never a question for the
+    // agent: it ends here also when nobody is subscribed any more.
+    if (isCardAction && parsePollAnswerValue(context.activity.value)) {
+      return;
+    }
     if (!isPersonal && !isCardAction && !this.isMentioned(context.activity)) {
       const conversationIdShort =
         (context.activity.conversation?.id ?? '-').slice(0, 24);
@@ -2013,6 +2153,21 @@ export class TeamsBot extends TeamsActivityHandler {
           });
           return;
         }
+        // #2043 — an empty answer is never posted, and it is not answered
+        // with the "no answer came back" text either. The kernel empties the
+        // answer of the mention that opens a facilitation (the engine posts
+        // the handshake itself) and of every channel-started turn in a
+        // conversation an engine drives. Whatever else rides on that answer
+        // (follow-up buttons, recalled context, the AI disclosure) is chrome
+        // around a text that is not there, so none of it is posted.
+        const hasAttachments =
+          ((result as { attachments?: readonly unknown[] }).attachments?.length ?? 0) > 0;
+        if (isEmptyAnswerText(result.text, result.aiDisclosure?.text) && !result.interactive && !hasAttachments) {
+          console.error(
+            `[teams] empty answer not posted conv=${input.conversationId.slice(0, 24)}…`,
+          );
+          return;
+        }
         // Cross-session KG-recall — surface what the per-turn probe pulled
         // from PRIOR sessions as a read-only card ABOVE the answer (context
         // first), mirroring the web-ui RecalledContextCard. No-op when empty.
@@ -2131,6 +2286,19 @@ async function sendTopicAsk(
   const card = buildTopicAskCard({ previousSummary, originalMessage });
   const activity = MessageFactory.attachment(card);
   await context.sendActivity(activity);
+}
+
+/**
+ * `true` when an answer carries no text of its own: empty, whitespace, or
+ * nothing but the AI disclosure sentence the kernel folds into `text` for
+ * wire-only channels (#643). Teams marks the answer itself, so a text that
+ * is only that sentence is an empty answer.
+ */
+export function isEmptyAnswerText(text: string | undefined, disclosureLine?: string): boolean {
+  const own = (text ?? '').trim();
+  if (own.length === 0) return true;
+  const disclosure = disclosureLine?.trim() ?? '';
+  return disclosure.length > 0 && own === disclosure;
 }
 
 function truncate(value: string, max: number): string {

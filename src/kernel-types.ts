@@ -445,3 +445,250 @@ export interface TeamsConfigShim {
   ATTACHMENT_PUBLIC_BASE_URL?: string;
   ATTACHMENT_SIGNED_URL_TTL_SEC: number;
 }
+
+// ---------------------------------------------------------------------------
+// Native facilitators (byte5ai/omadia#2043) — mirror of the channel-sdk 0.3.0
+// / plugin-api 1.55.0 additions
+// ---------------------------------------------------------------------------
+//
+// Mirrored structurally for the reason given at the top of this file: the
+// plugin ships independently of the kernel and is compiled against whatever
+// SDK the host tree carries. Sources of truth:
+//   channel-sdk  src/conversationMessage.ts, src/sessionCapabilities.ts,
+//                src/targetedSend.ts, src/coreApi.ts
+//   plugin-api   src/conversationMessages.ts, src/sessionCapabilities.ts
+// Every CoreApi member below is OPTIONAL in the kernel contract and is
+// feature-detected in plugin.ts; a kernel without them leaves this plugin's
+// behaviour exactly as it was.
+
+/** A channel user as the kernel addresses one (`ChannelUserRef`, narrowed to
+ *  the Teams namespace this plugin emits). */
+export interface TeamsUserRef {
+  kind: 'teams-aad';
+  /** AAD object id when the activity carries one, else the channel id. */
+  id: string;
+  displayName?: string;
+  email?: string;
+}
+
+export type ConversationMessageKind =
+  | 'created'
+  | 'edited'
+  | 'deleted'
+  | 'reaction'
+  | 'card_answer';
+
+/** One inbound message event. This is not a turn: emitting it starts no
+ *  model call. */
+export interface ConversationMessageEvent {
+  /** The emitting channel plugin's catalog id. */
+  channelId: string;
+  channelType: string;
+  conversationId: string;
+  conversationType?: 'direct' | 'group';
+  /** The bot identity that received the event (`28:<appId>`). */
+  receivedByChannelKey: string;
+  /** Platform message id; for 'reaction' / 'card_answer' the message reacted
+   *  to / the card answered. */
+  messageId: string;
+  /** 0 for the original; incremented per platform edit. */
+  revision: number;
+  kind: ConversationMessageKind;
+  /** The platform-verified sender. Never derived from message text. */
+  author: TeamsUserRef;
+  tenantId?: string;
+  /** Plain text, mentions resolved, markup stripped. Absent for 'deleted'. */
+  text?: string;
+  replyToMessageId?: string;
+  quoted?: boolean;
+  forwarded?: boolean;
+  reaction?: { name: string; removed: boolean };
+  /** `answererVerified: false` when the platform did not state who clicked
+   *  (no verified user id on the activity). */
+  cardAnswer?: { cardId: string; value: unknown; answererVerified?: boolean };
+  /** ISO 8601 timestamp of the platform event. */
+  occurredAt: string;
+  /** The original platform event, opaque to the kernel and not stored. */
+  rawEvent?: unknown;
+}
+
+/** The readiness codes the kernel contract documents (plugin-api
+ *  `ChannelReadinessCode`). */
+export type ChannelReadinessCode =
+  | 'no_identity'
+  | 'app_not_installed'
+  | 'consent_missing'
+  | 'cannot_post'
+  | 'graph_forbidden'
+  | 'graph_error'
+  | 'graph_unavailable'
+  | 'team_unknown'
+  | 'unsupported_conversation'
+  | 'package_outdated';
+
+export interface ChannelReadinessIssue {
+  /** One of {@link ChannelReadinessCode}, or a code a newer channel added. */
+  code: ChannelReadinessCode | (string & {});
+  /** Precise, operator-readable reason. */
+  message: string;
+}
+
+export interface ChannelReadinessReport {
+  ready: boolean;
+  installed: boolean;
+  /** Teams: RSC `ChatMessage.Read.Chat` consented in this chat. */
+  canReadAllMessages: boolean;
+  canPost: boolean;
+  /** Empty when `ready`. One entry per thing that is missing. */
+  missing: readonly ChannelReadinessIssue[];
+  /** Set by the kernel: `false` when no channel checked. A provider's own
+   *  report never sets it. */
+  verified?: boolean;
+}
+
+/** Outcome of a consent repair (plugin-api `ChannelConsentRepairOutcome`). */
+export type ChannelConsentRepairOutcome =
+  | { outcome: 'upgraded'; installationId?: string; permissions?: readonly string[] }
+  | { outcome: 'not_needed' }
+  | { outcome: 'failed'; code: ChannelReadinessCode | 'unsupported' | (string & {}); message: string };
+
+/** RETURNS what is missing instead of throwing. */
+export interface ChannelReadinessProvider {
+  channelType: string;
+  check(conversationId: string, opts: { asChannelKey: string }): Promise<ChannelReadinessReport>;
+  /** Optional: repair missing consent for that identity in the conversation
+   *  (Teams: upgrade the app installation). RETURNS a failure, never throws. */
+  repairConsent?(conversationId: string, opts: { asChannelKey: string }): Promise<ChannelConsentRepairOutcome>;
+}
+
+export type SessionEventKind = 'session_started' | 'session_ended' | 'participant_joined' | 'participant_left';
+
+/** A meeting lifecycle event (channel-sdk `SessionEvent`). The adapter emits
+ *  every one it receives, once per receiving bot; the kernel filters by
+ *  subscription and removes the duplicates. */
+export interface SessionEvent {
+  channelId: string;
+  channelType: string;
+  conversationId: string;
+  /** The live session (meeting) the event is about. */
+  sessionRef: string;
+  kind: SessionEventKind;
+  /** Present for 'participant_joined' / 'participant_left'. */
+  participants?: readonly TeamsUserRef[];
+  /** ISO 8601 timestamp of the platform event. */
+  occurredAt: string;
+}
+
+export type SessionInputCapability =
+  | 'text'
+  | 'message_edits'
+  | 'reactions'
+  | 'card_answers'
+  | 'presence'
+  | 'hand_raise'
+  | 'transcribed_speech'
+  | 'shared_documents';
+
+export type SessionOutputCapability =
+  | 'text'
+  | 'mentions'
+  | 'cards'
+  | 'polls'
+  | 'private_messages'
+  | 'pinned_surface'
+  | 'voice'
+  | 'screen';
+
+export interface SessionCapabilitySnapshot {
+  channelType: string;
+  conversationId: string;
+  /** The live session (meeting) the snapshot is about; absent for the
+   *  conversation's asynchronous baseline. */
+  sessionRef?: string;
+  modality: 'chat' | 'online' | 'hybrid';
+  inputs: readonly SessionInputCapability[];
+  outputs: readonly SessionOutputCapability[];
+  /** ISO 8601. */
+  capturedAt: string;
+}
+
+/** `undefined` when the provider knows nothing about the conversation. */
+export interface MeetingSourceProvider {
+  channelType: string;
+  snapshot(
+    conversationId: string,
+    opts: { asChannelKey?: string; sessionRef?: string },
+  ): Promise<SessionCapabilitySnapshot | undefined>;
+}
+
+/** A person to @mention; `text` occurs in the message text. */
+export interface TargetedMention {
+  user: TeamsUserRef | { kind: string; id: string; displayName?: string; email?: string };
+  /** The display text standing in the message (e.g. '@Anna Köhler'). */
+  text: string;
+}
+
+/** A live poll riding on a message (`TargetedMessage.poll`, channel-sdk
+ *  0.3.0 / kernel K3). The kernel validates it before the provider sees it. */
+export interface TargetedPoll {
+  /** 1..128 characters; round-tripped as `cardAnswer.cardId`. */
+  pollId: string;
+  question: string;
+  /** 2..6 options, ids unique. */
+  options: readonly { id: string; label: string }[];
+  hint?: string;
+}
+
+/**
+ * What a send provider declares it implements (channel-sdk
+ * `SendProviderCapabilities`). The kernel does not trust a provider to honour
+ * a send option it did not declare: without `asChannelKey: true` it never
+ * calls the provider for an own-identity send and answers `no_identity`.
+ * Absent = the provider implements none.
+ */
+export interface SendProviderCapabilities {
+  /** Honours `opts.asChannelKey`: posts as exactly that identity or returns
+   *  `unreachable`, never as another one. */
+  asChannelKey?: boolean;
+  /** Turns `message.mentions` into platform mentions. */
+  mentions?: boolean;
+  /** Posts `message.poll` as a poll and refuses an invalid one. */
+  poll?: boolean;
+}
+
+/** Third argument of `TargetedSendProvider.sendToUser`. */
+export interface TargetedSendOptions {
+  /** Identity the DM must come from (`28:<appId>`). Never substituted. */
+  asChannelKey?: string;
+}
+
+/** `TargetedDeliveryOutcome` including the 0.3.0 additions (`messageId`,
+ *  `cardMessageId`, `app_not_installed`, `blocked`). A poll may go out as two
+ *  messages: `cardMessageId` is the card, and the `messageId` of every
+ *  `card_answer` event for it. */
+export type FacilitatorDeliveryOutcome =
+  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string }
+  | {
+      outcome: 'unreachable';
+      code:
+        | 'no_binding'
+        | 'user_not_found'
+        | 'channel_error'
+        | 'not_permitted'
+        | 'app_not_installed'
+        | 'blocked';
+      message: string;
+    };
+
+/** The CoreApi members this plugin feature-detects for #2043. */
+export interface NativeFacilitatorCoreApi {
+  emitConversationMessage?(event: ConversationMessageEvent): void;
+  /** Synchronous and kernel-cached; `false` for anything not positively
+   *  subscribed. Absent means the mention gate always applies. */
+  isAllMessagesSubscribed?(channelType: string, conversationId: string, channelKey: string): boolean;
+  registerReadinessProvider?(channelId: string, provider: ChannelReadinessProvider): void;
+  registerMeetingSourceProvider?(channelId: string, provider: MeetingSourceProvider): void;
+  emitSessionCapabilities?(snapshot: SessionCapabilitySnapshot): void;
+  /** Meeting start / end and participants joining / leaving (kernel K5). */
+  emitSessionEvent?(event: SessionEvent): void;
+}

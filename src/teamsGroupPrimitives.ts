@@ -11,24 +11,63 @@ import type {
   ConversationRosterProvider,
   ConversationSendProvider,
   ConversationType,
-  TargetedDeliveryOutcome,
   TargetedMessage,
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
 
-import type { TeamsProactiveSend } from './messagesRouter.js';
+import type { TeamsOpenDirectConversation, TeamsProactiveSend } from './messagesRouter.js';
+import {
+  buildOutgoingActivity,
+  buildPollActivity,
+  classifyDirectSendError,
+  isEntraObjectId,
+  retryTransient,
+  type RetryOptions,
+  readPollRequest,
+  renderMentions,
+} from './teamsOutboundMessage.js';
 import { parseTeamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
-import type { ChatParticipant } from './kernel-types.js';
+import type {
+  ChatParticipant,
+  FacilitatorDeliveryOutcome,
+  SendProviderCapabilities,
+  TargetedMention,
+  TargetedSendOptions,
+} from './kernel-types.js';
 
 const MAX_CACHED_REFERENCES = 500;
 
+/** #2043 — key under which a channel's team (AAD group id) rides in the
+ *  PERSISTED reference. The reference column is the only state of this
+ *  plugin that survives a restart, and the readiness check of a channel
+ *  needs the team before any new activity arrives. Stripped again on load:
+ *  the in-memory reference stays a plain Bot Framework reference. */
+const PERSISTED_TEAM_ID_KEY = 'omadiaTeamAadGroupId';
+const AAD_GROUP_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Splits a persisted reference into the plain reference and the team id it
+ *  may carry. A value that is not an AAD group id is dropped, never used. */
+function splitPersistedReference(persisted: Partial<ConversationReference>): {
+  ref: Partial<ConversationReference>;
+  teamId?: string;
+} {
+  const { [PERSISTED_TEAM_ID_KEY]: stored, ...ref } = persisted as Record<string, unknown>;
+  const teamId = typeof stored === 'string' && AAD_GROUP_ID_PATTERN.test(stored) ? stored : undefined;
+  return { ref: ref as Partial<ConversationReference>, ...(teamId ? { teamId } : {}) };
+}
+
 /** Teams' native `conversation.conversationType` → the SDK's binary notion.
- *  'personal' is a 1:1; 'groupChat' and 'channel' are groups; unknown stays
- *  undefined (consumers treat unknown as direct — no group semantics without
- *  a positive statement). */
+ *  'personal' is the bot's own 1:1 with a person; 'groupChat' and 'channel'
+ *  are groups; unknown stays undefined (consumers treat unknown as direct —
+ *  no group semantics without a positive statement).
+ *
+ *  'group' says NOTHING about how many people are in the chat. A 1:1 between
+ *  two people with an agent app installed (`19:…@unq.gbl.spaces`, Graph
+ *  `chatType: oneOnOne`) arrives as `groupChat` (seen live, 2026-11-18). Who
+ *  is in a chat comes from the roster, never from this value. */
 export function toSdkConversationType(teamsType: string | undefined): ConversationType | undefined {
   if (teamsType === 'personal') return 'direct';
   if (teamsType === 'groupChat' || teamsType === 'channel') return 'group';
@@ -71,6 +110,17 @@ export class TeamsConversationReferenceCache {
   private readonly lastWritten = new Map<string, string>();
   private persistence?: TeamsConversationRefPersistence;
   private defaultBotAppId?: string;
+  /** #2043 — `${botAppId}|${userId}` → the 1:1 conversation of that bot with
+   *  that user (both the AAD object id and the Teams id are indexed). */
+  private readonly directConversations = new Map<string, string>();
+  /** #2043 — the regional connector endpoint each bot was last reached on. */
+  private readonly serviceUrls = new Map<string, string>();
+  /** #2043 — channel conversation → AAD group id of its team
+   *  (`channelData.team.aadGroupId`); Graph addresses a team by that id. */
+  private readonly teamIds = new Map<string, string>();
+  /** #2043 — `${botAppId}|${conversationId}` → did the last proactive post
+   *  of that bot into that conversation succeed? */
+  private readonly postResults = new Map<string, { ok: boolean; detail?: string }>();
 
   /** #330 field report — optional write-through store (kernel graph table
    *  `teams_conversation_refs`) so references survive restarts. Writes are
@@ -148,18 +198,98 @@ export class TeamsConversationReferenceCache {
     // Map.delete+set keeps insertion order = recency, making the FIFO an LRU.
     this.refs.delete(key);
     const teamsType = context.activity.conversation?.conversationType;
+    const teamAadGroupId = (context.activity.channelData as { team?: { aadGroupId?: unknown } } | undefined)?.team
+      ?.aadGroupId;
+    if (typeof teamAadGroupId === 'string' && teamAadGroupId.length > 0) {
+      this.teamIds.set(conversationId, teamAadGroupId);
+    }
+    if (botAppId !== undefined) {
+      if (typeof ref.serviceUrl === 'string') this.serviceUrls.set(botAppId, ref.serviceUrl);
+      if (teamsType === 'personal') {
+        const from = context.activity.from;
+        this.rememberDirectConversation(botAppId, [from?.aadObjectId, from?.id], conversationId);
+      }
+    }
     this.refs.set(key, { ref, ...(teamsType ? { teamsType } : {}) });
     if (this.persistence) {
-      const serialized = JSON.stringify({ ref, teamsType: teamsType ?? null });
+      // The team of a channel is written with the reference so that it is
+      // known again after a restart (see PERSISTED_TEAM_ID_KEY).
+      const teamId = this.teamIds.get(conversationId);
+      const persistedRef = teamId ? { ...ref, [PERSISTED_TEAM_ID_KEY]: teamId } : ref;
+      const serialized = JSON.stringify({ ref: persistedRef, teamsType: teamsType ?? null });
       if (this.lastWritten.get(key) !== serialized) {
         this.lastWritten.set(key, serialized);
-        void this.persistence.save(conversationId, ref, teamsType, botAppId).catch(() => {
+        void this.persistence.save(conversationId, persistedRef, teamsType, botAppId).catch(() => {
           // Next capture retries: forgetting the marker keeps save attempts alive.
           this.lastWritten.delete(key);
         });
       }
     }
     this.evictOverflow();
+  }
+
+  /** #2043 — remember which conversation is the 1:1 of `botAppId` with a
+   *  user. Bounded like the reference cache. */
+  rememberDirectConversation(
+    botAppId: string,
+    userIds: readonly (string | undefined)[],
+    conversationId: string,
+  ): void {
+    const bot = normalizeTeamsBotAppId(botAppId);
+    if (bot === undefined) return;
+    for (const userId of userIds) {
+      if (!userId) continue;
+      const key = `${bot}|${userId.toLowerCase()}`;
+      this.directConversations.delete(key);
+      this.directConversations.set(key, conversationId);
+    }
+    while (this.directConversations.size > MAX_CACHED_REFERENCES * 2) {
+      const oldest = this.directConversations.keys().next().value;
+      if (oldest === undefined) break;
+      this.directConversations.delete(oldest);
+    }
+  }
+
+  /** #2043 — the 1:1 reference of exactly this bot with this user, or
+   *  `undefined`. Never another bot's conversation with the same user. */
+  getDirect(botAppId: string, userId: string): { ref: Partial<ConversationReference>; teamsType?: string } | undefined {
+    const bot = normalizeTeamsBotAppId(botAppId);
+    if (bot === undefined) return undefined;
+    const conversationId = this.directConversations.get(`${bot}|${userId.toLowerCase()}`);
+    if (!conversationId) return undefined;
+    return this.refs.get(TeamsConversationReferenceCache.key(conversationId, bot));
+  }
+
+  /** #2043 — AAD group id of the team a channel conversation belongs to.
+   *  Known once an activity from that channel was seen in this process, or
+   *  once `getOrLoad` read the persisted reference of that channel (after a
+   *  restart no activity has arrived yet). */
+  teamIdFor(conversationId: string): string | undefined {
+    return this.teamIds.get(conversationId);
+  }
+
+  /** #2043 — record how a proactive post of `botAppId` into a conversation
+   *  ended. "Can this bot post here" has no read-only answer in Teams; the
+   *  last real send is the evidence. */
+  recordPostResult(conversationId: string, botAppId: string | undefined, ok: boolean, detail?: string): void {
+    const bot = normalizeTeamsBotAppId(botAppId) ?? '';
+    const key = `${bot}|${conversationId}`;
+    this.postResults.delete(key);
+    this.postResults.set(key, { ok, ...(detail ? { detail } : {}) });
+    if (this.postResults.size > MAX_CACHED_REFERENCES) {
+      const oldest = this.postResults.keys().next().value;
+      if (oldest !== undefined) this.postResults.delete(oldest);
+    }
+  }
+
+  lastPostResult(conversationId: string, botAppId: string): { ok: boolean; detail?: string } | undefined {
+    return this.postResults.get(`${normalizeTeamsBotAppId(botAppId) ?? ''}|${conversationId}`);
+  }
+
+  /** #2043 — the connector endpoint this bot was last reached on. */
+  serviceUrlFor(botAppId: string): string | undefined {
+    const bot = normalizeTeamsBotAppId(botAppId);
+    return bot === undefined ? undefined : this.serviceUrls.get(bot);
   }
 
   get(conversationId: string, botAppId?: string): { ref: Partial<ConversationReference>; teamsType?: string } | undefined {
@@ -186,8 +316,10 @@ export class TeamsConversationReferenceCache {
     // capture() supersedes — see resolveBotKeyPart). Seeding under a key
     // capture() never writes would split one bot across two cache slots.
     const owningBotAppId = normalizeTeamsBotAppId(persisted.botAppId) ?? effective;
+    const { ref, teamId } = splitPersistedReference(persisted.ref);
+    if (teamId && !this.teamIds.has(conversationId)) this.teamIds.set(conversationId, teamId);
     const entry = {
-      ref: persisted.ref,
+      ref,
       ...(persisted.teamsType ? { teamsType: persisted.teamsType } : {}),
     };
     const key = TeamsConversationReferenceCache.key(conversationId, owningBotAppId ?? '');
@@ -259,20 +391,146 @@ export function createTeamsRosterAdapter(deps: {
   };
 }
 
+/** What a DM "as bot X" needs beyond the legacy path (#2043). */
+export interface TeamsDirectSendDeps {
+  refs: Pick<TeamsConversationReferenceCache, 'getDirect' | 'rememberDirectConversation' | 'serviceUrlFor'>;
+  openDirectConversation: TeamsOpenDirectConversation;
+  /** Display name of a CONFIGURED bot; `undefined` for an unknown app id. */
+  botLabel(botAppId: string): string | undefined;
+}
+
 /**
- * SDK targeted-send provider (#330 B3). The kernel resolves the Principal and
- * hands over ONE user plus the cached per-user conversation reference from the
- * Conductor channel-binding store (captured on the user's inbound turns). No
- * reference = `no_binding` — creating a brand-new 1:1 conversation requires
- * the Teams app to be installed for that user and is a deliberate non-goal of
- * this slice; the outcome names the gap instead of hiding it.
+ * SDK targeted-send provider (#330 B3, #2043).
+ *
+ * Without `asChannelKey` the behaviour is the one of #330: the kernel hands
+ * over the cached per-user conversation reference, and no reference means
+ * `no_binding`.
+ *
+ * With `asChannelKey` (a facilitator's private reminder) the DM comes from
+ * exactly that bot or not at all:
+ *   1. the kernel's reference, if it belongs to that bot;
+ *   2. the 1:1 this bot already has with the user (captured on the user's
+ *      own messages to it);
+ *   3. first contact: the bot opens the 1:1 itself, which Teams allows when
+ *      its app is installed for the user. This is also how the 1:1 is found
+ *      again after a restart.
+ * `app_not_installed` and `blocked` are returned as outcomes so the caller
+ * can fall back to a neutral reminder in the group. Another bot's reference
+ * with the same user is never used.
  */
 export function createTeamsTargetedSendAdapter(deps: {
   sendProactive: TeamsProactiveSend;
+  direct?: TeamsDirectSendDeps;
+  retry?: RetryOptions;
 }): TargetedSendProvider {
+  type Target = Parameters<TargetedSendProvider['sendToUser']>[0];
+
+  const sendOnReference = async (
+    reference: Partial<ConversationReference>,
+    text: string,
+    botAppId: string | undefined,
+  ): Promise<string | undefined> => {
+    let messageId: string | undefined;
+    await deps.sendProactive(
+      reference,
+      async (turnContext) => {
+        const sent = await retryTransient(
+          () => turnContext.sendActivity(buildOutgoingActivity({ text })),
+          deps.retry,
+        );
+        messageId = sent?.id;
+      },
+      ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
+    );
+    return messageId;
+  };
+
+  const delivered = (messageId: string | undefined): FacilitatorDeliveryOutcome => ({
+    outcome: 'delivered',
+    ...(messageId ? { messageId } : {}),
+  });
+
+  const sendAsBot = async (
+    target: Target,
+    text: string,
+    asChannelKey: string,
+  ): Promise<FacilitatorDeliveryOutcome> => {
+    const botAppId = parseTeamsBotKey(asChannelKey);
+    const botLabel = botAppId ? deps.direct?.botLabel(botAppId) : undefined;
+    if (!botAppId || !deps.direct || botLabel === undefined) {
+      return {
+        outcome: 'unreachable',
+        code: 'not_permitted',
+        message: botAppId
+          ? 'the requested sender is not a bot configured in the Teams channel - refusing to send the direct message as another bot'
+          : `'${asChannelKey}' is not a Teams bot identity key (expected '${TEAMS_BOT_KEY_PREFIX}<appId>') - refusing to send under an unresolved sender`,
+      };
+    }
+    const direct = deps.direct;
+    // The Entra object id only: a Teams user id (`29:…`) is per bot and
+    // would address nobody for this one.
+    const userId =
+      target.userRef?.kind === 'teams-aad' && isEntraObjectId(target.userRef.id) ? target.userRef.id : undefined;
+
+    const kernelRef = target.conversationRef as Partial<ConversationReference> | null | undefined;
+    const kernelRefBot = kernelRef?.bot?.id ? parseTeamsBotKey(kernelRef.bot.id) : undefined;
+    const known =
+      (kernelRef && kernelRefBot === botAppId ? kernelRef : undefined) ??
+      (userId ? direct.refs.getDirect(botAppId, userId)?.ref : undefined);
+    try {
+      if (known) return delivered(await sendOnReference(known, text, botAppId));
+      if (!userId) {
+        return {
+          outcome: 'unreachable',
+          code: 'no_binding',
+          message: `no Entra object id is known for '${target.principalId}', so '${botLabel}' cannot open a direct conversation`,
+        };
+      }
+      let messageId: string | undefined;
+      let isOpened = false;
+      const serviceUrl = direct.refs.serviceUrlFor(botAppId);
+      const open = (): Promise<void> =>
+        direct.openDirectConversation(
+          botAppId,
+          { userId, ...(serviceUrl ? { serviceUrl } : {}) },
+          async (turnContext) => {
+            isOpened = true;
+            const conversationId = turnContext.activity.conversation?.id;
+            if (conversationId) direct.refs.rememberDirectConversation(botAppId, [userId], conversationId);
+            const sent = await retryTransient(
+              () => turnContext.sendActivity(buildOutgoingActivity({ text })),
+              deps.retry,
+            );
+            messageId = sent?.id;
+          },
+        );
+      // Creating the conversation is retried while nothing was sent; once the
+      // conversation is open only the send itself is (above), so a retry can
+      // never post the message twice.
+      await retryTransient(open, deps.retry, () => !isOpened);
+      return delivered(messageId);
+    } catch (err) {
+      const outcome = classifyDirectSendError(err, botLabel);
+      // Log-safe: the bot's display name and the outcome code, no ids.
+      console.error(`[teams] direct message as '${botLabel}' not delivered: ${outcome.code}`);
+      return outcome;
+    }
+  };
+
   return {
     channelType: 'teams',
-    async sendToUser(target, message) {
+    // Declared, because the kernel only hands an own-identity DM to a
+    // provider that says it honours `asChannelKey`. True only when the per-bot
+    // path is wired: without it a named sender is refused, never substituted,
+    // but there would be nothing to deliver with either.
+    supports: { asChannelKey: deps.direct !== undefined } satisfies SendProviderCapabilities,
+    // Rest tuple for the same reason as `sendToConversation` below: the third
+    // argument exists from channel-sdk 0.3.0 on.
+    async sendToUser(
+      ...args: [target: Target, message: TargetedMessage, opts?: TargetedSendOptions]
+    ): Promise<FacilitatorDeliveryOutcome> {
+      const [target, message, opts] = args;
+      if (opts?.asChannelKey !== undefined) return sendAsBot(target, message.text, opts.asChannelKey);
       if (target.conversationRef === undefined || target.conversationRef === null) {
         return {
           outcome: 'unreachable',
@@ -281,10 +539,9 @@ export function createTeamsTargetedSendAdapter(deps: {
         };
       }
       try {
-        await deps.sendProactive(target.conversationRef as Partial<ConversationReference>, async (turnContext) => {
-          await turnContext.sendActivity({ type: 'message', text: message.text });
-        });
-        return { outcome: 'delivered' };
+        return delivered(
+          await sendOnReference(target.conversationRef as Partial<ConversationReference>, message.text, undefined),
+        );
       } catch (err) {
         return {
           outcome: 'unreachable',
@@ -298,6 +555,16 @@ export function createTeamsTargetedSendAdapter(deps: {
 
 
 /**
+ * The contract's delivery outcome for a group post. `cardMessageId` is the
+ * card's own message, the id poll answers name. One addition is not in the
+ * contract: an `unreachable` outcome carries `messageId` when the text was
+ * posted and only the card failed, so the caller does not post the text twice.
+ */
+export type ConversationPostOutcome =
+  | Extract<FacilitatorDeliveryOutcome, { outcome: 'delivered' }>
+  | (Extract<FacilitatorDeliveryOutcome, { outcome: 'unreachable' }> & { messageId?: string });
+
+/**
  * SDK conversation-send provider (#330 C3b - the Facilitator's group nudges).
  * Delivers INTO a conversation via the proactive path on the cached
  * per-conversation reference. The kernel has already scope-checked the caller
@@ -307,6 +574,10 @@ export function createTeamsTargetedSendAdapter(deps: {
 export function createTeamsConversationSendAdapter(deps: {
   refs: TeamsConversationReferenceCache;
   sendProactive: TeamsProactiveSend;
+  /** #2043 — resolves a mentioned person to their member id in the chat.
+   *  Without it mentions stay plain text. */
+  roster?: Pick<TeamsRosterProvider, 'list'>;
+  retry?: RetryOptions;
   // The declared return type is a SUPERSET of the SDK interface, for the same
   // reason the send method takes a rest tuple: this plugin ships independently
   // and is compiled against whatever `@omadia/channel-sdk` is installed, which
@@ -314,10 +585,21 @@ export function createTeamsConversationSendAdapter(deps: {
   // assignable to the narrower contract without a cast and without a version
   // floor; a kernel that does not know about it simply never calls it.
 }): ConversationSendProvider & {
+  supports: SendProviderCapabilities;
   sendTyping(conversationId: string, opts?: { asChannelKey?: string }): Promise<void>;
 } {
   return {
     channelType: 'teams',
+    // Declared, because the kernel only hands an own-identity post, mentions
+    // or a poll to a provider that says it implements them:
+    //   asChannelKey  the post goes out as exactly that bot or not at all
+    //   mentions      resolved against the chat roster, so only with one
+    //   poll          posted as a card; an invalid poll is refused
+    supports: {
+      asChannelKey: true,
+      mentions: deps.roster !== undefined,
+      poll: true,
+    } satisfies SendProviderCapabilities,
     // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
     // independently of the kernel and is compiled against whatever
     // `@omadia/channel-sdk` is installed. On an SDK that predates
@@ -328,7 +610,7 @@ export function createTeamsConversationSendAdapter(deps: {
     // behaves exactly as before.
     async sendToConversation(
       ...args: [conversationId: string, message: TargetedMessage, opts?: { asChannelKey?: string }]
-    ): Promise<TargetedDeliveryOutcome> {
+    ): Promise<ConversationPostOutcome> {
       const [conversationId, message, opts] = args;
       // WHICH BOT SAYS IT.
       //
@@ -376,20 +658,71 @@ export function createTeamsConversationSendAdapter(deps: {
         };
       }
 
+      // #2043 — a poll that cannot be rendered is refused before anything is
+      // posted: half a poll in the chat is worse than a named failure.
+      const pollRequest = readPollRequest(message.poll);
+      if (pollRequest && 'problem' in pollRequest) {
+        return { outcome: 'unreachable', code: 'channel_error', message: `invalid poll: ${pollRequest.problem}` };
+      }
+      const mentions: readonly TargetedMention[] | undefined = message.mentions;
+
+      // Text and card go out as SEPARATE activities and each returns its own
+      // id (a combined activity may be split by Teams and then returns none).
+      // `messageId` is the text message, or the card when there is no text;
+      // `cardMessageId` is the card, the id poll answers refer to.
+      let textMessageId: string | undefined;
+      let cardMessageId: string | undefined;
+      let isTextPosted = false;
+      const hasText = message.text.trim().length > 0;
+      const senderAppId = botAppId ?? refBotAppId;
       try {
         await deps.sendProactive(
           cached.ref,
           async (turnContext) => {
-            await turnContext.sendActivity({ type: 'message', text: message.text });
+            if (hasText) {
+              const members =
+                mentions && mentions.length > 0 && deps.roster ? await deps.roster.list(turnContext) : [];
+              // Resolved from the roster by Entra object id: only a member of
+              // this chat can be mentioned, and the entity text equals the
+              // `<at>…</at>` token in the body exactly.
+              const rendered = renderMentions(message.text, mentions, (userId) => {
+                const wanted = userId.toLowerCase();
+                return members.find((member) => member.aadObjectId?.toLowerCase() === wanted)?.channelUserId;
+              });
+              const sent = await retryTransient(
+                () => turnContext.sendActivity(buildOutgoingActivity({ text: rendered.text, entities: rendered.entities })),
+                deps.retry,
+              );
+              textMessageId = sent?.id;
+              isTextPosted = true;
+            }
+            if (pollRequest) {
+              const sent = await retryTransient(
+                () => turnContext.sendActivity(buildPollActivity(pollRequest.poll)),
+                deps.retry,
+              );
+              cardMessageId = sent?.id;
+            }
           },
           ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
         );
-        return { outcome: 'delivered' };
+        deps.refs.recordPostResult(conversationId, senderAppId, true);
+        const messageId = textMessageId ?? cardMessageId;
+        return {
+          outcome: 'delivered',
+          ...(messageId ? { messageId } : {}),
+          ...(cardMessageId ? { cardMessageId } : {}),
+        };
       } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        deps.refs.recordPostResult(conversationId, senderAppId, false, detail);
         return {
           outcome: 'unreachable',
           code: 'channel_error',
-          message: err instanceof Error ? err.message : String(err),
+          // Never silent about half a post: the caller must not send the
+          // text a second time when only the card failed.
+          message: isTextPosted ? `the text was posted but the card was not: ${detail}` : detail,
+          ...(isTextPosted && textMessageId ? { messageId: textMessageId } : {}),
         };
       }
     },

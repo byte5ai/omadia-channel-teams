@@ -25,6 +25,13 @@ import {
 import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
+import { TeamsConversationMessages } from './teamsConversationMessages.js';
+import { createTeamsReadinessProvider } from './teamsReadiness.js';
+import { readTeamsAppTemplateInfo } from './teamsAppTemplate.js';
+import { registerTeamsSendProviders, stampChannel } from './teamsKernelRegistration.js';
+import { createTeamsMeetingSource } from './teamsMeetingSource.js';
+import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
+import type { NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
 /**
@@ -59,9 +66,7 @@ import {
 } from './teamsCardFeatures.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import {
-  createTeamsConversationSendAdapter,
   createTeamsRosterAdapter,
-  createTeamsTargetedSendAdapter,
   TeamsConversationReferenceCache,
 } from './teamsGroupPrimitives.js';
 import { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
@@ -468,12 +473,18 @@ export async function activate(
       `teams: ${String(teamsBots.length)} bots configured without a graph pool — conversation references are cache-only and not isolated across restarts`,
     );
   }
+  // #2043 / #44 — set further down, once the meeting source exists.
+  let announceCapabilities: ((conversationId: string, asChannelKey: string) => void) | undefined;
   const groupPrimitives = {
     captureConversationReference: (turnCtx: Parameters<TeamsConversationReferenceCache['capture']>[0]): void =>
       conversationRefs.capture(turnCtx),
     emitMembershipEvent: (event: Parameters<NonNullable<CoreApi['emitConversationEvent']>>[0]): void => {
       // The catalog id is authoritative here — the bot cannot know it.
       core.emitConversationEvent?.({ ...event, channelId: ctx.agentId });
+      if (event.kind === 'bot_added') {
+        const recipientId = (event.rawEvent as { recipient?: { id?: unknown } } | undefined)?.recipient?.id;
+        if (typeof recipientId === 'string') announceCapabilities?.(event.conversationId, recipientId);
+      }
     },
   };
 
@@ -700,7 +711,7 @@ export async function activate(
   // `/api/messages` + `/api/teams/messages` alias the default bot
   // (teams_bots[0], i.e. the shimmed legacy bot on scalar deployments);
   // `/api/teams/:botSlug/messages` hits exactly that bot's credentials.
-  const { router, sendProactive } = createTeamsRouter({
+  const { router, sendProactive, openDirectConversation } = createTeamsRouter({
     bot,
     bots: botCredentials,
   });
@@ -708,6 +719,24 @@ export async function activate(
   // Card-click early-ack (#330 field report): the bot needs the proactive
   // sender to detach long orchestrator turns from Action.Submit HTTP turns.
   bot.attachProactiveSend(sendProactive);
+
+  // #2043 — authenticated inbound messages for native facilitators. Both
+  // kernel members are needed: without the subscription lookup the adapter
+  // cannot tell which bot moderates which conversation, and it then keeps the
+  // mention gate for everybody.
+  const facilitatorCore: NativeFacilitatorCoreApi = core;
+  const emitConversationMessage = facilitatorCore.emitConversationMessage?.bind(facilitatorCore);
+  const isAllMessagesSubscribed = facilitatorCore.isAllMessagesSubscribed?.bind(facilitatorCore);
+  if (emitConversationMessage && isAllMessagesSubscribed) {
+    bot.attachConversationMessages(
+      new TeamsConversationMessages({
+        isAllMessagesSubscribed: (conversationId, channelKey) =>
+          isAllMessagesSubscribed('teams', conversationId, channelKey),
+        // The catalog id is authoritative here — the bot cannot know it.
+        emit: (event) => emitConversationMessage(stampChannel(event, ctx.agentId)),
+      }),
+    );
+  }
 
   // Mount at /api — same prefix as before, now owned by the channel
   // runtime so deactivation cleanly returns 503 instead of crashing.
@@ -719,7 +748,16 @@ export async function activate(
     ctx.agentId,
     createTeamsRosterAdapter({ refs: conversationRefs, roster: teamsRosterProvider, sendProactive }),
   );
-  core.registerTargetedSendProvider?.(ctx.agentId, createTeamsTargetedSendAdapter({ sendProactive }));
+  // Targeted and conversation send, with their declared capabilities
+  // (own identity, mentions, polls) — see teamsKernelRegistration.ts.
+  registerTeamsSendProviders(core, ctx.agentId, {
+    refs: conversationRefs,
+    sendProactive,
+    roster: teamsRosterProvider,
+    openDirectConversation,
+    botLabel: (botAppId) =>
+      teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
+  });
   // People directory (Conductor human steps resolve "Teresita Biel" → her address). Same
   // feature-detect lifecycle; Graph `/users` under the default bot's registration, needs
   // the User.Read.All application permission — without it the provider answers
@@ -728,9 +766,83 @@ export async function activate(
     ctx.agentId,
     createTeamsPeopleDirectoryProvider({ resolver: graphResolver, log: (m: string) => core.log('warn', m) }),
   );
-  core.registerConversationSendProvider?.(
-    ctx.agentId,
-    createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive }),
+  // #2043 — readiness check: installation row, RSC grant, can post. Graph is
+  // asked with the INSTANCE's registration (the Microsoft 365 integration's
+  // app, `microsoft_app_id`): the per-agent bot registrations hold no Graph
+  // application permissions. That is the pre-provisioning bot's credential
+  // set when it is served here; a deployment without it reports
+  // `graph_unavailable` instead of asking under some agent's identity.
+  const instanceAppId = ctx.config.get<string>('microsoft_app_id')?.trim().toLowerCase();
+  const instanceCredentials =
+    botCredentials.find((candidate) => candidate.identity.appId.toLowerCase() === instanceAppId) ??
+    (configuredBots.length === 0 ? defaultBotCredentials : undefined);
+  // Named precisely: the kernel refuses a facilitation whose readiness check
+  // does not pass, so this text is what an operator has to act on.
+  const graphUnavailableReason = instanceCredentials
+    ? undefined
+    : !instanceAppId
+      ? "the Microsoft 365 integration has no app registration configured (setting 'microsoft_app_id' is empty), so the Teams channel has no identity to read installations and consent with. Configure the Microsoft 365 integration."
+      : `the app password of the Microsoft 365 integration's app registration is not in the vault of the Teams channel under the secret name '${legacyScalarBot?.appPasswordSecretRef ?? 'microsoft_app_password'}', so installations and consent cannot be read. Store that secret for the Teams channel plugin and reactivate it.`;
+  const appTemplate = readTeamsAppTemplateInfo();
+  if (!appTemplate) {
+    core.log('warn', 'teams: appPackage/TEMPLATE_REVISION or manifest.json.template could not be read — installs from an earlier app package will not be reported as outdated');
+  }
+  const readinessProvider = createTeamsReadinessProvider({
+    botLabel: (botAppId) =>
+      teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
+    graph: instanceCredentials ? graphResolverForBot(instanceCredentials) : undefined,
+    refs: conversationRefs,
+    ...(graphUnavailableReason ? { graphUnavailableReason } : {}),
+    ...(appTemplate ? { template: appTemplate } : {}),
+  });
+  facilitatorCore.registerReadinessProvider?.(ctx.agentId, readinessProvider);
+  if (!instanceCredentials) {
+    core.log(
+      'warn',
+      `teams: facilitator readiness checks will answer graph_unavailable — ${graphUnavailableReason ?? ''}`,
+    );
+  }
+  // #2043 / #44 — meeting source: the capability snapshot of a conversation.
+  // Meeting start/end and participant events: recorded per bot and chat,
+  // passed to the kernel as session events, and the reason to push a fresh
+  // snapshot. Every event is emitted; the kernel filters by subscription and
+  // removes the per-bot duplicates.
+  const emitSessionEvent = facilitatorCore.emitSessionEvent?.bind(facilitatorCore);
+  const meetingSessions = new TeamsMeetingSessions({
+    ...(emitSessionEvent
+      ? {
+          // The catalog id is authoritative here — the bot cannot know it.
+          emit: (event: TeamsSessionEvent): void => emitSessionEvent(stampChannel(event, ctx.agentId)),
+        }
+      : {}),
+    onLifecycleChange: (conversationId, botKey) => announceCapabilities?.(conversationId, botKey),
+  });
+  bot.attachMeetingSessions(meetingSessions);
+  const meetingSource = createTeamsMeetingSource({
+    refs: conversationRefs,
+    sessions: meetingSessions,
+    grantedPermissions: (conversationId, asChannelKey) =>
+      readinessProvider.grantedPermissions(conversationId, { asChannelKey }),
+  });
+  facilitatorCore.registerMeetingSourceProvider?.(ctx.agentId, meetingSource);
+  // A bot that joins a chat changes what that chat offers its agent: report
+  // the snapshot once, the kernel reads it on demand afterwards.
+  const emitSessionCapabilities = facilitatorCore.emitSessionCapabilities?.bind(facilitatorCore);
+  if (emitSessionCapabilities) {
+    announceCapabilities = (conversationId, asChannelKey): void => {
+      void meetingSource
+        .snapshot(conversationId, { asChannelKey })
+        .then((snapshot) => {
+          if (snapshot) emitSessionCapabilities(snapshot);
+        })
+        .catch((err: unknown) => {
+          core.log('warn', '[teams] capability snapshot failed', { error: String(err) });
+        });
+    };
+  }
+  core.log(
+    'info',
+    `native facilitators (#2043): meetingSource=${typeof facilitatorCore.registerMeetingSourceProvider === 'function' ? 'on' : 'kernel<2043'}, sessionEvents=${emitSessionEvent ? 'on' : 'kernel<K5'}, messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? 'on' : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
   );
   core.log(
     'info',
@@ -849,6 +961,7 @@ export async function activate(
   }
   const teamsShellRouter = createTeamsUiShellRouter({
     catalogUrl: TEAMS_CATALOG_MOUNT_PATH,
+    hubUrl: `${TEAMS_UI_MOUNT_PATH}/hub`,
   });
   const teamsCatalogRouter = createTeamsCatalogRouter({
     webUiOrigin: ctx.config.get<string>('web_ui_origin') ?? '',

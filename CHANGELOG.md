@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.36.0
+
+Native facilitators (byte5ai/omadia#2043; #43 and the baseline of #44). Needs the
+kernel with `@omadia/channel-sdk` 0.3.0 for the new behaviour; every kernel member is
+feature-detected, on an older kernel nothing changes.
+
+- **Every message in a moderated chat**: a bot that holds a message subscription for
+  a conversation (`isAllMessagesSubscribed`) emits each human message as a message
+  event with the author Teams states, instead of dropping it at the mention gate. The
+  adapter starts **no chat turn** in such a conversation, not for a mention either:
+  the engine drives every turn. An empty answer is never posted and never replaced by
+  the "no answer came back" text, also when only the AI disclosure sentence or
+  follow-up buttons are left of it (the kernel empties the answer of the mention that
+  opens a facilitation). The subscription is per bot and conversation: other bots in
+  the same chat keep the gate, chats nobody moderates behave as before.
+- **Edits, deletions, reactions, card answers**: emitted as `edited` / `deleted` /
+  `reaction` / `card_answer`, keyed on the message id, the revision counted per edit.
+  Each such activity is logged with its `eventType` and ids.
+- **Readiness check** (`teamsReadiness.ts`): runs with the instance's Graph client
+  (the Microsoft 365 integration's registration), because the per-agent bot
+  registrations hold no Graph permissions. Ready = installation row for the bot's app
+  and a grant with `clientAppId` = bot app id and `ChatMessage.Read.Chat` (team:
+  `ChannelMessage.Read.Group`); can-post = own conversation reference plus the last
+  send result. `repairConsent` upgrades an install that lacks the grant
+  (`installedApps/{id}/upgrade` with the full consented set).
+- **Restart**: a subscribed conversation needs no new `bot_added` after a middleware
+  restart. The subscription is asked from the kernel per message, the roster is
+  fetched per call, the conversation reference comes from `teams_conversation_refs`,
+  and the team of a channel (needed by the readiness check) is now stored with that
+  reference. Without a database pool the references are memory only, as before.
+- **Posts as the own bot**: real @mentions resolved from the roster by Entra object
+  id; text and card are separate activities, the outcome carries `messageId` and
+  `cardMessageId`.
+- **Declared send capabilities**: the conversation send provider declares
+  `supports: { asChannelKey, mentions, poll }` and the targeted send provider
+  `supports: { asChannelKey }`. The kernel only uses a send option a provider declares;
+  without it every own-identity post is answered with `no_identity`. Message and
+  session events carry the plugin's own catalog id and channel type.
+- **Direct messages as the own bot**: `sendToUser(…, { asChannelKey })` uses that
+  bot's own 1:1 or creates it by Entra object id (first contact, also after a
+  restart). `403 ForbiddenOperationException` → `app_not_installed`, `403` with
+  `MessageWritesBlocked` → `blocked`, neither retried; 429 / 412 / 502 / 504 retried
+  with backoff. Never another bot, no default-bot fallback. Without `asChannelKey`
+  unchanged.
+- **Meetings (#44)**: meeting chats follow the same subscription rule; poll card with
+  `Action.Execute` (`teamsPollCard.ts`), answers arrive as `card_answer` with
+  `answererVerified` false for a participant without an Entra identity. Meeting start,
+  end and participant join / leave are passed to the kernel as session events
+  (`teamsMeetingSessions.ts`, `core.emitSessionEvent`, feature-detected) and a fresh
+  capability snapshot is pushed at start and end. The snapshot
+  (`teamsMeetingSource.ts`) declares `presence` only while it is proven: a scheduled
+  meeting is running, a join or leave event arrived for it, and the install holds both
+  meeting permissions (read from Graph). Meet-now and calls keep chat and cards.
+  `reactions`, hand raise and audio are never declared. Targeted in-meeting
+  notification is not built (it needs a web page of the app).
+- **App package**: the template requests `OnlineMeeting.ReadBasic.Chat`,
+  `OnlineMeetingParticipant.Read.Chat`, `OnlineMeetingNotification.Send.Chat` and
+  `ChannelMeeting.ReadBasic.Group` (eleven RSC permissions of sixteen allowed).
+  `appPackage/TEMPLATE_REVISION` is 2; the kernel builds the agent app version as
+  `1.<TEMPLATE_REVISION>.<identity revision>`. An install from an earlier package is
+  reported as `package_outdated` by the readiness check. Agent apps installed
+  from the earlier package keep their consent set until `repairConsent` upgrades the
+  install; that is fine for agents that do not use meeting events. Participant events
+  additionally need a manual per-app setting in Developer Portal.
+- **Tab configuration page**: adding an agent app to a channel from the Teams app
+  dialog opens `/p/channel-teams/tab-config`. For an agent without plugin surfaces the
+  picker was empty, so Save never enabled and the install looked failed although it had
+  succeeded. The picker now always offers the plugin overview, Save is enabled, and the
+  page says that a tab is optional and the agent is already added. The app package
+  template is unchanged (`configurableTabs` stays; the tab catalogue needs it).
+- **Docs**: `docs/teams-meeting-apis.md` (findings per topic, each labelled live /
+  docs / simulated / open, with sources) and `docs/facilitator-live-verification.md`
+  (owner steps M1 to M6 and the scenario walk-through).
+- **Verification status.** There is no Teams test tenant. The tests run against a
+  simulated Bot Framework, Bot Connector and Graph. Confirmed live in the byte5 tenant
+  on 2026-11-18, with the builds running that day: delivery without mention in group
+  chats, in a team channel and in a scheduled meeting chat; the Graph readiness reads;
+  the DM error bodies and that team membership counts as installed; the tenant RSC
+  setting. Still open, because they need this build on an instance: edit / delete /
+  reaction events under RSC, the returned message id, the meeting events, the portal
+  subscription and the consent upgrade (M2, M3, rest of M4 and M5).
+- Limits: the edit revision the adapter sends is a hint (the kernel assigns the stored
+  one); a team channel can be
+  checked only after the bot received an activity from it.
+
 ## 0.35.0
 
 Der Plugin-Katalog der Teams-Tabs läuft über den Kernel-Modus

@@ -70,6 +70,35 @@ fail. `webApplicationInfo.id` must equal the bot's Entra app id, i.e.
 - `$schema` and `"manifestVersion": "1.17"` are pinned in the template and are
   not parameterizable.
 
+## Resource-specific permissions and the template revision
+
+The template requests eleven RSC permissions (Teams allows sixteen per app):
+
+| Permission | For |
+|---|---|
+| `ChatMessage.Read.Chat`, `ChannelMessage.Read.Group` | every message of a chat / a team's channels without @mention |
+| `ChatMember.Read.Chat`, `ChannelMember.Read.Group` | the roster |
+| `TeamsActivity.Send.Chat`, `TeamsActivity.Send.Group` | activity feed notifications |
+| `FileStorageContainer.Selected.Group` | files |
+| `OnlineMeeting.ReadBasic.Chat`, `ChannelMeeting.ReadBasic.Group` | meeting start and end events, meeting details |
+| `OnlineMeetingParticipant.Read.Chat` | participant join and leave events, participant lookup |
+| `OnlineMeetingNotification.Send.Chat` | targeted in-meeting notification (requested, not used yet) |
+
+`TEMPLATE_REVISION` (a positive integer in a file of that name) counts changes
+of the template that change the published app definition, such as a new RSC
+permission. **A generator must fold it into `{{VERSION}}`**, for example
+`1.<TEMPLATE_REVISION>.<identity revision>`: Teams replaces a published
+package only by a higher version, so a version derived from the agent's
+identity alone would republish nothing after a template change.
+
+Consent belongs to the install. An app installed from an earlier package keeps
+the permission set it was installed with until its installation is upgraded
+(Graph `POST /chats/{id}/installedApps/{installation-id}/upgrade` with the
+complete `consentedPermissionSet` of the new definition; a set that differs
+from the definition is answered with `400 ResourceSpecificPermissionsMismatch`).
+That is fine for agents that do not use the new permissions: they keep
+working exactly as before.
+
 ## Icons
 
 `color.png` (192×192) and `outline.png` (32×32, transparent) are the default

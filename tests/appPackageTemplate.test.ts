@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readTeamsAppTemplateInfo, templateRevisionOfAppVersion } from '@omadia/channel-teams';
+
 /**
  * #19 (epic byte5ai/omadia#860, W0) — versioned Teams appPackage template.
  *
@@ -117,7 +119,14 @@ const RSC_GRANTS = [
   'FileStorageContainer.Selected.Group',
   'ChatMember.Read.Chat',
   'ChannelMember.Read.Group',
+  // #2043 / #44 — meetings: start/end, participants, in-meeting notification.
+  'OnlineMeeting.ReadBasic.Chat',
+  'OnlineMeetingParticipant.Read.Chat',
+  'OnlineMeetingNotification.Send.Chat',
+  'ChannelMeeting.ReadBasic.Group',
 ];
+/** Teams allows 16 resource-specific permissions per app. */
+const MAX_RSC_PER_APP = 16;
 
 describe('#19 W0 — appPackage/manifest.json.template', () => {
   const template = readFileSync(templatePath, 'utf8');
@@ -218,6 +227,7 @@ describe('#19 W0 — appPackage/manifest.json.template', () => {
       (g: { type: string; name: string }) => g.name,
     );
     assert.deepEqual(grants, RSC_GRANTS);
+    assert.ok(grants.length <= MAX_RSC_PER_APP, 'more RSC permissions than Teams allows per app');
     for (const g of manifest.authorization.permissions.resourceSpecific) {
       assert.equal(g.type, 'Application');
     }
@@ -294,6 +304,38 @@ describe('#19 W0 — appPackage icons + README', () => {
       assert.ok(buf.length > PNG_MAGIC.length, `${name} is empty`);
       assert.deepEqual(buf.subarray(0, PNG_MAGIC.length), PNG_MAGIC, `${name} is not a PNG`);
     }
+  });
+
+  it('README names every RSC permission and TEMPLATE_REVISION is a positive integer', () => {
+    const readme = readFileSync(join(appPackageDir, 'README.md'), 'utf8');
+    for (const grant of RSC_GRANTS) {
+      assert.ok(readme.includes(`\`${grant}\``), `README does not mention ${grant}`);
+    }
+    const revision = readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8').trim();
+    assert.match(revision, /^[1-9][0-9]*$/);
+    // Revision 2 = the meeting permissions of #44. Raise it with every change
+    // of the template that changes the published app definition.
+    assert.ok(Number(revision) >= 2);
+  });
+
+  it('the plugin reads revision and permissions from the shipped template', () => {
+    const info = readTeamsAppTemplateInfo(appPackageDir);
+    assert.ok(info);
+    assert.equal(info.revision, Number(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8')));
+    assert.deepEqual(info.permissions, RSC_GRANTS);
+    assert.equal(readTeamsAppTemplateInfo(join(appPackageDir, 'does-not-exist')), undefined);
+  });
+
+  it('TEMPLATE_REVISION is exactly a non-negative integer and a newline, as the kernel requires', () => {
+    assert.match(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8'), /^\d{1,6}\n$/);
+  });
+
+  it('reads the template revision out of an agent app version', () => {
+    assert.equal(templateRevisionOfAppVersion('1.2.7'), 2);
+    assert.equal(templateRevisionOfAppVersion('1.0.4'), 0);
+    assert.equal(templateRevisionOfAppVersion('2.0.0'), undefined);
+    assert.equal(templateRevisionOfAppVersion('1.2'), undefined);
+    assert.equal(templateRevisionOfAppVersion(undefined), undefined);
   });
 
   it('README documents every placeholder the template uses', () => {
@@ -387,7 +429,7 @@ describe('#860 W0a — release artifact ships the appPackage template', () => {
     // template directory alongside manifest.yaml and dist/.
     assert.ok(existsSync(join(stageDir, 'manifest.yaml')), 'stage is not flat: manifest.yaml not at root');
     assert.ok(existsSync(join(stageDir, 'dist', 'plugin.js')), 'stage is missing dist/plugin.js');
-    for (const rel of ['manifest.json.template', 'color.png', 'outline.png', 'README.md']) {
+    for (const rel of ['manifest.json.template', 'color.png', 'outline.png', 'README.md', 'TEMPLATE_REVISION']) {
       assert.ok(
         existsSync(join(stageDir, 'appPackage', rel)),
         `release artifact is missing appPackage/${rel}`,

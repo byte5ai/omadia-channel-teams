@@ -82,6 +82,30 @@ export type TeamsProactiveSend = (
   opts?: { botAppId?: string },
 ) => Promise<void>;
 
+/** Bot Connector audience of the public cloud. */
+const BOT_FRAMEWORK_AUDIENCE = 'https://api.botframework.com';
+/** Global Teams Bot Connector endpoint, used for a first contact when the
+ *  bot has not learned a regional `serviceUrl` from an inbound activity. */
+export const DEFAULT_TEAMS_SERVICE_URL = 'https://smba.trafficmanager.net/teams/';
+
+/**
+ * Open (or re-open) the 1:1 conversation between ONE bot and ONE user and run
+ * `build` in it (#2043). Teams returns the existing conversation when there
+ * is one, so this is also how a 1:1 is found again after a restart. It rejects
+ * with the Bot Connector's error when the user never installed this bot's app
+ * or blocked it. There is no default-bot fallback: an unknown bot rejects.
+ */
+export type TeamsOpenDirectConversation = (
+  botAppId: string,
+  target: {
+    /** The user's AAD object id or Teams id (`29:…`). */
+    userId: string;
+    /** Regional connector endpoint when known; else the global one. */
+    serviceUrl?: string;
+  },
+  build: (turnContext: TurnContext) => Promise<void>,
+) => Promise<void>;
+
 /** One bot's long-lived runtime: its own credential factory + CloudAdapter
  *  plus a proactive sender pre-bound to that identity. */
 export interface TeamsBotRuntime {
@@ -98,6 +122,11 @@ export interface TeamsBotRuntime {
   readonly credentialsFactory: ConfigurationServiceClientCredentialFactory;
   /** `continueConversationAsync` pre-bound to THIS bot's adapter + app id. */
   readonly sendProactive: TeamsProactiveSend;
+  /** `createConversationAsync` for a 1:1 with one user, as THIS bot. */
+  readonly openDirectConversation: (
+    target: Parameters<TeamsOpenDirectConversation>[1],
+    build: Parameters<TeamsOpenDirectConversation>[2],
+  ) => Promise<void>;
 }
 
 export interface TeamsRouterArtifacts {
@@ -108,6 +137,8 @@ export interface TeamsRouterArtifacts {
   adapter: CloudAdapter;
   /** Per-bot dispatching proactive send — see {@link TeamsProactiveSend}. */
   sendProactive: TeamsProactiveSend;
+  /** Per-bot 1:1 opener — see {@link TeamsOpenDirectConversation}. */
+  openDirectConversation: TeamsOpenDirectConversation;
   /** One runtime per configured bot, in config order (`[0]` = default). */
   botRuntimes: readonly TeamsBotRuntime[];
   /** The default (first / shimmed) bot's runtime. */
@@ -179,7 +210,34 @@ function buildBotRuntime(config: BotCredentialConfig): TeamsBotRuntime {
     );
   };
 
-  return { appId: config.appId, identity: config.identity, adapter, credentialsFactory, sendProactive };
+  const openDirectConversation: TeamsBotRuntime['openDirectConversation'] = async (target, build) => {
+    const serviceUrl = target.serviceUrl ?? DEFAULT_TEAMS_SERVICE_URL;
+    if (!isAllowedProactiveServiceUrl(serviceUrl)) {
+      throw new Error('[teams] direct conversation refused — serviceUrl outside Bot Framework domains');
+    }
+    await adapter.createConversationAsync(
+      config.appId,
+      'msteams',
+      serviceUrl,
+      BOT_FRAMEWORK_AUDIENCE,
+      {
+        isGroup: false,
+        bot: { id: `28:${config.appId}`, name: config.identity?.displayName ?? '' },
+        members: [{ id: target.userId, name: '' }],
+        ...(config.tenantId ? { tenantId: config.tenantId, channelData: { tenant: { id: config.tenantId } } } : {}),
+      } as Parameters<CloudAdapter['createConversationAsync']>[4],
+      build,
+    );
+  };
+
+  return {
+    appId: config.appId,
+    identity: config.identity,
+    adapter,
+    credentialsFactory,
+    sendProactive,
+    openDirectConversation,
+  };
 }
 
 /** Normalise deps into the per-bot credential list (legacy scalars = a
@@ -391,10 +449,20 @@ export function createTeamsRouter(deps: TeamsRouterDeps): TeamsRouterArtifacts {
     await runtime.sendProactive(reference, build);
   };
 
+  // Strict by design: a DM "as bot X" is sent by bot X or not at all.
+  const openDirectConversation: TeamsOpenDirectConversation = async (botAppId, target, build) => {
+    const runtime = getBotRuntimeByAppId(botAppId);
+    if (!runtime) {
+      throw new Error('[teams] direct conversation refused — the requested bot is not configured in teams_bots[]');
+    }
+    await runtime.openDirectConversation(target, build);
+  };
+
   return {
     router,
     adapter: defaultBotRuntime.adapter,
     sendProactive,
+    openDirectConversation,
     botRuntimes,
     defaultBotRuntime,
     getBotRuntimeByAppId,
