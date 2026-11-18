@@ -27,6 +27,12 @@ import {
   renderMentions,
 } from './teamsOutboundMessage.js';
 import { parseTeamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
+import {
+  bareConversationId,
+  botKeyPrefixedConversationMessage,
+  isBotKeyPrefixedConversationId,
+  reportBotKeyPrefixedConversationId,
+} from './teamsConversationIds.js';
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
@@ -115,8 +121,10 @@ export class TeamsConversationReferenceCache {
   private readonly directConversations = new Map<string, string>();
   /** #2043 — the regional connector endpoint each bot was last reached on. */
   private readonly serviceUrls = new Map<string, string>();
-  /** #2043 — channel conversation → AAD group id of its team
-   *  (`channelData.team.aadGroupId`); Graph addresses a team by that id. */
+  /** #2043 — BARE channel id → AAD group id of its team
+   *  (`channelData.team.aadGroupId`); Graph addresses a team by that id.
+   *  Keyed without the `;messageid=` thread part: every thread of a channel
+   *  belongs to the same team. */
   private readonly teamIds = new Map<string, string>();
   /** #2043 — `${botAppId}|${conversationId}` → did the last proactive post
    *  of that bot into that conversation succeed? */
@@ -201,7 +209,7 @@ export class TeamsConversationReferenceCache {
     const teamAadGroupId = (context.activity.channelData as { team?: { aadGroupId?: unknown } } | undefined)?.team
       ?.aadGroupId;
     if (typeof teamAadGroupId === 'string' && teamAadGroupId.length > 0) {
-      this.teamIds.set(conversationId, teamAadGroupId);
+      this.teamIds.set(bareConversationId(conversationId), teamAadGroupId);
     }
     if (botAppId !== undefined) {
       if (typeof ref.serviceUrl === 'string') this.serviceUrls.set(botAppId, ref.serviceUrl);
@@ -214,7 +222,7 @@ export class TeamsConversationReferenceCache {
     if (this.persistence) {
       // The team of a channel is written with the reference so that it is
       // known again after a restart (see PERSISTED_TEAM_ID_KEY).
-      const teamId = this.teamIds.get(conversationId);
+      const teamId = this.teamIds.get(bareConversationId(conversationId));
       const persistedRef = teamId ? { ...ref, [PERSISTED_TEAM_ID_KEY]: teamId } : ref;
       const serialized = JSON.stringify({ ref: persistedRef, teamsType: teamsType ?? null });
       if (this.lastWritten.get(key) !== serialized) {
@@ -265,7 +273,17 @@ export class TeamsConversationReferenceCache {
    *  once `getOrLoad` read the persisted reference of that channel (after a
    *  restart no activity has arrived yet). */
   teamIdFor(conversationId: string): string | undefined {
-    return this.teamIds.get(conversationId);
+    return this.teamIds.get(bareConversationId(conversationId));
+  }
+
+  /** #2043 — the team of a channel or of one of its threads: from memory,
+   *  else from the persisted reference of that thread, else from the one of
+   *  the bare channel (written when the bot was added to the team). */
+  async resolveTeamId(conversationId: string, botAppId?: string): Promise<string | undefined> {
+    const known = this.teamIdFor(conversationId);
+    if (known) return known;
+    await this.getOrLoad(conversationId, botAppId).catch(() => undefined);
+    return this.teamIdFor(conversationId);
   }
 
   /** #2043 — record how a proactive post of `botAppId` into a conversation
@@ -301,6 +319,25 @@ export class TeamsConversationReferenceCache {
   /** Cache-or-store lookup for the proactive adapters: a miss after a restart
    *  falls back to the persisted reference and re-seeds the cache. */
   async getOrLoad(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined> {
+    const own = await this.getOrLoadExact(conversationId, botAppId);
+    if (own) return own;
+    // #2043 — a channel THREAD this bot has no reference of its own for yet
+    // (nobody addressed it there in this bot's lifetime): the reference of
+    // the bare channel, written when the bot was added to the team, leads
+    // into the thread once it names the thread as its conversation. Teams
+    // posts a message for `<channel>;messageid=<root>` as a reply to <root>.
+    const bareId = bareConversationId(conversationId);
+    if (bareId === conversationId) return undefined;
+    const channel = await this.getOrLoadExact(bareId, botAppId);
+    if (!channel) return undefined;
+    const { activityId: _channelActivity, ...channelRef } = channel.ref;
+    return {
+      ...channel,
+      ref: { ...channelRef, conversation: { ...channelRef.conversation, id: conversationId } as ConversationReference['conversation'] },
+    };
+  }
+
+  private async getOrLoadExact(conversationId: string, botAppId?: string): Promise<{ ref: Partial<ConversationReference>; teamsType?: string } | undefined> {
     const cached = this.get(conversationId, botAppId);
     if (cached) return cached;
     if (!this.persistence) return undefined;
@@ -317,7 +354,8 @@ export class TeamsConversationReferenceCache {
     // capture() never writes would split one bot across two cache slots.
     const owningBotAppId = normalizeTeamsBotAppId(persisted.botAppId) ?? effective;
     const { ref, teamId } = splitPersistedReference(persisted.ref);
-    if (teamId && !this.teamIds.has(conversationId)) this.teamIds.set(conversationId, teamId);
+    const teamKey = bareConversationId(conversationId);
+    if (teamId && !this.teamIds.has(teamKey)) this.teamIds.set(teamKey, teamId);
     const entry = {
       ref,
       ...(persisted.teamsType ? { teamsType: persisted.teamsType } : {}),
@@ -634,6 +672,12 @@ export function createTeamsConversationSendAdapter(deps: {
         }
       }
 
+      // #2043 — a session-scope fragment instead of a conversation id is a
+      // caller bug; say so instead of "the bot was not added to that chat".
+      if (isBotKeyPrefixedConversationId(conversationId)) {
+        reportBotKeyPrefixedConversationId(conversationId, 'conversation send');
+        return { outcome: 'unreachable', code: 'no_binding', message: botKeyPrefixedConversationMessage(conversationId) };
+      }
       const cached = await deps.refs.getOrLoad(conversationId, botAppId);
       if (!cached) {
         return {

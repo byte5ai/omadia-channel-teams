@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.36.4
+
+A facilitation could not be started from Teams: the engine asked the readiness check
+about `28:<appId>-19:meeting_…@thread.v2`, an id the kernel had cut out of this channel's
+session scope (`teams-<botKey>-<conversation id>` for a bot with its own identity). Graph
+answered 400 and no conversation reference exists under such an id.
+
+- **The turn origin states the channel-native conversation id** (`channelConversationId`):
+  `activity.conversation.id`, unchanged. It is the id this channel uses for conversation
+  references, the subscription lookup, message events and posts.
+- **A facilitation in a team channel belongs to the thread it was started in.** A channel
+  message's conversation id is `19:…@thread.tacv2;messageid=<root>`; that per-thread id is
+  used everywhere towards the kernel. Replies in the thread arrive under it, a post for it
+  goes into the thread, and a new root post in the channel is another conversation. A
+  thread the bot holds no reference of its own for is reached through the channel's
+  reference.
+- **Graph never sees a thread id.** Readiness and consent repair of a channel address the
+  team (`channelData.team.aadGroupId`, or the id stored with the reference; now kept per
+  channel, not per thread). A chat is addressed by its plain id.
+- **Consent repair works for a team install** as well (`/teams/{id}/installedApps/{id}/upgrade`,
+  needs `TeamsAppInstallation.ReadWriteAndConsentForTeam.All`). It answered
+  `unsupported_conversation` before.
+- **A bot-key-prefixed conversation id is refused by name**: readiness, consent repair and
+  the conversation send answer `unsupported_conversation` / `no_binding` with a message
+  that names the id and the cause, without asking Graph, and log it once.
+- **Tests on real shapes**: the simulated activities carry the ids and `channelData` keys
+  captured live on 2026-11-18, and the scenario suite runs a facilitation in a channel
+  thread and in a meeting chat with bot-qualified session scopes.
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
+Not verified live: a human reply inside a channel thread (handled as documented: same
+conversation id as the root post), the post into a thread, and the team consent upgrade.
+
 ## 0.36.3
 
 A facilitator refused every mention in a team channel or a group chat ("I am a moderator,

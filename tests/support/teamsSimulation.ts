@@ -18,6 +18,53 @@ export const TENANT_ID = '72f988bf-86f1-41af-91ab-2d7cd011db47';
 export const SERVICE_URL = 'https://smba.trafficmanager.net/emea/';
 export const GROUP_CHAT_ID = '19:b8a1c0f2d3e44f5a9b6c7d8e9f0a1b2c@thread.v2';
 export const OTHER_GROUP_CHAT_ID = '19:0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c@thread.v2';
+/** A team channel as Teams names it, and the AAD group id of its team. In
+ *  the "General" channel `team.id`, `teamsTeamId` and `channel.id` are all
+ *  this thread id (live, 2026-11-18). */
+export const CHANNEL_ID = '19:fdsWodnEDi7J3FI5tgPf1_4KxrURUShMFpNJrmcN8ns1@thread.tacv2';
+export const TEAM_AAD_GROUP_ID = 'c6031502-025c-4297-92c6-b734e17e46c5';
+
+/**
+ * The conversation id of a channel message: the channel id plus the ROOT
+ * message of its thread. Live: every root post is its own conversation id,
+ * and `messageid` equals the activity id of the root post. A reply in the
+ * thread is documented to arrive under the same id; that was not captured.
+ */
+export function channelThreadId(rootMessageId: string, channelId: string = CHANNEL_ID): string {
+  return `${channelId};messageid=${rootMessageId}`;
+}
+
+/**
+ * `channelData` as captured live (keys only where the content was not read):
+ *   channel message      teamsChannelId, teamsTeamId, channel, team, tenant, replyChain
+ *   chat message         tenant, chat, source
+ *   meeting chat message tenant, chat, source, meeting
+ * `team.aadGroupId` IS present on channel messages; `team.name` is not.
+ * The contents of `replyChain`, `chat` and `source` were not captured, so
+ * they are empty objects here: present as keys, with no invented values.
+ */
+function channelDataFor(conversationId: string, conversationType: string): Record<string, unknown> {
+  const tenant = { id: TENANT_ID };
+  if (conversationType === 'channel') {
+    const channelId = conversationId.split(';messageid=')[0] ?? conversationId;
+    return {
+      teamsChannelId: channelId,
+      teamsTeamId: CHANNEL_ID,
+      channel: { id: channelId },
+      team: { id: CHANNEL_ID, aadGroupId: TEAM_AAD_GROUP_ID },
+      tenant,
+      replyChain: {},
+    };
+  }
+  if (conversationType === 'personal') return { tenant };
+  return {
+    tenant,
+    chat: {},
+    source: {},
+    ...(conversationId.startsWith('19:meeting_') ? { meeting: { id: MEETING_ID } } : {}),
+  };
+}
+
 export const MEETING_CHAT_ID = '19:meeting_MjdhNjM4YzUtYzExZi00OTFkLWE5YjctNTVkYTQ0ZGVlM2Jh@thread.v2';
 
 export interface SimBot {
@@ -90,7 +137,7 @@ function baseActivity(input: BaseInput): Partial<Activity> {
       id: input.conversationId ?? GROUP_CHAT_ID,
     } as Activity['conversation'],
     recipient: { id: `28:${input.bot.appId}`, name: input.bot.name },
-    channelData: { tenant: { id: TENANT_ID } },
+    channelData: channelDataFor(input.conversationId ?? GROUP_CHAT_ID, conversationType),
   };
 }
 
@@ -111,6 +158,17 @@ export function messageActivity(input: BaseInput & { text: string; mention?: boo
         : []),
       { type: 'clientInfo', locale: 'de-DE', country: 'DE', platform: 'Web', timezone: 'Europe/Berlin' },
     ],
+    // Live: a mention message carries its HTML once more as an attachment.
+    ...(input.mention
+      ? {
+          attachments: [
+            {
+              contentType: 'text/html',
+              content: `<p><span itemtype="http://schema.skype.com/Mention" itemscope="" itemid="0">${input.bot.name}</span>&nbsp;${input.text}</p>`,
+            },
+          ],
+        }
+      : {}),
   };
 }
 
@@ -300,6 +358,8 @@ export interface SimulatedBot {
   turns: string[];
   /** The `origin` each turn was handed to the agent with, in turn order. */
   origins: unknown[];
+  /** The session scope of each turn, in turn order. */
+  scopes: string[];
   /** Everything the bot sent back into the conversation. */
   sent: unknown[];
   /** Deliver one activity as the Bot Framework adapter would. */
@@ -321,20 +381,26 @@ export function simulatedBot(
     /** The whole answer object, for what rides along with an emptied text. */
     answer?: Record<string, unknown>;
     meetingSessions?: TeamsMeetingSessions;
+    /** Every bot is an agent's OWN provisioned identity, as every
+     *  facilitator's is: the session scope is then bot-qualified. */
+    ownIdentity?: boolean;
   },
 ): SimulatedBot {
   const turns: string[] = [];
   const origins: unknown[] = [];
+  const scopes: string[] = [];
   const sent: unknown[] = [];
   const history = new Map<string, unknown[]>();
-  const bot = new (TeamsBot as unknown as new (...args: unknown[]) => TeamsBot)(
-    {
-      chat: async (input: { userMessage: string; origin?: unknown }) => {
-        turns.push(input.userMessage);
-        origins.push(input.origin);
-        return group?.answer ?? { text: group?.answerText ?? 'ok' };
-      },
+  const agent = {
+    chat: async (input: { userMessage: string; origin?: unknown; sessionScope: string }) => {
+      turns.push(input.userMessage);
+      origins.push(input.origin);
+      scopes.push(input.sessionScope);
+      return group?.answer ?? { text: group?.answerText ?? 'ok' };
     },
+  };
+  const bot = new (TeamsBot as unknown as new (...args: unknown[]) => TeamsBot)(
+    agent,
     {
       get: (scope: string) => history.get(scope) ?? [],
       append: () => {},
@@ -354,8 +420,16 @@ export function simulatedBot(
       currentTurnId: () => undefined,
       currentTurnDate: () => '2026-11-18',
     },
-    // attachmentStore … resolveConductorAwait: not part of these scenarios.
-    ...Array.from({ length: 12 }, () => undefined),
+    // attachmentStore … buildRoutineListSmartCardAttachment: not part of these scenarios.
+    ...Array.from({ length: 7 }, () => undefined),
+    // resolveChatAgentForActivity: the kernel's answer for a bot that IS one
+    // agent (`exclusive`), which is what makes the session scope bot-qualified.
+    group?.ownIdentity
+      ? (input: { channelKey: string }) =>
+          input.channelKey.startsWith('28:') ? { decision: 'bound', chatAgent: agent, exclusive: true } : { decision: 'reject' }
+      : undefined,
+    // conversationObserver … resolveConductorAwait: not part of these scenarios.
+    ...Array.from({ length: 4 }, () => undefined),
     group,
   );
   bot.attachConversationMessages(
@@ -384,7 +458,7 @@ export function simulatedBot(
     } as unknown as TurnContext;
     await bot.run(context);
   };
-  return { bot, turns, origins, sent, deliver };
+  return { bot, turns, origins, scopes, sent, deliver };
 }
 
 // ---------------------------------------------------------------------------
