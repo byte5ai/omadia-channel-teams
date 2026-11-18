@@ -26,11 +26,11 @@ statement carries one label:
 | With RSC `ChatMessage.Read.Chat` a bot receives "all user messages in the group chat where the app is installed"; with `ChannelMessage.Read.Group` those of the team's channels. | Docs [D1] |
 | Non-mention messages arrive today: 97 `drop non-mention … type=groupChat` log lines in 100 minutes against 7 mention turns. | Live |
 | Every chat with an omadia agent app shows the grants `ChatMessage.Read.Chat`, `ChatMember.Read.Chat`, `TeamsActivity.Send.Chat` for that app. The age of the chat does not matter, the install does. | Live |
-| Channel delivery. The team install shows `ChannelMessage.Read.Group`, but there was no channel traffic to observe. | Docs [D1]; **Open → M1** |
+| Channel delivery: a message without mention in a team channel reached the bot two seconds later (`drop non-mention … type=channel`). The team shows the grants `ChannelMessage.Read.Group` and `TeamsActivity.Send.Group` for the app; an install through the Teams app dialog granted them without a separate consent step. | Docs [D1]; **Live** (M1 done) |
 | A 1:1 between two people with an agent app (`19:…@unq.gbl.spaces`, Graph `chatType: oneOnOne`) arrives as `conversationType=groupChat`. | Live |
 | Only user messages are delivered. Messages written by other bots never are, also with RSC. | Docs [D1][D5]; Live (after each of 7 bot replies no other bot logged anything) |
 | Consent is per install and all-or-nothing. An install made from a package without the permission does not gain it by itself. | Docs [D1][D2]; Live (installs at versions 1.0.1 to 1.3.0 keep the set they were installed with) |
-| Tenant switches for app-only RSC exist. Their current value could not be read app-only; in byte5 they are evidently on. For customer tenants this is a setup prerequisite. | Docs [D2]; **Open → M6** |
+| Tenant switch for RSC: the authorization policy's `permissionGrantPoliciesAssigned` contains `ManagePermissionGrantsForOwnedResource.microsoft-dynamically-managed-permissions-for-chat` and `…-for-team` (the Microsoft-managed default); there is no legacy group-settings override. With that, a normal user-side install grants the RSC permissions. **Prerequisite for customer tenants:** both entries (or the "all application permissions" variant) must be present. | Docs [D2]; **Live** (M6 read) |
 
 **Implemented.** The mention gate is lifted only for a bot that holds a message
 subscription for that conversation; it then emits every human message as a message
@@ -135,8 +135,8 @@ carries `messageId` (the text, or the card when there is no text) and `cardMessa
 
 | Capability | Verdict | Requirement and evidence |
 |---|---|---|
-| Bot in the meeting chat, posts and cards | yes, with condition | `groupChat` scope; added by organiser or presenter. Docs [D17][D18]. One stored reference proves meeting chat activities reach the endpoint as `conversationType=groupChat` (`19:meeting_…@thread.v2`, Graph `chatType: meeting`). Live |
-| All meeting chat messages without mention | **Open → M5**, likely yes | Docs only say the RSC of a chat "apply to" its meeting [D2]. Microsoft's own Facilitator app holds exactly this grant in byte5 chats. Live |
+| Bot in the meeting chat, posts and cards | yes, with condition | `groupChat` scope; added by organiser or presenter (in the chat: "add agents"). Docs [D17][D18]. Meeting chat activities reach the endpoint as `conversationType=groupChat` (`19:meeting_…@thread.v2`, Graph `chatType: meeting`). **Live** |
+| All meeting chat messages without mention | **yes** | A message without mention in the chat of a scheduled meeting reached the bot (`drop non-mention conv=19:meeting_… type=groupChat`). Graph shows the chat as `chatType: meeting` with the grants `ChatMessage.Read.Chat`, `ChatMember.Read.Chat`, `TeamsActivity.Send.Chat`. **Live** (first half of M5 done). Docs only say the RSC of a chat "apply to" its meeting [D2]. |
 | Card answer with a verified answerer | yes, with condition | `Action.Execute` arrives as an `adaptiveCard/action` invoke; `from.id` and `from.aadObjectId` are set by Teams. Anonymous users have no `aadObjectId` but may interact with cards. Docs [D18][D19] |
 | Native Teams poll (Polls / Forms) | not possible | No bot API. Docs |
 | Roster and meeting details on demand | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat`; participant lookup only below 350 participants; details also for Meet now, 1:1 and group calls. Docs [D19] |

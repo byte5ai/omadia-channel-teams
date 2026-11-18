@@ -55,11 +55,13 @@ feature-detected, on an older kernel nothing changes.
   docs / simulated / open, with sources) and `docs/facilitator-live-verification.md`
   (owner steps M1 to M6 and the scenario walk-through).
 - **Verification status.** There is no Teams test tenant. The tests run against a
-  simulated Bot Framework, Bot Connector and Graph; the evaluation of 2026-11-18 added
-  read-only evidence from the byte5 tenant. Still open: channel delivery, edit / delete
-  / reaction events under RSC, the returned message id, the first-contact error bodies,
-  mention-free delivery in meeting chats, the meeting events and the consent upgrade
-  (M1 to M6).
+  simulated Bot Framework, Bot Connector and Graph. Confirmed live in the byte5 tenant
+  on 2026-11-18, with the builds running that day: delivery without mention in group
+  chats, in a team channel and in a scheduled meeting chat; the Graph readiness reads;
+  the DM error bodies and that team membership counts as installed; the tenant RSC
+  setting. Still open, because they need this build on an instance: edit / delete /
+  reaction events under RSC, the returned message id, the meeting events, the portal
+  subscription and the consent upgrade (M2, M3, rest of M4 and M5).
 - Limits: the edit revision the adapter sends is a hint (the kernel assigns the stored
   one); a team channel can be
   checked only after the bot received an activity from it; `repairConsent` is not part

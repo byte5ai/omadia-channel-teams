@@ -29,7 +29,12 @@ mobile) and who ran it.
 
 ## Owner steps M1 to M6
 
-### M1: channel delivery
+### M1: channel delivery (done 2026-11-18, confirmed)
+
+Result: the message reached the bot two seconds after the post, logged as
+`[teams] drop non-mention conv=19:fdsWodnEDi7J3FI5tgPf1… type=channel`; the team shows
+`ChannelMessage.Read.Group` for the app. Kept here so it can be repeated on another
+tenant:
 
 - **Do:** in a channel of a team where an agent app is installed, post one message
   without a mention.
@@ -82,7 +87,11 @@ end to end:
   where the app is installed does.
 - **Settles:** that the plugin's own send path produces these outcomes.
 
-### M5: meeting
+### M5: meeting (first half done 2026-11-18: delivery in the meeting chat confirmed)
+
+Result so far: a message without mention in the chat of a scheduled meeting reached the
+bot as `[teams] drop non-mention conv=19:meeting_… type=groupChat`. The consent upgrade
+and the meeting events are still open.
 
 - **Do:** schedule a meeting, add an agent app to it, post in the meeting chat without
   a mention.
@@ -131,7 +140,13 @@ in a meeting:
 Without this step everything else works; the facilitator just does not declare that it
 sees who joins and leaves.
 
-### M6: tenant RSC switch
+### M6: tenant RSC switch (done 2026-11-18, read)
+
+Result in byte5: `GET /policies/authorizationPolicy` lists
+`ManagePermissionGrantsForOwnedResource.microsoft-dynamically-managed-permissions-for-chat`
+and `…-for-team` under `defaultUserRolePermissions.permissionGrantPoliciesAssigned`
+(the Microsoft-managed default); `GET /groupSettings` is empty. For a customer tenant,
+repeat:
 
 - **Do:** as an administrator, read the resource-specific consent settings for chats
   and for teams (Teams admin center, or Graph as an admin).
@@ -245,6 +260,9 @@ verified only when every "Expected" line was observed.
 
 - Every "Expected" that did not hold becomes an issue in
   `byte5ai/omadia-channel-teams` with the log lines.
+- Still open after 2026-11-18: M2 (edit, delete, reaction), M3 (returned id), the
+  product path of M4, and the second half of M5 (consent upgrade, meeting events,
+  portal subscription). They need the 0.36.0 build on the instance.
 - In `teams-meeting-apis.md`, change the label of each settled row from "Open" or
   "Simulated" to "Live" with the date.
 - Acceptance criterion 13 of the kernel spec and the criteria of #43 and #44 that need
