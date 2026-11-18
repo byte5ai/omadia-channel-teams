@@ -34,7 +34,7 @@ mobile) and who ran it.
 - **Do:** in a channel of a team where an agent app is installed, post one message
   without a mention.
 - **Expect:** one `[teams] drop non-mention … type=channel` line (or, with a
-  facilitation running there, `non-mention recorded, no turn`).
+  facilitation running there, `recorded for the engine, no turn`).
 - **Settles:** delivery in channels under `ChannelMessage.Read.Group`, which is
   documented but was never observed.
 
@@ -82,7 +82,7 @@ mobile) and who ran it.
 - **Do:** schedule a meeting, add an agent app to it, post in the meeting chat without
   a mention.
 - **Expect:** a log line with a `19:meeting_…` conversation id (`drop non-mention`, or
-  `non-mention recorded, no turn` with a facilitation running).
+  `recorded for the engine, no turn` with a facilitation running).
 - **Do:** in a chat whose install lacks `ChatMessage.Read.Chat`, run the consent repair
   (Graph `installedApps/{id}/upgrade` with the full consented set).
 - **Expect:** afterwards the grant list of the chat shows the permission and the
@@ -113,7 +113,7 @@ verified only when every "Expected" line was observed.
 3. One person votes with a mention, two without.
    - Expected: every vote is echoed to its author and the status names the right
      missing people.
-   - Expected in the log: `non-mention recorded, no turn` for the two votes.
+   - Expected in the log: `recorded for the engine, no turn` for the two votes.
 4. In a second chat with Mira but no facilitation, write without a mention.
    - Expected: no reaction; log `drop non-mention`.
 5. Edit a vote, then quote somebody's vote and write "Anna agrees too".
@@ -151,8 +151,8 @@ verified only when every "Expected" line was observed.
 3. Mira posts on its own (status, reminder).
    - Expected: it arrives, as Mira.
 4. Somebody who edited a vote before the restart edits it again.
-   - Expected: the latest text counts. Known limit: the plugin numbers this edit as
-     revision 1 again.
+   - Expected: the latest text counts. (The kernel numbers the revisions; the
+     adapter's own count restarting does not matter.)
 
 ### 6. Two facilitator bots in one chat
 

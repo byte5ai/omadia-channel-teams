@@ -255,6 +255,8 @@ export function simulatedBot(
   group?: {
     captureConversationReference: (context: TurnContext) => void;
     emitMembershipEvent: (event: Record<string, unknown>) => void;
+    /** What the agent answers; '' models the kernel's empty safety-net answer. */
+    answerText?: string;
   },
 ): SimulatedBot {
   const turns: string[] = [];
@@ -264,7 +266,7 @@ export function simulatedBot(
     {
       chat: async (input: { userMessage: string }) => {
         turns.push(input.userMessage);
-        return { text: 'ok' };
+        return { text: group?.answerText ?? 'ok' };
       },
     },
     {

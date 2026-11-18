@@ -12,7 +12,8 @@
 //   2. The author is `activity.from`, set by Teams. Nothing is read from the
 //      message text, a card payload or a quoted block.
 //   3. An event is not a turn. Emitting starts no model call, and a failure
-//      to emit never breaks the activity that carried it.
+//      to emit never breaks the activity that carried it. In a subscribed
+//      conversation the adapter starts no turn at all; the engine does.
 
 import type { Activity } from 'botbuilder';
 
@@ -134,7 +135,9 @@ function genericCardId(value: unknown): string {
  */
 export class TeamsConversationMessages {
   /** `${botKey}|${conversationId}|${messageId}` → last revision emitted.
-   *  In memory: a restart starts counting again (see docs, contract gaps). */
+   *  A HINT only: the kernel assigns the stored revision itself (created = 0,
+   *  each edit or deletion = highest stored + 1), so it does not matter that
+   *  this in-memory count starts again after a restart. */
   private readonly revisions = new Map<string, number>();
 
   constructor(private readonly sink: TeamsConversationMessageSink) {}

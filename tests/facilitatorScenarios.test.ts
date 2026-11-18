@@ -171,7 +171,8 @@ describe('scenario 1 — message without mention', () => {
         ['created', ANNA.name, 'Mira doch lieber B > A > C'],
       ],
     );
-    assert.equal(i.bot.turns.length, 2, 'only the two mentions start a turn');
+    assert.deepEqual(i.bot.turns, [], 'the engine drives every turn; the adapter starts none, also not for a mention');
+    assert.deepEqual(i.bot.sent, []);
   });
 
   it('in a chat without facilitation the mention gate still applies', async () => {
@@ -274,7 +275,7 @@ describe('scenario 5 — restart', () => {
     assert.deepEqual(after.bot.turns, []);
   });
 
-  it('known limit: the revision counter starts again after a restart', async () => {
+  it('after a restart an edit still carries the message id and its platform time', async () => {
     const before = startInstance();
     before.kernel.subscribe(GROUP_CHAT_ID, MIRA);
     const ballot = messageActivity({ bot: MIRA, from: ANNA, text: 'A' });
@@ -285,16 +286,19 @@ describe('scenario 5 — restart', () => {
     const after = startInstance({ kernel: before.kernel });
     await after.bot.deliver(editActivity({ bot: MIRA, from: ANNA, id, text: 'C', timestamp: '2026-11-18T09:40:00.000Z' }));
 
-    // Two edits, both numbered 1. `occurredAt` still orders them; the kernel
-    // must not rely on the adapter's revision across a restart.
+    // The kernel assigns the stored revision (highest stored + 1); the
+    // adapter's number is a hint and is deliberately not asserted here. What
+    // the kernel needs from the adapter is the id, the kind, the text and
+    // the platform time of every edit.
     assert.deepEqual(
-      after.kernel.events.map((e) => [e.kind, e.revision, e.occurredAt]),
+      after.kernel.events.map((e) => [e.kind, e.messageId, e.text, e.occurredAt]),
       [
-        ['created', 0, '2026-11-18T09:15:00.000Z'],
-        ['edited', 1, '2026-11-18T09:20:00.000Z'],
-        ['edited', 1, '2026-11-18T09:40:00.000Z'],
+        ['created', id, 'A', '2026-11-18T09:15:00.000Z'],
+        ['edited', id, 'B', '2026-11-18T09:20:00.000Z'],
+        ['edited', id, 'C', '2026-11-18T09:40:00.000Z'],
       ],
     );
+    assert.ok(after.kernel.events.slice(1).every((e) => e.revision >= 1), 'an edit is never revision 0');
   });
 });
 
@@ -407,7 +411,7 @@ describe('scenario 8 — poll answers', () => {
       ],
       'a changed answer is a second event; the engine decides which one counts',
     );
-    assert.equal(i.bot.turns.length, 1, 'only the opening mention was a turn');
+    assert.deepEqual(i.bot.turns, [], 'no channel-started turn in an engine-driven conversation');
   });
 });
 

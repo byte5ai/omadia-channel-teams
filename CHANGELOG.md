@@ -8,9 +8,10 @@ feature-detected, on an older kernel nothing changes.
 
 - **Every message in a moderated chat**: a bot that holds a message subscription for
   a conversation (`isAllMessagesSubscribed`) emits each human message as a message
-  event with the author Teams states, instead of dropping it at the mention gate. No
-  turn starts for a message without @mention; a mentioned message is emitted and takes
-  the normal turn path. The subscription is per bot and conversation: other bots in the
+  event with the author Teams states, instead of dropping it at the mention gate. The
+  adapter starts **no chat turn** in such a conversation, not for a mention either:
+  the engine drives every turn. An empty answer is never posted. The subscription is
+  per bot and conversation: other bots in the
   same chat keep the gate, chats nobody moderates behave as before.
 - **Edits, deletions, reactions, card answers**: emitted as `edited` / `deleted` /
   `reaction` / `card_answer`, keyed on the message id, the revision counted per edit.
@@ -46,7 +47,8 @@ feature-detected, on an older kernel nothing changes.
   read-only evidence from the byte5 tenant. Still open: channel delivery, edit / delete
   / reaction events under RSC, the returned message id, the first-contact error bodies,
   mention-free delivery in meeting chats and the consent upgrade (M1 to M6).
-- Limits: edit revisions restart after a middleware restart; a team channel can be
+- Limits: the edit revision the adapter sends is a hint (the kernel assigns the stored
+  one); a team channel can be
   checked only after the bot received an activity from it; polls and `cardMessageId`
   ride on structural fields the kernel contract does not have yet.
 

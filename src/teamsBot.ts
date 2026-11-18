@@ -991,10 +991,11 @@ export class TeamsBot extends TeamsActivityHandler {
       typeof context.activity.value === 'object' &&
       context.activity.value !== null;
     // #2043 — a bot that moderates this conversation receives every human
-    // message. The subscription is per bot AND conversation: another bot in
-    // the same chat is not subscribed and keeps the gate below. A message
-    // event is not a turn; whether a turn follows is decided exactly as
-    // before (personal chat, card click or @mention).
+    // message, and the ENGINE drives every turn there. So under a
+    // subscription the adapter only records: the message event goes out and
+    // no chat turn starts, not for a mention and not for a card click
+    // either. The subscription is per bot AND conversation: another bot in
+    // the same chat is not subscribed and keeps the gate below.
     const isSubscribed = this.conversationMessages?.isSubscribed(context.activity) === true;
     if (isSubscribed) {
       if (isCardAction) {
@@ -1002,9 +1003,13 @@ export class TeamsBot extends TeamsActivityHandler {
       } else {
         this.conversationMessages?.emitCreated(context.activity);
       }
+      console.error(
+        `[teams] recorded for the engine, no turn conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… type=${conversationType}`,
+      );
+      return;
     }
     // A poll click is an answer for the engine, never a question for the
-    // agent: it ends here whether or not anybody is subscribed.
+    // agent: it ends here also when nobody is subscribed any more.
     if (isCardAction && parsePollAnswerValue(context.activity.value)) {
       return;
     }
@@ -1012,9 +1017,7 @@ export class TeamsBot extends TeamsActivityHandler {
       const conversationIdShort =
         (context.activity.conversation?.id ?? '-').slice(0, 24);
       console.error(
-        isSubscribed
-          ? `[teams] non-mention recorded, no turn conv=${conversationIdShort}… type=${conversationType}`
-          : `[teams] drop non-mention conv=${conversationIdShort}… type=${conversationType}`,
+        `[teams] drop non-mention conv=${conversationIdShort}… type=${conversationType}`,
       );
       return;
     }
@@ -2113,6 +2116,18 @@ export class TeamsBot extends TeamsActivityHandler {
             sessionScope: input.sessionScope,
             conversationId: input.conversationId,
           });
+          return;
+        }
+        // #2043 — an empty answer is never posted. The kernel answers a
+        // channel-started turn in a conversation an engine drives with an
+        // empty answer and no model call (a subscription can begin while a
+        // turn is already running); Teams would show an empty card.
+        const hasAttachments =
+          ((result as { attachments?: readonly unknown[] }).attachments?.length ?? 0) > 0;
+        if (result.text.trim().length === 0 && !result.interactive && !hasAttachments) {
+          console.error(
+            `[teams] empty answer not posted conv=${input.conversationId.slice(0, 24)}…`,
+          );
           return;
         }
         // Cross-session KG-recall — surface what the per-turn probe pulled

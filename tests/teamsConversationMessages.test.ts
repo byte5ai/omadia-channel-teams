@@ -62,7 +62,7 @@ describe('#43 mention gate under a message subscription', () => {
     assert.deepEqual(sim.sent, [], 'the bot says nothing');
   });
 
-  it('records a mentioned message AND runs the normal turn', async () => {
+  it('records a mentioned message and starts no turn either: the engine drives the conversation', async () => {
     const kernel = new SimulatedKernel();
     kernel.subscribe(GROUP_CHAT_ID, MIRA);
     const sim = simulatedBot(kernel);
@@ -72,7 +72,41 @@ describe('#43 mention gate under a message subscription', () => {
     assert.equal(kernel.events.length, 1);
     assert.equal(kernel.events[0]?.kind, 'created');
     assert.equal(kernel.events[0]?.text, 'Mira wie ist der Stand?');
-    assert.equal(sim.turns.length, 1, 'the mention still reaches the agent');
+    assert.deepEqual(sim.turns, [], 'no channel-started turn under a subscription');
+    assert.deepEqual(sim.sent, []);
+  });
+
+  it('records a non-poll card click under a subscription without a turn', async () => {
+    const kernel = new SimulatedKernel();
+    kernel.subscribe(GROUP_CHAT_ID, MIRA);
+    const sim = simulatedBot(kernel);
+
+    await sim.deliver(
+      cardSubmitActivity({ bot: MIRA, from: ANNA, cardMessageId: '1731930004700', value: { kind: 'followup', prompt: 'mehr' } }),
+    );
+
+    assert.deepEqual(kernel.events.map((e) => [e.kind, e.cardAnswer?.cardId]), [['card_answer', 'followup']]);
+    assert.deepEqual(sim.turns, []);
+  });
+
+  it('never posts an empty answer', async () => {
+    // The kernel's safety net: a channel-started turn in an engine-driven
+    // conversation comes back empty (a subscription can begin mid-turn).
+    const kernel = new SimulatedKernel();
+    const sim = simulatedBot(kernel, {
+      captureConversationReference: () => {},
+      emitMembershipEvent: () => {},
+      answerText: '  ',
+    });
+
+    await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true }));
+
+    assert.equal(sim.turns.length, 1, 'the turn ran');
+    assert.deepEqual(
+      sim.sent.filter((activity) => (activity as { type?: string }).type !== 'typing'),
+      [],
+      'and nothing was posted',
+    );
   });
 
   it('changes nothing in a chat without subscription', async () => {

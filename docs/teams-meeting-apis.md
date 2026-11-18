@@ -34,7 +34,8 @@ statement carries one label:
 
 **Implemented.** The mention gate is lifted only for a bot that holds a message
 subscription for that conversation; it then emits every human message as a message
-event and starts a turn only on an @mention. Nothing concludes the size of a chat from
+event and starts **no chat turn** there, not for an @mention either: the engine holding
+the subscription drives every turn. An empty answer is never posted. Nothing concludes the size of a chat from
 `conversationType`. *Simulated.*
 
 ## 2. Edits, deletions, reactions
@@ -88,8 +89,8 @@ app; that is an owner decision.
 | The same app can be installed twice in one chat (organisation and sideloaded). | Live |
 
 **Implemented.** Subscription, events, references and posts are keyed by the receiving
-bot. N bots deliver N copies of a message; removing duplicates by
-`(conversation id, message id)` across bots is the kernel's job. *Simulated.*
+bot. N bots deliver N copies of a message; the kernel stores a message delivered more
+than once only once. *Simulated.*
 
 ## 5. Readiness check
 
@@ -209,7 +210,7 @@ added to the chat is invisible.
 
 | Limit | Consequence |
 |---|---|
-| Edit revisions are counted in memory per bot, conversation and message. | After a restart the next edit of an already edited message is emitted as revision 1 again; `occurredAt` still orders them. The kernel should assign revisions itself. |
+| The edit revision the adapter sends is counted in memory. | No consequence: the kernel assigns the stored revision itself (created = 0, each edit or deletion = highest stored + 1) and treats the adapter's number as a hint. |
 | Quoted and forwarded messages are recognised by attachment markers (`schema.skype.com/Reply`, `forwardedMessageReference`). | **Open**, from neither a page nor the evaluation. If Teams marks them differently such a message is an ordinary `created` event and the engine cannot tell it is a quote. |
 | The kernel's `TargetedMessage` has no poll field and `delivered` no `cardMessageId`. | The plugin reads `message.poll` and returns `cardMessageId` structurally; the kernel contract has to add both. |
 | A team channel is checked against its team only after the bot received an activity from that channel in the running process. | Before that the readiness check answers `team_unknown`. |
