@@ -20,7 +20,13 @@ import type { TeamsConversationReferenceCache } from './teamsGroupPrimitives.js'
 /** Teams names the chat of a scheduled or instant meeting `19:meeting_…`. */
 const MEETING_CHAT_PREFIX = '19:meeting_';
 
-const CHAT_INPUTS: readonly SessionInputCapability[] = ['text', 'message_edits', 'reactions', 'card_answers'];
+// `reactions` is deliberately NOT declared. Teams documents the reaction
+// event only for messages the bot itself sent; whether a reaction to another
+// person's message reaches the bot is unproven, and the snapshot has no way
+// to say "on my own messages only". Reaction events that do arrive are still
+// emitted; an engine may use them for its own posts (confirming an echo) but
+// must not build on reactions to participants' messages.
+const CHAT_INPUTS: readonly SessionInputCapability[] = ['text', 'message_edits', 'card_answers'];
 const CHAT_OUTPUTS: readonly SessionOutputCapability[] = ['text', 'mentions', 'cards', 'polls', 'private_messages'];
 /** A 1:1 has nobody to mention and no group to poll. */
 const DIRECT_OUTPUTS: readonly SessionOutputCapability[] = ['text', 'cards'];

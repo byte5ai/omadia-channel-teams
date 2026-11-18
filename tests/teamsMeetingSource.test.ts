@@ -36,7 +36,7 @@ describe('#44 Teams meeting source', () => {
       conversationId: MEETING_CHAT_ID,
       sessionRef: 'meeting-42',
       modality: 'online',
-      inputs: ['text', 'message_edits', 'reactions', 'card_answers'],
+      inputs: ['text', 'message_edits', 'card_answers'],
       outputs: ['text', 'mentions', 'cards', 'polls', 'private_messages'],
       capturedAt: '2026-11-18T10:00:00.000Z',
     });
@@ -47,7 +47,7 @@ describe('#44 Teams meeting source', () => {
       asChannelKey: MIRA.key,
     });
     assert.ok(snapshot);
-    for (const absent of ['presence', 'hand_raise', 'transcribed_speech', 'shared_documents']) {
+    for (const absent of ['reactions', 'presence', 'hand_raise', 'transcribed_speech', 'shared_documents']) {
       assert.equal((snapshot.inputs as readonly string[]).includes(absent), false, absent);
     }
     for (const absent of ['voice', 'screen', 'pinned_surface']) {

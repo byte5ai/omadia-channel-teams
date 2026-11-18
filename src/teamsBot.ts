@@ -611,10 +611,18 @@ export class TeamsBot extends TeamsActivityHandler {
     context: TurnContext,
     kind: 'edited' | 'deleted' | 'reaction',
   ): void {
+    const activity = context.activity;
+    // Logged whether or not anybody is subscribed: which of these events
+    // Teams delivers for messages the bot only saw through RSC, and for
+    // reactions to other people's messages, is settled by reading this line
+    // (docs/facilitator-live-verification.md, step M2).
+    const eventType = (activity.channelData as { eventType?: unknown } | undefined)?.eventType;
+    console.error(
+      `[teams] ${activity.type ?? '-'} eventType=${typeof eventType === 'string' ? eventType : '-'} conv=${(activity.conversation?.id ?? '-').slice(0, 24)}… id=${activity.id ?? '-'} replyToId=${activity.replyToId ?? '-'}`,
+    );
     const messages = this.conversationMessages;
     if (!messages) return;
     this.groupPrimitives?.captureConversationReference(context);
-    const activity = context.activity;
     if (kind === 'edited') {
       messages.emitEdited(activity);
     } else if (kind === 'deleted') {
