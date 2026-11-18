@@ -26,6 +26,7 @@ import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
 import { TeamsConversationMessages } from './teamsConversationMessages.js';
+import { createTeamsMembershipProbe, createTeamsReadinessProvider } from './teamsReadiness.js';
 import type { NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
@@ -751,6 +752,29 @@ export async function activate(
   core.registerConversationSendProvider?.(
     ctx.agentId,
     createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive }),
+  );
+  // #2043 — readiness check per bot: installed, RSC consent, can post. Each
+  // bot's Graph calls run under its OWN app registration.
+  const readinessGraphByAppId = new Map<string, TeamsGraphResolver>();
+  facilitatorCore.registerReadinessProvider?.(
+    ctx.agentId,
+    createTeamsReadinessProvider({
+      botFor: (botAppId) => {
+        const credentials = botCredentials.find(
+          (candidate) => candidate.identity.appId.toLowerCase() === botAppId,
+        );
+        if (!credentials) return undefined;
+        const graph = readinessGraphByAppId.get(botAppId) ?? graphResolverForBot(credentials);
+        readinessGraphByAppId.set(botAppId, graph);
+        return { displayName: credentials.identity.displayName, graph };
+      },
+      refs: conversationRefs,
+      probeMembership: createTeamsMembershipProbe(sendProactive),
+    }),
+  );
+  core.log(
+    'info',
+    `native facilitators (#2043): messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? 'on' : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
   );
   core.log(
     'info',

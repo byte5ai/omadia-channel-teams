@@ -91,6 +91,14 @@ export {
   type PollAnswerValue,
   type PollOption,
 } from './teamsPollCard.js';
+export {
+  CHAT_READ_ALL_RSC_PERMISSION,
+  createTeamsMembershipProbe,
+  createTeamsReadinessProvider,
+  GRANT_READ_GRAPH_PERMISSION,
+  type TeamsReadinessDeps,
+  type TeamsReadinessGraph,
+} from './teamsReadiness.js';
 export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 

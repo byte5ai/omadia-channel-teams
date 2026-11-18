@@ -253,6 +253,16 @@ export class TeamsGraphResolver {
   }
 
   /**
+   * One uncached Graph GET under this bot's registration (`path` relative to
+   * the v1.0 root, starting with '/'). Throws `GraphRequestError` with the
+   * HTTP status so the caller can tell "permission not granted" (401/403)
+   * and "not found" (404) from a transient failure.
+   */
+  getJson(path: string): Promise<Record<string, unknown>> {
+    return this.fetchJson(`${GRAPH_BASE}${path}`);
+  }
+
+  /**
    * People directory (Conductor human steps): tenant users matching `query`
    * on display name / mail / UPN via Graph `$search` (needs the
    * `User.Read.All` application permission). Not cached — the kernel bounds

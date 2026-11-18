@@ -291,3 +291,101 @@ export function simulatedBot(kernel: SimulatedKernel): SimulatedBot {
   };
   return { bot, turns, sent, deliver };
 }
+
+// ---------------------------------------------------------------------------
+// Simulated Microsoft Graph + Bot Connector
+// ---------------------------------------------------------------------------
+
+export const GRAPH_RESOURCE_APP_ID = '00000003-0000-0000-c000-000000000000';
+
+/** One row of `GET /chats/{id}/permissionGrants`
+ *  (`resourceSpecificPermissionGrant`). */
+export function rscGrant(bot: SimBot, permission: string): Record<string, unknown> {
+  return {
+    id: `grant-${bot.appId.slice(0, 8)}-${permission}`,
+    clientAppId: bot.appId,
+    clientId: `sp-${bot.appId.slice(0, 8)}`,
+    resourceAppId: GRAPH_RESOURCE_APP_ID,
+    permissionType: 'Application',
+    permission,
+  };
+}
+
+/** A Graph error body as the service returns it. */
+export function graphError(code: string, message: string): Record<string, unknown> {
+  return {
+    error: {
+      code,
+      message,
+      innerError: { date: '2026-11-18T09:15:00', 'request-id': 'b0c9a2f4-0000-4000-8000-000000000001' },
+    },
+  };
+}
+
+type GraphReply = { status: number; body: Record<string, unknown> };
+
+/**
+ * `fetch` for `TeamsGraphResolver`: the Entra token endpoint plus
+ * `/chats/{id}/permissionGrants`. Grants are per chat; a chat that was never
+ * configured answers 404 like an id Graph does not know.
+ */
+export class SimulatedGraph {
+  readonly requests: string[] = [];
+  private readonly grantReplies = new Map<string, GraphReply>();
+
+  setGrants(conversationId: string, grants: Record<string, unknown>[]): void {
+    this.grantReplies.set(conversationId, {
+      status: 200,
+      body: {
+        '@odata.context': `https://graph.microsoft.com/v1.0/$metadata#chats('${encodeURIComponent(conversationId)}')/permissionGrants`,
+        value: grants,
+      },
+    });
+  }
+
+  setGrantsError(conversationId: string, status: number, code: string, message: string): void {
+    this.grantReplies.set(conversationId, { status, body: graphError(code, message) });
+  }
+
+  readonly fetch: typeof fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    this.requests.push(url);
+    if (url.startsWith('https://login.microsoftonline.com/')) {
+      return json(200, { token_type: 'Bearer', expires_in: 3599, access_token: 'simulated-token' });
+    }
+    const match = /^https:\/\/graph\.microsoft\.com\/v1\.0\/chats\/([^/]+)\/permissionGrants$/.exec(url);
+    if (match?.[1]) {
+      const reply = this.grantReplies.get(decodeURIComponent(match[1]));
+      if (reply) return json(reply.status, reply.body);
+    }
+    return json(404, graphError('NotFound', 'NotFound'));
+  };
+}
+
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+/** An error as the Bot Connector client raises it: `statusCode` plus the
+ *  service's `{ error: { code, message } }` body. */
+export function connectorError(statusCode: number, code: string, message: string): Error {
+  return Object.assign(new Error(message), {
+    statusCode,
+    code,
+    body: { error: { code, message } },
+    details: { error: { code, message } },
+  });
+}
+
+/** The conversation reference Bot Framework derives from an inbound activity. */
+export function referenceFor(bot: SimBot, conversationId: string, from: SimUser = ANNA): Record<string, unknown> {
+  return {
+    activityId: newMessageId(),
+    user: { id: from.id, name: from.name, aadObjectId: from.aadObjectId },
+    bot: { id: bot.key, name: bot.name },
+    conversation: { isGroup: true, conversationType: 'groupChat', tenantId: TENANT_ID, id: conversationId },
+    channelId: 'msteams',
+    locale: 'de-DE',
+    serviceUrl: SERVICE_URL,
+  };
+}
