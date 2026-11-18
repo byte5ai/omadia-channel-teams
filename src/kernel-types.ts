@@ -445,3 +445,172 @@ export interface TeamsConfigShim {
   ATTACHMENT_PUBLIC_BASE_URL?: string;
   ATTACHMENT_SIGNED_URL_TTL_SEC: number;
 }
+
+// ---------------------------------------------------------------------------
+// Native facilitators (byte5ai/omadia#2043) — mirror of the channel-sdk 0.3.0
+// / plugin-api 1.55.0 additions
+// ---------------------------------------------------------------------------
+//
+// Mirrored structurally for the reason given at the top of this file: the
+// plugin ships independently of the kernel and is compiled against whatever
+// SDK the host tree carries. Sources of truth:
+//   channel-sdk  src/conversationMessage.ts, src/sessionCapabilities.ts,
+//                src/targetedSend.ts, src/coreApi.ts
+//   plugin-api   src/conversationMessages.ts, src/sessionCapabilities.ts
+// Every CoreApi member below is OPTIONAL in the kernel contract and is
+// feature-detected in plugin.ts; a kernel without them leaves this plugin's
+// behaviour exactly as it was.
+
+/** A channel user as the kernel addresses one (`ChannelUserRef`, narrowed to
+ *  the Teams namespace this plugin emits). */
+export interface TeamsUserRef {
+  kind: 'teams-aad';
+  /** AAD object id when the activity carries one, else the channel id. */
+  id: string;
+  displayName?: string;
+  email?: string;
+}
+
+export type ConversationMessageKind =
+  | 'created'
+  | 'edited'
+  | 'deleted'
+  | 'reaction'
+  | 'card_answer';
+
+/** One inbound message event. This is not a turn: emitting it starts no
+ *  model call. */
+export interface ConversationMessageEvent {
+  /** The emitting channel plugin's catalog id. */
+  channelId: string;
+  channelType: string;
+  conversationId: string;
+  conversationType?: 'direct' | 'group';
+  /** The bot identity that received the event (`28:<appId>`). */
+  receivedByChannelKey: string;
+  /** Platform message id; for 'reaction' / 'card_answer' the message reacted
+   *  to / the card answered. */
+  messageId: string;
+  /** 0 for the original; incremented per platform edit. */
+  revision: number;
+  kind: ConversationMessageKind;
+  /** The platform-verified sender. Never derived from message text. */
+  author: TeamsUserRef;
+  tenantId?: string;
+  /** Plain text, mentions resolved, markup stripped. Absent for 'deleted'. */
+  text?: string;
+  replyToMessageId?: string;
+  quoted?: boolean;
+  forwarded?: boolean;
+  reaction?: { name: string; removed: boolean };
+  cardAnswer?: { cardId: string; value: unknown };
+  /** ISO 8601 timestamp of the platform event. */
+  occurredAt: string;
+  /** The original platform event, opaque to the kernel and not stored. */
+  rawEvent?: unknown;
+}
+
+export interface ChannelReadinessIssue {
+  /** e.g. 'app_not_installed', 'consent_missing', 'cannot_post', 'no_identity'. */
+  code: string;
+  /** Precise, operator-readable reason. */
+  message: string;
+}
+
+export interface ChannelReadinessReport {
+  ready: boolean;
+  installed: boolean;
+  /** Teams: RSC `ChatMessage.Read.Chat` consented in this chat. */
+  canReadAllMessages: boolean;
+  canPost: boolean;
+  /** Empty when `ready`. One entry per thing that is missing. */
+  missing: readonly ChannelReadinessIssue[];
+}
+
+/** RETURNS what is missing instead of throwing. */
+export interface ChannelReadinessProvider {
+  channelType: string;
+  check(conversationId: string, opts: { asChannelKey: string }): Promise<ChannelReadinessReport>;
+}
+
+export type SessionInputCapability =
+  | 'text'
+  | 'message_edits'
+  | 'reactions'
+  | 'card_answers'
+  | 'presence'
+  | 'hand_raise'
+  | 'transcribed_speech'
+  | 'shared_documents';
+
+export type SessionOutputCapability =
+  | 'text'
+  | 'mentions'
+  | 'cards'
+  | 'polls'
+  | 'private_messages'
+  | 'pinned_surface'
+  | 'voice'
+  | 'screen';
+
+export interface SessionCapabilitySnapshot {
+  channelType: string;
+  conversationId: string;
+  /** The live session (meeting) the snapshot is about; absent for the
+   *  conversation's asynchronous baseline. */
+  sessionRef?: string;
+  modality: 'chat' | 'online' | 'hybrid';
+  inputs: readonly SessionInputCapability[];
+  outputs: readonly SessionOutputCapability[];
+  /** ISO 8601. */
+  capturedAt: string;
+}
+
+/** `undefined` when the provider knows nothing about the conversation. */
+export interface MeetingSourceProvider {
+  channelType: string;
+  snapshot(
+    conversationId: string,
+    opts: { asChannelKey?: string; sessionRef?: string },
+  ): Promise<SessionCapabilitySnapshot | undefined>;
+}
+
+/** A person to @mention; `text` occurs in the message text. */
+export interface TargetedMention {
+  user: TeamsUserRef | { kind: string; id: string; displayName?: string; email?: string };
+  /** The display text standing in the message (e.g. '@Anna Köhler'). */
+  text: string;
+}
+
+/** Third argument of `TargetedSendProvider.sendToUser`. */
+export interface TargetedSendOptions {
+  /** Identity the DM must come from (`28:<appId>`). Never substituted. */
+  asChannelKey?: string;
+}
+
+/** `TargetedDeliveryOutcome` including the 0.3.0 additions (`messageId`,
+ *  `app_not_installed`, `blocked`). */
+export type FacilitatorDeliveryOutcome =
+  | { outcome: 'delivered'; messageId?: string }
+  | {
+      outcome: 'unreachable';
+      code:
+        | 'no_binding'
+        | 'user_not_found'
+        | 'channel_error'
+        | 'not_permitted'
+        | 'app_not_installed'
+        | 'blocked';
+      message: string;
+    };
+
+/** The CoreApi members this plugin feature-detects for #2043. */
+export interface NativeFacilitatorCoreApi {
+  emitConversationMessage?(event: ConversationMessageEvent): void;
+  /** Synchronous and kernel-cached; `false` for anything not positively
+   *  subscribed. Absent means the mention gate always applies. */
+  isAllMessagesSubscribed?(channelType: string, conversationId: string, channelKey: string): boolean;
+  registerReadinessProvider?(channelId: string, provider: ChannelReadinessProvider): void;
+  registerMeetingSourceProvider?(channelId: string, provider: MeetingSourceProvider): void;
+  emitSessionCapabilities?(snapshot: SessionCapabilitySnapshot): void;
+}
