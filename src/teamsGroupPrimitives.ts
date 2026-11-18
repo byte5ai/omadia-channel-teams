@@ -40,9 +40,14 @@ import type {
 const MAX_CACHED_REFERENCES = 500;
 
 /** Teams' native `conversation.conversationType` → the SDK's binary notion.
- *  'personal' is a 1:1; 'groupChat' and 'channel' are groups; unknown stays
- *  undefined (consumers treat unknown as direct — no group semantics without
- *  a positive statement). */
+ *  'personal' is the bot's own 1:1 with a person; 'groupChat' and 'channel'
+ *  are groups; unknown stays undefined (consumers treat unknown as direct —
+ *  no group semantics without a positive statement).
+ *
+ *  'group' says NOTHING about how many people are in the chat. A 1:1 between
+ *  two people with an agent app installed (`19:…@unq.gbl.spaces`, Graph
+ *  `chatType: oneOnOne`) arrives as `groupChat` (seen live, 2026-11-18). Who
+ *  is in a chat comes from the roster, never from this value. */
 export function toSdkConversationType(teamsType: string | undefined): ConversationType | undefined {
   if (teamsType === 'personal') return 'direct';
   if (teamsType === 'groupChat' || teamsType === 'channel') return 'group';

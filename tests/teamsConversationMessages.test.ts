@@ -85,6 +85,21 @@ describe('#43 mention gate under a message subscription', () => {
     assert.equal(sim.turns.length, 1, 'only the mention reaches the agent, as before');
   });
 
+  it('handles a two-person chat with an agent app like any moderated chat', async () => {
+    // Teams delivers a 1:1 between two people as `groupChat`; nothing here
+    // may conclude a head count from the conversation type.
+    const twoPersonChat = '19:5b1e2c3d-4f5a-4b6c-8d7e-9f0a1b2c3d4e_6c2f3d4e-5a6b-4c7d-9e8f-0a1b2c3d4e5f@unq.gbl.spaces';
+    const kernel = new SimulatedKernel();
+    kernel.subscribe(twoPersonChat, MIRA);
+    const sim = simulatedBot(kernel);
+
+    await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'A', conversationId: twoPersonChat }));
+
+    assert.equal(kernel.events.length, 1);
+    assert.equal(kernel.events[0]?.conversationType, 'group');
+    assert.deepEqual(sim.turns, []);
+  });
+
   it('keeps the gate for another bot in the same chat', async () => {
     const kernel = new SimulatedKernel();
     kernel.subscribe(GROUP_CHAT_ID, MIRA);
