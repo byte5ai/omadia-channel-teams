@@ -13,7 +13,9 @@ import {
   POLL_ANSWER_VERB,
   TeamsConversationReferenceCache,
   TeamsGraphResolver,
+  TeamsMeetingSessions,
 } from '@omadia/channel-teams';
+import type { TeamsSessionEvent } from '@omadia/channel-teams';
 import type { TeamsConversationRefPersistence } from '@omadia/channel-teams';
 
 import {
@@ -26,6 +28,8 @@ import {
   GROUP_CHAT_ID,
   JONAS,
   MEETING_CHAT_ID,
+  meetingLifecycleActivity,
+  meetingParticipantActivity,
   membersAddedActivity,
   messageActivity,
   messageWritesBlockedError,
@@ -74,6 +78,7 @@ interface Instance {
   graph: SimulatedGraph;
   refs: TeamsConversationReferenceCache;
   membership: Record<string, unknown>[];
+  sessionEvents: TeamsSessionEvent[];
   bot: ReturnType<typeof simulatedBot>;
   post: ReturnType<typeof createTeamsConversationSendAdapter>['sendToConversation'];
   dm: ReturnType<typeof createTeamsTargetedSendAdapter>['sendToUser'];
@@ -103,11 +108,18 @@ function startInstance(
   const refs = new TeamsConversationReferenceCache();
   refs.attachPersistence(table);
   const membership: Record<string, unknown>[] = [];
+  const sessionEvents: TeamsSessionEvent[] = [];
+  const meetingSessions = new TeamsMeetingSessions({
+    emit: (event) => {
+      sessionEvents.push(event);
+    },
+  });
   const bot = simulatedBot(kernel, {
     captureConversationReference: (context) => refs.capture(context),
     emitMembershipEvent: (event) => {
       membership.push(event);
     },
+    meetingSessions,
   });
   const postAdapter = createTeamsConversationSendAdapter({
     refs,
@@ -135,11 +147,16 @@ function startInstance(
     refs,
     table,
     membership,
+    sessionEvents,
     bot,
     post: postAdapter.sendToConversation.bind(postAdapter),
     dm: dmAdapter.sendToUser.bind(dmAdapter),
     readiness,
-    meetings: createTeamsMeetingSource({ refs }),
+    meetings: createTeamsMeetingSource({
+      refs,
+      sessions: meetingSessions,
+      grantedPermissions: (conversationId, asChannelKey) => readiness.grantedPermissions(conversationId, { asChannelKey }),
+    }),
   };
 }
 
@@ -434,3 +451,60 @@ describe('scenario 9 — a participant joining late', () => {
     ]);
   });
 });
+
+describe('scenario 7b — scheduled meeting with lifecycle and presence', () => {
+  it('start, people joining, a late joiner and the end reach the kernel; presence is declared only while proven', async () => {
+    const i = startInstance();
+    i.kernel.subscribe(MEETING_CHAT_ID, MIRA);
+    i.graph.install(MEETING_CHAT_ID, MIRA);
+    const inputs = async (): Promise<readonly string[]> =>
+      (await i.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key }))?.inputs ?? [];
+
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start', at: '2026-11-18T10:00:00.000Z' }));
+    assert.equal((await inputs()).includes('presence'), false, 'no participant event seen yet');
+    await i.bot.deliver(meetingParticipantActivity({ bot: MIRA, from: ANNA, phase: 'join', people: [ANNA, BERT], at: '2026-11-18T10:00:20.000Z' }));
+    assert.equal((await inputs()).includes('presence'), true);
+    await i.bot.deliver(meetingParticipantActivity({ bot: MIRA, from: CARLA, phase: 'join', people: [CARLA], at: '2026-11-18T10:25:00.000Z' }));
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'end', at: '2026-11-18T10:45:00.000Z' }));
+
+    assert.deepEqual(
+      i.sessionEvents.map((e) => [e.kind, e.participants?.map((p) => p.displayName), e.occurredAt]),
+      [
+        ['session_started', undefined, '2026-11-18T10:00:00.000Z'],
+        ['participant_joined', [ANNA.name, BERT.name], '2026-11-18T10:00:20.000Z'],
+        ['participant_joined', [CARLA.name], '2026-11-18T10:25:00.000Z'],
+        ['session_ended', undefined, '2026-11-18T10:45:00.000Z'],
+      ],
+    );
+    assert.equal((await inputs()).includes('presence'), false, 'withdrawn when the meeting ends');
+    assert.deepEqual(i.bot.turns, []);
+  });
+
+  it('an install from the earlier package gets no presence until its consent is upgraded', async () => {
+    const i = startInstance();
+    i.graph.install(MEETING_CHAT_ID, MIRA, { consented: ['ChatMessage.Read.Chat', 'ChatMember.Read.Chat', 'TeamsActivity.Send.Chat'] });
+    const hasPresence = async (): Promise<boolean> =>
+      ((await i.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key }))?.inputs ?? []).includes('presence');
+    // Simulated only: in Teams an install without the permissions would not
+    // receive these events at all.
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
+    await i.bot.deliver(meetingParticipantActivity({ bot: MIRA, from: ANNA, phase: 'join', people: [ANNA] }));
+    assert.equal(await hasPresence(), false, 'the grant is read from Graph, not assumed');
+
+    const repair = await i.readiness.repairConsent(MEETING_CHAT_ID, { asChannelKey: MIRA.key });
+
+    assert.equal(repair.outcome, 'upgraded');
+    assert.equal(await hasPresence(), true);
+  });
+
+  it('a Meet-now call keeps chat and cards only', async () => {
+    const i = startInstance();
+    i.graph.install(GROUP_CHAT_ID, MIRA);
+
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start', meetingType: 'MeetNow', conversationId: GROUP_CHAT_ID }));
+
+    const snapshot = await i.meetings.snapshot(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+    assert.deepEqual(snapshot?.inputs, ['text', 'message_edits', 'card_answers']);
+  });
+});
+

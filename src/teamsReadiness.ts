@@ -251,6 +251,13 @@ export interface TeamsReadinessProvider extends ChannelReadinessProvider {
    * read from the catalog, never from this repo's template.
    */
   repairConsent(conversationId: string, opts: { asChannelKey: string }): Promise<ConsentRepairOutcome>;
+  /**
+   * The RSC permissions granted to this bot's app in a chat right now, read
+   * from Graph. `undefined` when that cannot be read (no Graph client, a
+   * refusal, a channel, an unknown identity): the caller must then treat
+   * every permission as not granted.
+   */
+  grantedPermissions(conversationId: string, opts: { asChannelKey: string }): Promise<readonly string[] | undefined>;
 }
 
 export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsReadinessProvider {
@@ -383,6 +390,17 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       }
       if (postIssue) missing.push(postIssue);
       return report({ installed, canReadAllMessages, canPost }, missing);
+    },
+
+    async grantedPermissions(conversationId, opts): Promise<readonly string[] | undefined> {
+      const identity = identify(opts.asChannelKey);
+      if ('code' in identity || !deps.graph) return undefined;
+      const reference = await ownReference(conversationId, identity.botAppId);
+      const scope = scopeFor(conversationId, reference?.teamsType);
+      if ('missingTeamId' in scope || scope.kind !== 'chat') return undefined;
+      const graph = deps.graph;
+      const grants = await lookup(() => readGrants(graph, scope, identity.botAppId));
+      return grants.state === 'read' ? grants.value : undefined;
     },
 
     async repairConsent(conversationId, opts): Promise<ConsentRepairOutcome> {

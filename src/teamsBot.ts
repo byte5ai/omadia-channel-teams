@@ -25,6 +25,7 @@ import type {
 } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
 import type { TeamsConversationMessages } from './teamsConversationMessages.js';
+import type { TeamsMeetingSessions } from './teamsMeetingSessions.js';
 import { parsePollAnswerValue } from './teamsPollCard.js';
 import { pickChatAgentForTurn } from './agentForTurn.js';
 
@@ -598,6 +599,21 @@ export class TeamsBot extends TeamsActivityHandler {
       this.emitMessageLifecycleEvent(context, 'deleted');
       await next();
     });
+    // #2043 / #44 — meeting start/end and participant join/leave become
+    // session events. One handler each; all four end in the same record.
+    const onMeetingEvent = async (context: TurnContext, next: () => Promise<void>): Promise<void> => {
+      this.groupPrimitives?.captureConversationReference(context);
+      const event = this.meetingSessions?.handle(context.activity);
+      console.error(
+        `[teams] meeting event name=${(context.activity.name ?? '-').trim()} conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… recorded=${String(event !== undefined)}`,
+      );
+      await next();
+    };
+    this.onTeamsMeetingStartEvent((_meeting, context, next) => onMeetingEvent(context, next));
+    this.onTeamsMeetingEndEvent((_meeting, context, next) => onMeetingEvent(context, next));
+    this.onTeamsMeetingParticipantsJoinEvent((_meeting, context, next) => onMeetingEvent(context, next));
+    this.onTeamsMeetingParticipantsLeaveEvent((_meeting, context, next) => onMeetingEvent(context, next));
+
     // One handler for added AND removed: the activity carries both lists.
     this.onMessageReaction(async (context, next) => {
       this.emitMessageLifecycleEvent(context, 'reaction');
@@ -624,6 +640,25 @@ export class TeamsBot extends TeamsActivityHandler {
       type: 'application/vnd.microsoft.activity.message',
       value: (isRecorded ? POLL_ANSWER_SENT_TEXT : POLL_NOT_ACTIVE_TEXT) as unknown as Record<string, unknown>,
     };
+  }
+
+  /**
+   * #2043 / #44 — Microsoft's own samples show the meeting start and end
+   * event names with a leading space. The SDK dispatches on the exact name,
+   * so a padded name would fall through silently; it is trimmed first.
+   */
+  protected override async dispatchEventActivity(context: TurnContext): Promise<void> {
+    const name = context.activity.name;
+    if (typeof name === 'string' && name !== name.trim()) {
+      context.activity.name = name.trim();
+    }
+    await super.dispatchEventActivity(context);
+  }
+
+  private meetingSessions?: TeamsMeetingSessions;
+
+  attachMeetingSessions(sessions: TeamsMeetingSessions): void {
+    this.meetingSessions = sessions;
   }
 
   /** #2043 — late-bound like the proactive sender: present only when the

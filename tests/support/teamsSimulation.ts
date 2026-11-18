@@ -11,6 +11,7 @@
 import type { Activity, TurnContext } from 'botbuilder';
 
 import { TeamsBot, TeamsConversationMessages } from '@omadia/channel-teams';
+import type { TeamsMeetingSessions } from '@omadia/channel-teams';
 import type { ConversationMessageEvent } from '../../src/kernel-types.js';
 
 export const TENANT_ID = '72f988bf-86f1-41af-91ab-2d7cd011db47';
@@ -203,6 +204,64 @@ export function cardExecuteActivity(
   };
 }
 
+export const MEETING_ID = 'MCMxOTptZWV0aW5nX01qZGhOak00WXpVdFl6RXhaaTAwT1RGa0xXRTVZamN0TlRWa1lUUTBaR1ZsTTJKaEB0aHJlYWQudjIjMA==';
+
+/**
+ * Meeting start / end as Microsoft Learn shows them ("meeting-apps-apis"):
+ * an `event` activity whose `value` carries `Id`, `JoinUrl`, `Title`,
+ * `MeetingType`, `StartTime`, `EndTime` in that casing. The page's samples
+ * print the name with a LEADING SPACE; `paddedName` reproduces that.
+ */
+export function meetingLifecycleActivity(
+  input: BaseInput & { phase: 'start' | 'end'; meetingType?: string; at?: string; paddedName?: boolean; meetingId?: string },
+): Partial<Activity> {
+  const at = input.at ?? '2026-11-18T10:00:00.000Z';
+  const name = input.phase === 'start' ? 'application/vnd.microsoft.meetingStart' : 'application/vnd.microsoft.meetingEnd';
+  return {
+    ...baseActivity({ ...input, conversationId: input.conversationId ?? MEETING_CHAT_ID, timestamp: at }),
+    type: 'event',
+    name: input.paddedName ? ` ${name}` : name,
+    value: {
+      Id: 'value-id-not-to-be-used',
+      JoinUrl: 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0',
+      Title: 'Budgetrunde',
+      MeetingType: input.meetingType ?? 'Scheduled',
+      StartTime: input.phase === 'start' ? at : null,
+      EndTime: input.phase === 'end' ? at : null,
+    },
+    channelData: { tenant: { id: TENANT_ID }, meeting: { id: input.meetingId ?? MEETING_ID } },
+  };
+}
+
+/** Participant join / leave as the same page shows them: `value.members[]`
+ *  with `user` (`id`, `aadObjectId`, `name`, `tenantId`, `objectId`) and
+ *  `meeting` (`inMeeting`, on join also `role`). */
+export function meetingParticipantActivity(
+  input: BaseInput & { phase: 'join' | 'leave'; people: SimUser[]; at?: string; meetingId?: string },
+): Partial<Activity> {
+  return {
+    ...baseActivity({ ...input, conversationId: input.conversationId ?? MEETING_CHAT_ID, timestamp: input.at ?? '2026-11-18T10:05:00.000Z' }),
+    type: 'event',
+    name:
+      input.phase === 'join'
+        ? 'application/vnd.microsoft.meetingParticipantJoin'
+        : 'application/vnd.microsoft.meetingParticipantLeave',
+    value: {
+      members: input.people.map((person) => ({
+        user: {
+          tenantId: TENANT_ID,
+          objectId: person.aadObjectId,
+          id: `${person.id} `,
+          name: person.name,
+          aadObjectId: ` ${person.aadObjectId} `,
+        },
+        meeting: input.phase === 'join' ? { inMeeting: true, role: 'Attendee' } : { inMeeting: false },
+      })),
+    },
+    channelData: { tenant: { id: TENANT_ID }, meeting: { id: input.meetingId ?? MEETING_ID } },
+  };
+}
+
 /** `conversationUpdate` for a person added to the chat. */
 export function membersAddedActivity(input: BaseInput & { added: SimUser[] }): Partial<Activity> {
   return {
@@ -257,6 +316,7 @@ export function simulatedBot(
     emitMembershipEvent: (event: Record<string, unknown>) => void;
     /** What the agent answers; '' models the kernel's empty safety-net answer. */
     answerText?: string;
+    meetingSessions?: TeamsMeetingSessions;
   },
 ): SimulatedBot {
   const turns: string[] = [];
@@ -300,6 +360,7 @@ export function simulatedBot(
       },
     }),
   );
+  if (group?.meetingSessions) bot.attachMeetingSessions(group.meetingSessions);
   const deliver = async (activity: Partial<Activity>): Promise<void> => {
     const context = {
       activity,

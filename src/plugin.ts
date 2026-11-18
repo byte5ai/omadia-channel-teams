@@ -28,6 +28,7 @@ import { TeamsGraphResolver } from './teamsGraphResolver.js';
 import { TeamsConversationMessages } from './teamsConversationMessages.js';
 import { createTeamsReadinessProvider } from './teamsReadiness.js';
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
+import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
 import type { NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
@@ -797,7 +798,29 @@ export async function activate(
     );
   }
   // #2043 / #44 — meeting source: the capability snapshot of a conversation.
-  const meetingSource = createTeamsMeetingSource({ refs: conversationRefs });
+  // Meeting start/end and participant events: recorded per bot and chat,
+  // passed to the kernel as session events (`emitSessionEvent` arrives with
+  // kernel K5 and is read structurally until then), and the reason to push a
+  // fresh snapshot.
+  const emitSessionEvent = (
+    core as { emitSessionEvent?: (event: TeamsSessionEvent) => void }
+  ).emitSessionEvent?.bind(core);
+  const meetingSessions = new TeamsMeetingSessions({
+    ...(emitSessionEvent
+      ? {
+          // The catalog id is authoritative here — the bot cannot know it.
+          emit: (event: TeamsSessionEvent): void => emitSessionEvent({ ...event, channelId: ctx.agentId }),
+        }
+      : {}),
+    onLifecycleChange: (conversationId, botKey) => announceCapabilities?.(conversationId, botKey),
+  });
+  bot.attachMeetingSessions(meetingSessions);
+  const meetingSource = createTeamsMeetingSource({
+    refs: conversationRefs,
+    sessions: meetingSessions,
+    grantedPermissions: (conversationId, asChannelKey) =>
+      readinessProvider.grantedPermissions(conversationId, { asChannelKey }),
+  });
   facilitatorCore.registerMeetingSourceProvider?.(ctx.agentId, meetingSource);
   // A bot that joins a chat changes what that chat offers its agent: report
   // the snapshot once, the kernel reads it on demand afterwards.
@@ -816,7 +839,7 @@ export async function activate(
   }
   core.log(
     'info',
-    `native facilitators (#2043): meetingSource=${typeof facilitatorCore.registerMeetingSourceProvider === 'function' ? 'on' : 'kernel<2043'}, messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? 'on' : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
+    `native facilitators (#2043): meetingSource=${typeof facilitatorCore.registerMeetingSourceProvider === 'function' ? 'on' : 'kernel<2043'}, sessionEvents=${emitSessionEvent ? 'on' : 'kernel<K5'}, messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? 'on' : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
   );
   core.log(
     'info',

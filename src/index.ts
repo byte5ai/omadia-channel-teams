@@ -109,8 +109,23 @@ export {
 export {
   createTeamsMeetingSource,
   isTeamsMeetingChat,
+  MEETING_LIFECYCLE_RSC_PERMISSION,
+  MEETING_PARTICIPANT_RSC_PERMISSION,
   type TeamsMeetingSourceDeps,
 } from './teamsMeetingSource.js';
+export {
+  MEETING_END_EVENT,
+  MEETING_PARTICIPANT_JOIN_EVENT,
+  MEETING_PARTICIPANT_LEAVE_EVENT,
+  MEETING_START_EVENT,
+  participantsOf,
+  sessionEventKind,
+  TeamsMeetingSessions,
+  type TeamsMeetingSessionSink,
+  type TeamsMeetingState,
+  type TeamsSessionEvent,
+  type TeamsSessionEventKind,
+} from './teamsMeetingSessions.js';
 export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 
