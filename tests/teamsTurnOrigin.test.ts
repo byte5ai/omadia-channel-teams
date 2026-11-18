@@ -1,5 +1,9 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { teamsSessionScope, teamsTurnOrigin } from '@omadia/channel-teams';
 
 /**
@@ -274,5 +278,89 @@ describe('W5 teamsTurnOrigin — fail-closed inputs', () => {
     const second = teamsTurnOrigin({}, teamsSessionScope({ id: 'act-2' }), 'u-1');
 
     assert.notDeepEqual(first.scope, second.scope);
+  });
+});
+
+/**
+ * byte5ai/omadia#2043 — GROUP OR DIRECT, STATED ON THE ORIGIN.
+ *
+ * 0.36.0 to 0.36.2 built the origin without `conversationType`. The kernel's
+ * facilitator wrapper tells a group turn from a private request by exactly
+ * that field, so every mention of a facilitator in a channel or a group chat
+ * was refused before the model ran ("I am a moderator, not an assistant").
+ * The simulated channel of the integration runs set the field; this adapter
+ * did not.
+ *
+ * `kernelIsGroupTurn` is the kernel's `isGroupTurn`
+ * (`middleware/packages/harness-orchestrator/src/facilitatorAgent.ts`),
+ * copied. The last test compares the copy with the kernel source when a
+ * kernel checkout sits next to this repo.
+ */
+const KERNEL_IS_GROUP_TURN_BODY = [
+  'const origin = input.origin;',
+  'if (!origin) return false;',
+  "if (origin.scope.kind === 'group') return true;",
+  "return origin.scope.kind === 'conversation' && origin.conversationType === 'group';",
+];
+
+function kernelIsGroupTurn(input: { origin?: ReturnType<typeof teamsTurnOrigin> }): boolean {
+  const origin = input.origin;
+  if (!origin) return false;
+  if ((origin.scope.kind as string) === 'group') return true;
+  return origin.scope.kind === 'conversation' && origin.conversationType === 'group';
+}
+
+describe('#2043 teamsTurnOrigin — group or direct, as Teams states it', () => {
+  const TEAM = { team: { id: '19:team-a@thread.tacv2' } };
+  const cases: ReadonlyArray<{
+    name: string;
+    conversation: { conversationType?: string; isGroup?: boolean };
+    channelData?: unknown;
+    sessionScope: string;
+    expected: 'group' | 'direct' | undefined;
+    isGroupTurn: boolean;
+  }> = [
+    { name: 'a team channel', conversation: { conversationType: 'channel', isGroup: true }, channelData: TEAM, sessionScope: 'teams-19:general@thread.tacv2', expected: 'group', isGroupTurn: true },
+    { name: 'a group chat', conversation: { conversationType: 'groupChat', isGroup: true }, sessionScope: 'teams-19:group@thread.v2', expected: 'group', isGroupTurn: true },
+    // A meeting chat arrives as `groupChat`; only its id says "meeting".
+    { name: 'a meeting chat', conversation: { conversationType: 'groupChat', isGroup: true }, sessionScope: 'teams-19:meeting_MjdhNjM4@thread.v2', expected: 'group', isGroupTurn: true },
+    { name: 'a 1:1 with the bot', conversation: { conversationType: 'personal' }, sessionScope: 'teams-a:1on1', expected: 'direct', isGroupTurn: false },
+    { name: 'a group without a type', conversation: { isGroup: true }, sessionScope: 'teams-19:group@thread.v2', expected: 'group', isGroupTurn: true },
+    { name: 'a type this adapter does not know', conversation: { conversationType: 'somethingNew' }, sessionScope: 'teams-19:x@thread.v2', expected: undefined, isGroupTurn: false },
+    { name: 'no statement at all', conversation: {}, sessionScope: 'teams-19:x@thread.v2', expected: undefined, isGroupTurn: false },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name} → ${c.expected ?? 'unstated'}`, () => {
+      const origin = teamsTurnOrigin(
+        { conversation: c.conversation, ...(c.channelData ? { channelData: c.channelData } : {}) },
+        c.sessionScope,
+        'aad-oid-1',
+      );
+
+      assert.equal(origin.conversationType, c.expected);
+      assert.equal(Object.hasOwn(origin, 'conversationType'), c.expected !== undefined, 'no `conversationType: undefined` key');
+      assert.equal(kernelIsGroupTurn({ origin }), c.isGroupTurn, 'what the kernel decides from this origin');
+    });
+  }
+
+  it('a 1:1 without a user id falls back to a conversation scope and is still not a group', () => {
+    // The case the kernel's rule exists for: scope `conversation`, yet private.
+    const origin = teamsTurnOrigin({ conversation: { conversationType: 'personal' } }, 'teams-a:1on1', undefined);
+
+    assert.equal(origin.scope.kind, 'conversation');
+    assert.equal(origin.conversationType, 'direct');
+    assert.equal(kernelIsGroupTurn({ origin }), false);
+  });
+
+  it('the copied kernel rule is the kernel rule, where a kernel checkout is present', () => {
+    // CI has no kernel checkout; then the copy stands as written.
+    const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const kernelFile = join(pkgRoot, '..', 'odoo-bot', 'middleware', 'packages', 'harness-orchestrator', 'src', 'facilitatorAgent.ts');
+    if (!existsSync(kernelFile)) return;
+    const body = /export function isGroupTurn\(input: ChatTurnInput\): boolean \{([\s\S]*?)\n\}/.exec(readFileSync(kernelFile, 'utf8'))?.[1];
+    assert.ok(body, 'isGroupTurn not found in the kernel source');
+    const lines = body.split('\n').map((line) => line.trim()).filter((line) => line.length > 0 && !line.startsWith('//'));
+    assert.deepEqual(lines, KERNEL_IS_GROUP_TURN_BODY, 'the kernel reads the origin differently now: update this suite and check teamsTurnOrigin');
   });
 });

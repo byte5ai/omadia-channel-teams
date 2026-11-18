@@ -168,6 +168,65 @@ async function settle(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
+describe('scenario 0 — the mention that opens a facilitation', () => {
+  // Nobody is subscribed yet: the mention is an ordinary turn, and the kernel
+  // decides from its origin whether a facilitator may act (group) or has to
+  // refuse (private request). 0.36.0 to 0.36.2 sent no `conversationType`,
+  // so the kernel refused every such mention.
+  const isGroupForKernel = (origin: unknown): boolean => {
+    const o = origin as { scope?: { kind?: string }; conversationType?: string } | undefined;
+    if (!o) return false;
+    if (o.scope?.kind === 'group') return true;
+    return o.scope?.kind === 'conversation' && o.conversationType === 'group';
+  };
+
+  it('a mention in a group chat, a team channel and a meeting chat reaches the turn with a group origin', async () => {
+    const CHANNEL_THREAD = '19:5f0c1a2b3c4d4e5f8a9b0c1d2e3f4a5b@thread.tacv2;messageid=1731930000000';
+    const activities = [
+      messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true }),
+      {
+        // A channel message as Teams sends it: the thread in the id, the team
+        // and the channel in `channelData`.
+        ...messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: CHANNEL_THREAD, conversationType: 'channel' }),
+        channelData: {
+          teamsChannelId: '19:5f0c1a2b3c4d4e5f8a9b0c1d2e3f4a5b@thread.tacv2',
+          teamsTeamId: '19:general@thread.tacv2',
+          channel: { id: '19:5f0c1a2b3c4d4e5f8a9b0c1d2e3f4a5b@thread.tacv2' },
+          team: { id: '19:general@thread.tacv2' },
+          tenant: { id: TENANT_ID },
+        },
+      },
+      messageActivity({ bot: MIRA, from: ANNA, text: 'starte eine Abstimmung', mention: true, conversationId: MEETING_CHAT_ID }),
+    ];
+    for (const activity of activities) {
+      const i = startInstance();
+
+      await i.bot.deliver(activity);
+
+      assert.equal(i.bot.turns.length, 1, 'the mention is a turn');
+      const origin = i.bot.origins[0] as { channelType?: string; conversationType?: string; scope?: { kind?: string } };
+      assert.equal(origin.channelType, 'teams');
+      assert.equal(origin.scope?.kind, 'conversation');
+      assert.equal(origin.conversationType, 'group', String(activity.conversation?.id));
+      assert.equal(isGroupForKernel(origin), true, 'the kernel lets a facilitator act here');
+    }
+  });
+
+  it('a message in the 1:1 with the bot reaches the turn as a private request', async () => {
+    const i = startInstance();
+
+    await i.bot.deliver(
+      messageActivity({ bot: MIRA, from: ANNA, text: 'hilf mir', conversationId: 'a:1dRsHCobZ1AxURzY05Dc_personal', conversationType: 'personal' }),
+    );
+
+    assert.equal(i.bot.turns.length, 1);
+    const origin = i.bot.origins[0] as { conversationType?: string; scope?: { kind?: string } };
+    assert.equal(origin.scope?.kind, 'personal');
+    assert.equal(origin.conversationType, 'direct');
+    assert.equal(isGroupForKernel(origin), false, 'a facilitator refuses a private request');
+  });
+});
+
 describe('scenario 1 — message without mention', () => {
   it('four people vote, two without mentioning the bot: every vote is recorded with its author', async () => {
     const i = startInstance();

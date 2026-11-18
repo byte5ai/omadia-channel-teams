@@ -298,6 +298,8 @@ export interface SimulatedBot {
   bot: TeamsBot;
   /** One entry per turn the agent was asked to answer. */
   turns: string[];
+  /** The `origin` each turn was handed to the agent with, in turn order. */
+  origins: unknown[];
   /** Everything the bot sent back into the conversation. */
   sent: unknown[];
   /** Deliver one activity as the Bot Framework adapter would. */
@@ -322,12 +324,14 @@ export function simulatedBot(
   },
 ): SimulatedBot {
   const turns: string[] = [];
+  const origins: unknown[] = [];
   const sent: unknown[] = [];
   const history = new Map<string, unknown[]>();
   const bot = new (TeamsBot as unknown as new (...args: unknown[]) => TeamsBot)(
     {
-      chat: async (input: { userMessage: string }) => {
+      chat: async (input: { userMessage: string; origin?: unknown }) => {
         turns.push(input.userMessage);
+        origins.push(input.origin);
         return group?.answer ?? { text: group?.answerText ?? 'ok' };
       },
     },
@@ -380,7 +384,7 @@ export function simulatedBot(
     } as unknown as TurnContext;
     await bot.run(context);
   };
-  return { bot, turns, sent, deliver };
+  return { bot, turns, origins, sent, deliver };
 }
 
 // ---------------------------------------------------------------------------

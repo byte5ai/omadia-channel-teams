@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.36.3
+
+A facilitator refused every mention in a team channel or a group chat ("I am a moderator,
+not an assistant … add me to the group chat"), before the model ran. The turn origin this
+channel sends carried no `conversationType`, and the kernel treats a turn as a group turn
+only on a positive `conversationType: 'group'`. Other agents were not affected: only the
+facilitator wrapper reads the field.
+
+- **Turn origin states group or direct** (`teamsTurnOrigin`): `channel` and `groupChat`
+  (a meeting chat is a `groupChat`) are `group`, `personal` is `direct`. Without a type,
+  `conversation.isGroup === true` counts as `group`; anything else stays unstated. Both
+  paths that start a turn (inline and the detached card-click continuation) build the
+  origin there.
+- **Tests**: the origin per conversation kind, checked against a copy of the kernel's
+  `isGroupTurn` (compared with the kernel source where a checkout is present), and a
+  scenario in which a mention in a group chat, a channel and a meeting chat reaches the
+  turn with a group origin.
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
 ## 0.36.2
 
 An agent app built from the template could not be installed into a team: Graph's team

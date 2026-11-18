@@ -306,12 +306,24 @@ function teamsContainerTeamId(channelData: unknown): string | undefined {
  */
 export function teamsTurnOrigin(
   activity: {
-    readonly conversation?: { readonly conversationType?: string | undefined } | undefined;
+    readonly conversation?:
+      | { readonly conversationType?: string | undefined; readonly isGroup?: boolean | undefined }
+      | undefined;
     readonly channelData?: unknown;
   },
   sessionScope: string,
   userId: string | undefined,
 ): TurnOrigin {
+  // #2043 — group or direct, as Teams states it. The kernel reads this and
+  // nothing else to tell a group turn from a private request when the scope
+  // is a `conversation` (a facilitator refuses everything that is not
+  // positively a group). `channel` and `groupChat` (a meeting chat is a
+  // `groupChat`) are groups, `personal` is direct. Without a type,
+  // `conversation.isGroup === true` is the same statement by the platform;
+  // anything else stays unstated.
+  const conversationType =
+    toSdkConversationType(activity.conversation?.conversationType) ??
+    (activity.conversation?.isGroup === true ? ('group' as const) : undefined);
   const isPersonal = activity.conversation?.conversationType === 'personal';
   // A blank `userId` would build `personal:` — a scope every anonymous 1:1 turn
   // would share. Fall back to the conversation scope instead.
@@ -324,6 +336,7 @@ export function teamsTurnOrigin(
   return {
     channelType: 'teams',
     scope,
+    ...(conversationType ? { conversationType } : {}),
     ...(teamId ? { container: { kind: 'team' as const, id: teamId } } : {}),
     ...(principal ? { principal } : {}),
   };
