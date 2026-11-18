@@ -84,7 +84,8 @@ The template requests eleven RSC permissions (Teams allows sixteen per app):
 | `OnlineMeetingParticipant.Read.Chat` | participant join and leave events, participant lookup |
 | `OnlineMeetingNotification.Send.Chat` | targeted in-meeting notification (requested, not used yet) |
 
-`TEMPLATE_REVISION` (a positive integer in a file of that name) counts changes
+`TEMPLATE_REVISION` (a positive integer in the file `TEMPLATE_REVISION.txt`; the
+extension is needed, the plugin zip ingest refuses extension-less files) counts changes
 of the template that change the published app definition, such as a new RSC
 permission. **A generator must fold it into `{{VERSION}}`**, for example
 `1.<TEMPLATE_REVISION>.<identity revision>`: Teams replaces a published

@@ -8,12 +8,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export interface TeamsAppTemplateInfo {
-  /** `appPackage/TEMPLATE_REVISION`; the middle part of an agent app's
+  /** `appPackage/TEMPLATE_REVISION.txt`; the middle part of an agent app's
    *  version `1.<template revision>.<identity revision>`. */
   revision: number;
   /** RSC permissions the template requests, in template order. */
   permissions: readonly string[];
 }
+
+/** The file holding the template revision. It carries an extension because
+ *  the kernel's plugin zip ingest refuses extension-less files (0.36.0 shipped
+ *  it as `TEMPLATE_REVISION` and could not be installed). */
+export const TEMPLATE_REVISION_FILE = 'TEMPLATE_REVISION.txt';
 
 /** `appPackage/` next to `dist/` in the installed plugin. */
 export function defaultAppPackageDir(): string {
@@ -27,7 +32,7 @@ export function defaultAppPackageDir(): string {
  */
 export function readTeamsAppTemplateInfo(dir: string = defaultAppPackageDir()): TeamsAppTemplateInfo | undefined {
   try {
-    const revisionText = readFileSync(join(dir, 'TEMPLATE_REVISION'), 'utf8').trim();
+    const revisionText = readFileSync(join(dir, TEMPLATE_REVISION_FILE), 'utf8').trim();
     if (!/^\d{1,6}$/.test(revisionText)) return undefined;
     const template = readFileSync(join(dir, 'manifest.json.template'), 'utf8');
     // The template is not JSON until rendered (it has unquoted placeholders),

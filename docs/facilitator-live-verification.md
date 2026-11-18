@@ -16,7 +16,7 @@ mobile) and who ran it.
 
 ## Preparation
 
-1. An omadia instance with the kernel of #2043, `@omadia/channel-teams` ≥ 0.36.0 and the
+1. An omadia instance with the kernel of #2043, `@omadia/channel-teams` ≥ 0.36.1 and the
    facilitator engine plugin.
 2. Two facilitators with their own Teams identity, here **Mira** and **Jonas**, and one
    ordinary agent with its own identity, here **Otto**.
@@ -262,7 +262,7 @@ verified only when every "Expected" line was observed.
   `byte5ai/omadia-channel-teams` with the log lines.
 - Still open after 2026-11-18: M2 (edit, delete, reaction), M3 (returned id), the
   product path of M4, and the second half of M5 (consent upgrade, meeting events,
-  portal subscription). They need the 0.36.0 build on the instance.
+  portal subscription). They need the 0.36.1 build on the instance.
 - In `teams-meeting-apis.md`, change the label of each settled row from "Open" or
   "Simulated" to "Live" with the date.
 - Acceptance criterion 13 of the kernel spec and the criteria of #43 and #44 that need

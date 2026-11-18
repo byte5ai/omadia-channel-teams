@@ -8,6 +8,17 @@ import { fileURLToPath } from 'node:url';
 
 import { readTeamsAppTemplateInfo, templateRevisionOfAppVersion } from '@omadia/channel-teams';
 
+import {
+  APP_PACKAGE_EXTENSIONS,
+  BASENAME_ALLOWLIST,
+  DECL_EXTENSIONS,
+  EXTENSION_ALLOWLIST,
+  kernelIngestRefusal,
+  kernelIngestRules,
+  readZipEntries,
+  UI_BUNDLE_EXTENSIONS,
+} from './support/kernelZipIngest.js';
+
 /**
  * #19 (epic byte5ai/omadia#860, W0) — versioned Teams appPackage template.
  *
@@ -311,7 +322,7 @@ describe('#19 W0 — appPackage icons + README', () => {
     for (const grant of RSC_GRANTS) {
       assert.ok(readme.includes(`\`${grant}\``), `README does not mention ${grant}`);
     }
-    const revision = readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8').trim();
+    const revision = readFileSync(join(appPackageDir, 'TEMPLATE_REVISION.txt'), 'utf8').trim();
     assert.match(revision, /^[1-9][0-9]*$/);
     // Revision 2 = the meeting permissions of #44. Raise it with every change
     // of the template that changes the published app definition.
@@ -321,13 +332,13 @@ describe('#19 W0 — appPackage icons + README', () => {
   it('the plugin reads revision and permissions from the shipped template', () => {
     const info = readTeamsAppTemplateInfo(appPackageDir);
     assert.ok(info);
-    assert.equal(info.revision, Number(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8')));
+    assert.equal(info.revision, Number(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION.txt'), 'utf8')));
     assert.deepEqual(info.permissions, RSC_GRANTS);
     assert.equal(readTeamsAppTemplateInfo(join(appPackageDir, 'does-not-exist')), undefined);
   });
 
   it('TEMPLATE_REVISION is exactly a non-negative integer and a newline, as the kernel requires', () => {
-    assert.match(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8'), /^\d{1,6}\n$/);
+    assert.match(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION.txt'), 'utf8'), /^\d{1,6}\n$/);
   });
 
   it('reads the template revision out of an agent app version', () => {
@@ -429,7 +440,7 @@ describe('#860 W0a — release artifact ships the appPackage template', () => {
     // template directory alongside manifest.yaml and dist/.
     assert.ok(existsSync(join(stageDir, 'manifest.yaml')), 'stage is not flat: manifest.yaml not at root');
     assert.ok(existsSync(join(stageDir, 'dist', 'plugin.js')), 'stage is missing dist/plugin.js');
-    for (const rel of ['manifest.json.template', 'color.png', 'outline.png', 'README.md', 'TEMPLATE_REVISION']) {
+    for (const rel of ['manifest.json.template', 'color.png', 'outline.png', 'README.md', 'TEMPLATE_REVISION.txt']) {
       assert.ok(
         existsSync(join(stageDir, 'appPackage', rel)),
         `release artifact is missing appPackage/${rel}`,
@@ -446,5 +457,58 @@ describe('#860 W0a — release artifact ships the appPackage template', () => {
     };
     assert.equal(stagedPkg.devDependencies, undefined, 'devDependencies not stripped');
     assert.equal(stagedPkg.version, pkgJson.version);
+  });
+
+  // 0.36.0 was published and could not be installed: the kernel's zip ingest
+  // refused `appPackage/TEMPLATE_REVISION` (no extension). These tests push
+  // the REAL zip through the ingest's rules. They run after the packaging
+  // test above, in the same suite, so the zip they read is the one just built.
+  it('the built zip contains no entry the kernel ingest refuses', () => {
+    const safeName = pkgJson.name.replace(/^@/, '').replace(/\//g, '-');
+    const entries = readZipEntries(join(pkgRoot, 'out', `${safeName}-${pkgJson.version}.zip`));
+
+    assert.ok(entries.length > 50, `only ${String(entries.length)} entries read from the zip`);
+    const refused = entries.flatMap((entry) => {
+      const reason = kernelIngestRefusal(entry);
+      return reason ? [`${entry.name}: ${reason}`] : [];
+    });
+    assert.deepEqual(refused, [], 'the kernel would answer 422 for this package');
+
+    const names = entries.map((entry) => entry.name);
+    assert.ok(names.includes('appPackage/TEMPLATE_REVISION.txt'));
+    assert.ok(!names.includes('appPackage/TEMPLATE_REVISION'), 'the extension-less file is back in the zip');
+    assert.ok(names.includes('manifest.yaml') && names.includes('dist/plugin.js'));
+  });
+
+  it('the ingest mirror refuses what the kernel refuses', () => {
+    const file = (name: string) => ({ name, unixMode: 0o100644 });
+    assert.equal(kernelIngestRefusal(file('appPackage/TEMPLATE_REVISION')), 'zip.forbidden_extension (<none>)');
+    assert.equal(kernelIngestRefusal(file('appPackage/TEMPLATE_REVISION.txt')), undefined);
+    assert.equal(kernelIngestRefusal(file('appPackage/manifest.json.template')), undefined);
+    assert.equal(kernelIngestRefusal(file('pkg/appPackage/manifest.json.template')), undefined);
+    assert.equal(kernelIngestRefusal(file('dist/manifest.json.template')), 'zip.forbidden_extension (.template)');
+    assert.equal(kernelIngestRefusal(file('assets/ui/font.woff2')), undefined);
+    assert.equal(kernelIngestRefusal(file('assets/font.woff2')), 'zip.forbidden_extension (.woff2)');
+    assert.equal(kernelIngestRefusal(file('dist/style.css')), 'zip.forbidden_extension (.css)');
+    assert.equal(kernelIngestRefusal(file('dist/Makefile')), 'zip.forbidden_extension (<none>)');
+    assert.equal(kernelIngestRefusal(file('dist/index.d.ts')), undefined);
+    assert.equal(kernelIngestRefusal(file('LICENSE')), undefined);
+    assert.equal(kernelIngestRefusal(file('dist/')), undefined);
+    assert.equal(kernelIngestRefusal(file('dist/../x.js')), 'zip.path_escape');
+    assert.equal(kernelIngestRefusal({ name: 'dist/link.js', unixMode: 0o120777 }), 'zip.symlink');
+  });
+
+  it('the ingest mirror states the same sets as the kernel source, where a kernel checkout is present', () => {
+    // CI has no kernel checkout: then there is nothing to compare and the
+    // mirror stands as written. Locally the sibling `../odoo-bot` is the
+    // kernel this plugin is built against.
+    const rules = kernelIngestRules(join(pkgRoot, '..', 'odoo-bot', 'middleware', 'src', 'plugins', 'zipExtractor.ts'));
+    if (!rules) return;
+    const sorted = (list: readonly string[]) => [...list].sort();
+    assert.deepEqual(sorted(rules.extensionAllowlist), sorted(EXTENSION_ALLOWLIST));
+    assert.deepEqual(sorted(rules.declExtensions), sorted(DECL_EXTENSIONS));
+    assert.deepEqual(sorted(rules.uiBundleExtensions), sorted(UI_BUNDLE_EXTENSIONS));
+    assert.deepEqual(sorted(rules.appPackageExtensions), sorted(APP_PACKAGE_EXTENSIONS));
+    assert.deepEqual(sorted(rules.basenames), sorted(BASENAME_ALLOWLIST));
   });
 });

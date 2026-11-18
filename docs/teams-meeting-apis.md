@@ -2,7 +2,7 @@
 
 Evaluation for byte5ai/omadia-channel-teams#43 and #44 (epic byte5ai/omadia#2043,
 kernel spec §6.1 to §6.3): which Teams API delivers which input or output to a
-facilitator, and what this plugin implements in 0.36.0.
+facilitator, and what this plugin implements in 0.36.x.
 
 ## How far to trust this document
 
@@ -161,7 +161,7 @@ shared-channel meetings or end-to-end encrypted calls [D17]. Start/end events ex
 scheduled and channel meetings, join/leave for scheduled meetings only. An ad-hoc call
 therefore gives chat and cards and an on-demand roster, and **no lifecycle events**.
 
-**Implemented in 0.36.0.**
+**Implemented in 0.36.x.**
 
 1. The meeting chat is the group chat path: same subscription rule, same readiness
    check, posts as the facilitator's own bot.
@@ -229,7 +229,7 @@ are allowed). New are `OnlineMeeting.ReadBasic.Chat`,
   neither side derives it from the template text. The connector needed no change.
 - **The package version.** Teams replaces a published package only by a higher version.
   The kernel builds an agent app's version as
-  `1.<TEMPLATE_REVISION>.<identity revision>`, reading `appPackage/TEMPLATE_REVISION` of
+  `1.<TEMPLATE_REVISION>.<identity revision>`, reading `appPackage/TEMPLATE_REVISION.txt` of
   the installed plugin; content that is not a non-negative integer fails the package
   build. Raise the file with every change of the template that changes the published
   definition.

@@ -785,7 +785,7 @@ export async function activate(
       : `the app password of the Microsoft 365 integration's app registration is not in the vault of the Teams channel under the secret name '${legacyScalarBot?.appPasswordSecretRef ?? 'microsoft_app_password'}', so installations and consent cannot be read. Store that secret for the Teams channel plugin and reactivate it.`;
   const appTemplate = readTeamsAppTemplateInfo();
   if (!appTemplate) {
-    core.log('warn', 'teams: appPackage/TEMPLATE_REVISION or manifest.json.template could not be read — installs from an earlier app package will not be reported as outdated');
+    core.log('warn', 'teams: appPackage/TEMPLATE_REVISION.txt or manifest.json.template could not be read — installs from an earlier app package will not be reported as outdated');
   }
   const readinessProvider = createTeamsReadinessProvider({
     botLabel: (botAppId) =>
