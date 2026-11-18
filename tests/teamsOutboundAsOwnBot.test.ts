@@ -104,7 +104,7 @@ describe('#43 sendToConversation as the own bot', () => {
     assert.equal((sent?.activity['entities'] as unknown[]).length, 1);
   });
 
-  it('posts a poll as a card whose message id the answers will name', async () => {
+  it('sends text and poll card as separate activities and returns both ids', async () => {
     const { connector, send } = groupHarness();
     const message = {
       text: 'Abstimmung',
@@ -113,12 +113,42 @@ describe('#43 sendToConversation as the own bot', () => {
 
     const outcome = await send(GROUP_CHAT_ID, message, { asChannelKey: MIRA.key });
 
-    const sent = connector.sent[0];
-    assert.ok(sent);
-    assert.deepEqual(outcome, { outcome: 'delivered', messageId: sent.id });
-    const attachments = sent.activity['attachments'] as { content: { actions: { data: unknown }[] } }[];
+    assert.equal(connector.sent.length, 2);
+    const [text, card] = connector.sent;
+    assert.ok(text && card);
+    assert.deepEqual(outcome, { outcome: 'delivered', messageId: text.id, cardMessageId: card.id });
+    assert.equal(text.activity['text'], 'Abstimmung');
+    assert.equal('attachments' in text.activity, false, 'the text activity carries no card');
+    assert.equal('text' in card.activity, false, 'the card activity carries no text');
+    const attachments = card.activity['attachments'] as { content: { actions: { data: unknown }[] } }[];
     assert.equal(attachments.length, 1);
     assert.deepEqual(parsePollAnswerValue(attachments[0]?.content.actions[0]?.data)?.pollId, 'poll-7');
+  });
+
+  it('a poll without text is one activity and its id is the message id', async () => {
+    const { connector, send } = groupHarness();
+
+    const outcome = await send(
+      GROUP_CHAT_ID,
+      { text: '', poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] } } as never,
+      { asChannelKey: MIRA.key },
+    );
+
+    assert.equal(connector.sent.length, 1);
+    assert.deepEqual(outcome, { outcome: 'delivered', messageId: connector.sent[0]?.id, cardMessageId: connector.sent[0]?.id });
+  });
+
+  it('resolves a mention by Entra object id only', async () => {
+    const { connector, send } = groupHarness();
+
+    await send(
+      GROUP_CHAT_ID,
+      { text: '@Anna Köhler bitte.', mentions: [{ user: { kind: 'teams-aad', id: ANNA.id }, text: '@Anna Köhler' }] },
+      { asChannelKey: MIRA.key },
+    );
+
+    assert.equal(connector.sent[0]?.activity['text'], '@Anna Köhler bitte.', 'a 29: id is not an Entra object id');
+    assert.equal('entities' in (connector.sent[0]?.activity ?? {}), false);
   });
 
   it('refuses an unusable poll before posting anything', async () => {

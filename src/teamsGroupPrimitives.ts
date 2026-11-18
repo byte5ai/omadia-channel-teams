@@ -18,6 +18,7 @@ import type {
 import type { TeamsOpenDirectConversation, TeamsProactiveSend } from './messagesRouter.js';
 import {
   buildOutgoingActivity,
+  buildPollActivity,
   classifyDirectSendError,
   isEntraObjectId,
   retryTransient,
@@ -516,6 +517,16 @@ export function createTeamsTargetedSendAdapter(deps: {
 
 
 /**
+ * `TargetedDeliveryOutcome` of a group post, plus what a post with a card
+ * needs (#2043): `cardMessageId` is the card's own message, the id poll
+ * answers name. A superset of the kernel type; a kernel that does not know
+ * the extra fields ignores them.
+ */
+export type ConversationPostOutcome =
+  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string }
+  | (Extract<FacilitatorDeliveryOutcome, { outcome: 'unreachable' }> & { messageId?: string });
+
+/**
  * SDK conversation-send provider (#330 C3b - the Facilitator's group nudges).
  * Delivers INTO a conversation via the proactive path on the cached
  * per-conversation reference. The kernel has already scope-checked the caller
@@ -528,6 +539,7 @@ export function createTeamsConversationSendAdapter(deps: {
   /** #2043 — resolves a mentioned person to their member id in the chat.
    *  Without it mentions stay plain text. */
   roster?: Pick<TeamsRosterProvider, 'list'>;
+  retry?: RetryOptions;
   // The declared return type is a SUPERSET of the SDK interface, for the same
   // reason the send method takes a rest tuple: this plugin ships independently
   // and is compiled against whatever `@omadia/channel-sdk` is installed, which
@@ -549,7 +561,7 @@ export function createTeamsConversationSendAdapter(deps: {
     // behaves exactly as before.
     async sendToConversation(
       ...args: [conversationId: string, message: TargetedMessage, opts?: { asChannelKey?: string }]
-    ): Promise<FacilitatorDeliveryOutcome> {
+    ): Promise<ConversationPostOutcome> {
       const [conversationId, message, opts] = args;
       // WHICH BOT SAYS IT.
       //
@@ -605,44 +617,63 @@ export function createTeamsConversationSendAdapter(deps: {
       }
       const mentions = (message as { mentions?: readonly TargetedMention[] }).mentions;
 
+      // Text and card go out as SEPARATE activities and each returns its own
+      // id (a combined activity may be split by Teams and then returns none).
+      // `messageId` is the text message, or the card when there is no text;
+      // `cardMessageId` is the card, the id poll answers refer to.
+      let textMessageId: string | undefined;
+      let cardMessageId: string | undefined;
+      let isTextPosted = false;
+      const hasText = message.text.trim().length > 0;
+      const senderAppId = botAppId ?? refBotAppId;
       try {
-        let messageId: string | undefined;
         await deps.sendProactive(
           cached.ref,
           async (turnContext) => {
-            const members =
-              mentions && mentions.length > 0 && deps.roster ? await deps.roster.list(turnContext) : [];
-            const rendered = renderMentions(message.text, mentions, (userId) => {
-              const wanted = userId.toLowerCase();
-              return members.find(
-                (member) =>
-                  member.aadObjectId?.toLowerCase() === wanted || member.channelUserId.toLowerCase() === wanted,
-              )?.channelUserId;
-            });
-            const sent = await turnContext.sendActivity(
-              buildOutgoingActivity({
-                text: rendered.text,
-                entities: rendered.entities,
-                ...(pollRequest ? { poll: pollRequest.poll } : {}),
-              }),
-            );
-            messageId = sent?.id;
+            if (hasText) {
+              const members =
+                mentions && mentions.length > 0 && deps.roster ? await deps.roster.list(turnContext) : [];
+              // Resolved from the roster by Entra object id: only a member of
+              // this chat can be mentioned, and the entity text equals the
+              // `<at>…</at>` token in the body exactly.
+              const rendered = renderMentions(message.text, mentions, (userId) => {
+                const wanted = userId.toLowerCase();
+                return members.find((member) => member.aadObjectId?.toLowerCase() === wanted)?.channelUserId;
+              });
+              const sent = await retryTransient(
+                () => turnContext.sendActivity(buildOutgoingActivity({ text: rendered.text, entities: rendered.entities })),
+                deps.retry,
+              );
+              textMessageId = sent?.id;
+              isTextPosted = true;
+            }
+            if (pollRequest) {
+              const sent = await retryTransient(
+                () => turnContext.sendActivity(buildPollActivity(pollRequest.poll)),
+                deps.retry,
+              );
+              cardMessageId = sent?.id;
+            }
           },
           ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
         );
-        deps.refs.recordPostResult(conversationId, botAppId ?? refBotAppId, true);
-        return { outcome: 'delivered', ...(messageId ? { messageId } : {}) };
+        deps.refs.recordPostResult(conversationId, senderAppId, true);
+        const messageId = textMessageId ?? cardMessageId;
+        return {
+          outcome: 'delivered',
+          ...(messageId ? { messageId } : {}),
+          ...(cardMessageId ? { cardMessageId } : {}),
+        };
       } catch (err) {
-        deps.refs.recordPostResult(
-          conversationId,
-          botAppId ?? refBotAppId,
-          false,
-          err instanceof Error ? err.message : String(err),
-        );
+        const detail = err instanceof Error ? err.message : String(err);
+        deps.refs.recordPostResult(conversationId, senderAppId, false, detail);
         return {
           outcome: 'unreachable',
           code: 'channel_error',
-          message: err instanceof Error ? err.message : String(err),
+          // Never silent about half a post: the caller must not send the
+          // text a second time when only the card failed.
+          message: isTextPosted ? `the text was posted but the card was not: ${detail}` : detail,
+          ...(isTextPosted && textMessageId ? { messageId: textMessageId } : {}),
         };
       }
     },

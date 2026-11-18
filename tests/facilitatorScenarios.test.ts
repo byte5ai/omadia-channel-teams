@@ -374,8 +374,9 @@ describe('scenario 8 — poll answers', () => {
 
     const poll = { pollId: 'poll-budget', question: 'Budget freigeben?', options: [{ id: 'yes', label: 'Ja' }, { id: 'no', label: 'Nein' }] };
     const posted = await i.post(MEETING_CHAT_ID, { text: 'Abstimmung', poll } as never, { asChannelKey: MIRA.key });
-    assert.ok(posted.outcome === 'delivered' && posted.messageId);
-    const cardMessageId = posted.outcome === 'delivered' ? (posted.messageId as string) : '';
+    assert.ok(posted.outcome === 'delivered' && posted.messageId && posted.cardMessageId);
+    assert.notEqual(posted.outcome === 'delivered' ? posted.messageId : '', posted.outcome === 'delivered' ? posted.cardMessageId : '');
+    const cardMessageId = posted.outcome === 'delivered' ? (posted.cardMessageId as string) : '';
     const click = (from: SimUser, optionId: string): Promise<void> =>
       i.bot.deliver(
         cardSubmitActivity({

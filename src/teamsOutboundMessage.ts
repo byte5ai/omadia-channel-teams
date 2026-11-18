@@ -133,18 +133,21 @@ export function readPollRequest(message: unknown): { poll: BuildPollCardInput } 
   return problem ? { problem } : { poll };
 }
 
-/** The outgoing message activity: text with mentions, plus the poll card. */
-export function buildOutgoingActivity(input: {
-  text: string;
-  entities?: readonly MentionEntity[];
-  poll?: BuildPollCardInput;
-}): Partial<Activity> {
+/**
+ * The outgoing activities of one post: the text (with mentions) and the card
+ * are SEPARATE activities. Teams may split an activity that carries both and
+ * then returns no message id; sent separately, each returns its own id.
+ */
+export function buildOutgoingActivity(input: { text: string; entities?: readonly MentionEntity[] }): Partial<Activity> {
   return {
     type: 'message',
     text: input.text,
     ...(input.entities && input.entities.length > 0 ? { entities: [...input.entities] } : {}),
-    ...(input.poll ? { attachments: [buildPollCard(input.poll)] } : {}),
   };
+}
+
+export function buildPollActivity(poll: BuildPollCardInput): Partial<Activity> {
+  return { type: 'message', attachments: [buildPollCard(poll)] };
 }
 
 function errorHaystack(err: unknown): string {

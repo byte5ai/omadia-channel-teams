@@ -71,6 +71,7 @@ export {
   createTeamsTargetedSendAdapter,
   TeamsConversationReferenceCache,
   toSdkConversationType,
+  type ConversationPostOutcome,
 } from './teamsGroupPrimitives.js';
 // #2043 — native facilitators: authenticated inbound message events and the
 // live poll card. Re-exported for the tests under tests/.
