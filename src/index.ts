@@ -92,12 +92,16 @@ export {
   type PollOption,
 } from './teamsPollCard.js';
 export {
+  CHANNEL_READ_ALL_RSC_PERMISSION,
+  CHAT_CONSENT_GRAPH_PERMISSION,
+  CHAT_INSTALL_READ_GRAPH_PERMISSION,
   CHAT_READ_ALL_RSC_PERMISSION,
-  createTeamsMembershipProbe,
   createTeamsReadinessProvider,
-  GRANT_READ_GRAPH_PERMISSION,
+  TEAM_INSTALL_READ_GRAPH_PERMISSION,
+  type ConsentRepairOutcome,
   type TeamsReadinessDeps,
   type TeamsReadinessGraph,
+  type TeamsReadinessProvider,
 } from './teamsReadiness.js';
 export {
   createTeamsMeetingSource,

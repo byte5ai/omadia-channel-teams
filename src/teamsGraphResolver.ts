@@ -78,6 +78,15 @@ export interface GraphUser {
   readonly jobTitle?: string | null;
 }
 
+/** A next-page link is followed only when it stays on the Graph v1.0 root:
+ *  the bearer token must never travel to a host a response body names. */
+function assertGraphUrl(url: string): string {
+  if (!url.startsWith(`${GRAPH_BASE}/`)) {
+    throw new GraphRequestError(0, 'graph: refusing a link outside the Graph v1.0 root');
+  }
+  return url;
+}
+
 /** Error from a Graph call, carrying the HTTP status so callers can tell
  *  "permission not granted" (401/403) from a transient failure. */
 export class GraphRequestError extends Error {
@@ -259,7 +268,32 @@ export class TeamsGraphResolver {
    * and "not found" (404) from a transient failure.
    */
   getJson(path: string): Promise<Record<string, unknown>> {
-    return this.fetchJson(`${GRAPH_BASE}${path}`);
+    return this.fetchJson(path.startsWith('https://') ? assertGraphUrl(path) : `${GRAPH_BASE}${path}`);
+  }
+
+  /**
+   * One Graph POST with a JSON body (`path` relative to the v1.0 root).
+   * Resolves for any 2xx, also the body-less 204; throws `GraphRequestError`
+   * with the HTTP status otherwise.
+   */
+  async postJson(path: string, body: unknown): Promise<void> {
+    const token = await this.accessToken();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await this.fetchImpl(`${GRAPH_BASE}${path}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const detail = (await res.text().catch(() => '')).slice(0, 300);
+        throw new GraphRequestError(res.status, `graph ${String(res.status)} for POST ${path.slice(0, 80)} ${detail}`.trim());
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

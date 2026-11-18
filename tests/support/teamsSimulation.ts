@@ -307,19 +307,6 @@ export function simulatedBot(
 
 export const GRAPH_RESOURCE_APP_ID = '00000003-0000-0000-c000-000000000000';
 
-/** One row of `GET /chats/{id}/permissionGrants`
- *  (`resourceSpecificPermissionGrant`). */
-export function rscGrant(bot: SimBot, permission: string): Record<string, unknown> {
-  return {
-    id: `grant-${bot.appId.slice(0, 8)}-${permission}`,
-    clientAppId: bot.appId,
-    clientId: `sp-${bot.appId.slice(0, 8)}`,
-    resourceAppId: GRAPH_RESOURCE_APP_ID,
-    permissionType: 'Application',
-    permission,
-  };
-}
-
 /** A Graph error body as the service returns it. */
 export function graphError(code: string, message: string): Record<string, unknown> {
   return {
@@ -331,43 +318,139 @@ export function graphError(code: string, message: string): Record<string, unknow
   };
 }
 
-type GraphReply = { status: number; body: Record<string, unknown> };
+interface SimInstallation {
+  bot: SimBot;
+  id: string;
+  version: string;
+  /** RSC the installed app definition declares. */
+  declared: string[];
+  /** RSC consented for this install (what the grants show). */
+  consented: string[];
+}
+
+/** The RSC set of this repo's app package template. */
+export const TEMPLATE_RSC = [
+  'ChannelMessage.Read.Group',
+  'ChatMessage.Read.Chat',
+  'TeamsActivity.Send.Group',
+  'TeamsActivity.Send.Chat',
+  'FileStorageContainer.Selected.Group',
+  'ChatMember.Read.Chat',
+  'ChannelMember.Read.Group',
+];
+
+/** What a chat install consents to today (live finding, byte5 tenant). */
+export const CHAT_RSC = ['ChatMessage.Read.Chat', 'ChatMember.Read.Chat', 'TeamsActivity.Send.Chat'];
 
 /**
- * `fetch` for `TeamsGraphResolver`: the Entra token endpoint plus
- * `/chats/{id}/permissionGrants`. Grants are per chat; a chat that was never
- * configured answers 404 like an id Graph does not know.
+ * `fetch` for `TeamsGraphResolver`: the Entra token endpoint and, per chat or
+ * team, `installedApps` (list, single row, `upgrade`) and `permissionGrants`.
+ * Row shapes follow the responses read from the byte5 tenant on 2026-11-18:
+ * one grant row per permission with `clientAppId` = the Entra application id
+ * and `clientId` = the service principal object id; an installation row with
+ * `teamsAppDefinition.bot.id` and, when selected, `consentedPermissionSet`.
  */
 export class SimulatedGraph {
   readonly requests: string[] = [];
-  private readonly grantReplies = new Map<string, GraphReply>();
+  readonly upgrades: { scope: string; installationId: string; permissions: string[] }[] = [];
+  private readonly installs = new Map<string, SimInstallation[]>();
+  private readonly failures = new Map<string, { status: number; body: Record<string, unknown> }>();
 
-  setGrants(conversationId: string, grants: Record<string, unknown>[]): void {
-    this.grantReplies.set(conversationId, {
-      status: 200,
-      body: {
-        '@odata.context': `https://graph.microsoft.com/v1.0/$metadata#chats('${encodeURIComponent(conversationId)}')/permissionGrants`,
-        value: grants,
-      },
+  /** Install `bot`'s app in a chat (`scope` = chat id) or a team (team id). */
+  install(scope: string, bot: SimBot, opts: { consented?: string[]; declared?: string[]; version?: string } = {}): void {
+    const list = (this.installs.get(scope) ?? []).filter((entry) => entry.bot.appId !== bot.appId);
+    list.push({
+      bot,
+      id: `inst-${bot.appId.slice(0, 8)}-${Buffer.from(scope).toString('base64url').slice(0, 12)}`,
+      version: opts.version ?? '1.3.0',
+      declared: opts.declared ?? TEMPLATE_RSC,
+      consented: opts.consented ?? CHAT_RSC,
     });
+    this.installs.set(scope, list);
   }
 
-  setGrantsError(conversationId: string, status: number, code: string, message: string): void {
-    this.grantReplies.set(conversationId, { status, body: graphError(code, message) });
+  /** Make `installedApps` or `permissionGrants` of a scope fail. */
+  fail(scope: string, resource: 'installedApps' | 'permissionGrants', status: number, code: string, message: string): void {
+    this.failures.set(`${scope}|${resource}`, { status, body: graphError(code, message) });
   }
 
-  readonly fetch: typeof fetch = async (input) => {
+  private installationRow(entry: SimInstallation, withDefinition: boolean): Record<string, unknown> {
+    return {
+      id: entry.id,
+      consentedPermissionSet: {
+        resourceSpecificPermissions: entry.consented.map((permissionValue) => ({ permissionValue, permissionType: 'application' })),
+      },
+      teamsApp: {
+        id: `catalog-${entry.bot.appId.slice(0, 8)}`,
+        displayName: entry.bot.name,
+        externalId: `manifest-${entry.bot.appId.slice(0, 8)}`,
+        distributionMethod: 'organization',
+      },
+      teamsAppDefinition: {
+        version: entry.version,
+        bot: { id: entry.bot.appId },
+        ...(withDefinition
+          ? {
+              authorization: {
+                requiredPermissionSet: {
+                  resourceSpecificPermissions: entry.declared.map((permissionValue) => ({ permissionValue, permissionType: 'application' })),
+                },
+              },
+            }
+          : {}),
+      },
+    };
+  }
+
+  readonly fetch: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-    this.requests.push(url);
+    const method = init?.method ?? 'GET';
+    this.requests.push(`${method} ${url}`);
     if (url.startsWith('https://login.microsoftonline.com/')) {
       return json(200, { token_type: 'Bearer', expires_in: 3599, access_token: 'simulated-token' });
     }
-    const match = /^https:\/\/graph\.microsoft\.com\/v1\.0\/chats\/([^/]+)\/permissionGrants$/.exec(url);
-    if (match?.[1]) {
-      const reply = this.grantReplies.get(decodeURIComponent(match[1]));
-      if (reply) return json(reply.status, reply.body);
+    const match = /^https:\/\/graph\.microsoft\.com\/v1\.0\/(chats|teams)\/([^/]+)\/(installedApps|permissionGrants)(?:\/([^/?]+))?(\/upgrade)?(?:\?.*)?$/.exec(url);
+    if (!match) return json(404, graphError('NotFound', 'NotFound'));
+    const scope = decodeURIComponent(match[2] ?? '');
+    const resource = match[3] as 'installedApps' | 'permissionGrants';
+    const failure = this.failures.get(`${scope}|${resource}`);
+    if (failure) return json(failure.status, failure.body);
+    const installs = this.installs.get(scope);
+    if (!installs) return json(404, graphError('NotFound', 'NotFound'));
+
+    if (resource === 'permissionGrants') {
+      return json(200, {
+        '@odata.context': `https://graph.microsoft.com/v1.0/$metadata#${match[1] ?? ''}('${match[2] ?? ''}')/permissionGrants`,
+        value: installs.flatMap((entry) =>
+          entry.consented.map((permission) => ({
+            id: `grant-${entry.bot.appId.slice(0, 8)}-${permission}`,
+            clientAppId: entry.bot.appId,
+            clientId: `sp-object-${entry.bot.appId.slice(0, 8)}`,
+            resourceAppId: GRAPH_RESOURCE_APP_ID,
+            permissionType: 'Application',
+            permission,
+          })),
+        ),
+      });
     }
-    return json(404, graphError('NotFound', 'NotFound'));
+    const installationId = match[4] ? decodeURIComponent(match[4]) : undefined;
+    if (!installationId) {
+      return json(200, { value: installs.map((entry) => this.installationRow(entry, false)) });
+    }
+    const entry = installs.find((candidate) => candidate.id === installationId);
+    if (!entry) return json(404, graphError('NotFound', 'NotFound'));
+    if (!match[5]) return json(200, this.installationRow(entry, true));
+    if (method !== 'POST') return json(405, graphError('MethodNotAllowed', 'MethodNotAllowed'));
+    const body = JSON.parse(String(init?.body ?? '{}')) as {
+      consentedPermissionSet?: { resourceSpecificPermissions?: { permissionValue: string }[] };
+    };
+    const requested = (body.consentedPermissionSet?.resourceSpecificPermissions ?? []).map((p) => p.permissionValue);
+    if ([...requested].sort().join() !== [...entry.declared].sort().join()) {
+      return json(400, graphError('BadRequest', 'ResourceSpecificPermissionsMismatch: the consented permission set does not match the app definition.'));
+    }
+    entry.consented = [...entry.declared];
+    this.upgrades.push({ scope, installationId, permissions: requested });
+    return new Response(null, { status: 204 });
   };
 }
 

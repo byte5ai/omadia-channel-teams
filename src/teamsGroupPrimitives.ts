@@ -86,6 +86,12 @@ export class TeamsConversationReferenceCache {
   private readonly directConversations = new Map<string, string>();
   /** #2043 — the regional connector endpoint each bot was last reached on. */
   private readonly serviceUrls = new Map<string, string>();
+  /** #2043 — channel conversation → AAD group id of its team
+   *  (`channelData.team.aadGroupId`); Graph addresses a team by that id. */
+  private readonly teamIds = new Map<string, string>();
+  /** #2043 — `${botAppId}|${conversationId}` → did the last proactive post
+   *  of that bot into that conversation succeed? */
+  private readonly postResults = new Map<string, { ok: boolean; detail?: string }>();
 
   /** #330 field report — optional write-through store (kernel graph table
    *  `teams_conversation_refs`) so references survive restarts. Writes are
@@ -163,6 +169,11 @@ export class TeamsConversationReferenceCache {
     // Map.delete+set keeps insertion order = recency, making the FIFO an LRU.
     this.refs.delete(key);
     const teamsType = context.activity.conversation?.conversationType;
+    const teamAadGroupId = (context.activity.channelData as { team?: { aadGroupId?: unknown } } | undefined)?.team
+      ?.aadGroupId;
+    if (typeof teamAadGroupId === 'string' && teamAadGroupId.length > 0) {
+      this.teamIds.set(conversationId, teamAadGroupId);
+    }
     if (botAppId !== undefined) {
       if (typeof ref.serviceUrl === 'string') this.serviceUrls.set(botAppId, ref.serviceUrl);
       if (teamsType === 'personal') {
@@ -214,6 +225,30 @@ export class TeamsConversationReferenceCache {
     const conversationId = this.directConversations.get(`${bot}|${userId.toLowerCase()}`);
     if (!conversationId) return undefined;
     return this.refs.get(TeamsConversationReferenceCache.key(conversationId, bot));
+  }
+
+  /** #2043 — AAD group id of the team a channel conversation belongs to,
+   *  known once an activity from that channel was seen in this process. */
+  teamIdFor(conversationId: string): string | undefined {
+    return this.teamIds.get(conversationId);
+  }
+
+  /** #2043 — record how a proactive post of `botAppId` into a conversation
+   *  ended. "Can this bot post here" has no read-only answer in Teams; the
+   *  last real send is the evidence. */
+  recordPostResult(conversationId: string, botAppId: string | undefined, ok: boolean, detail?: string): void {
+    const bot = normalizeTeamsBotAppId(botAppId) ?? '';
+    const key = `${bot}|${conversationId}`;
+    this.postResults.delete(key);
+    this.postResults.set(key, { ok, ...(detail ? { detail } : {}) });
+    if (this.postResults.size > MAX_CACHED_REFERENCES) {
+      const oldest = this.postResults.keys().next().value;
+      if (oldest !== undefined) this.postResults.delete(oldest);
+    }
+  }
+
+  lastPostResult(conversationId: string, botAppId: string): { ok: boolean; detail?: string } | undefined {
+    return this.postResults.get(`${normalizeTeamsBotAppId(botAppId) ?? ''}|${conversationId}`);
   }
 
   /** #2043 — the connector endpoint this bot was last reached on. */
@@ -575,8 +610,15 @@ export function createTeamsConversationSendAdapter(deps: {
           },
           ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
         );
+        deps.refs.recordPostResult(conversationId, botAppId ?? refBotAppId, true);
         return { outcome: 'delivered', ...(messageId ? { messageId } : {}) };
       } catch (err) {
+        deps.refs.recordPostResult(
+          conversationId,
+          botAppId ?? refBotAppId,
+          false,
+          err instanceof Error ? err.message : String(err),
+        );
         return {
           outcome: 'unreachable',
           code: 'channel_error',

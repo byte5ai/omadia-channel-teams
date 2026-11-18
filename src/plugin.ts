@@ -26,7 +26,7 @@ import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
 import { TeamsConversationMessages } from './teamsConversationMessages.js';
-import { createTeamsMembershipProbe, createTeamsReadinessProvider } from './teamsReadiness.js';
+import { createTeamsReadinessProvider } from './teamsReadiness.js';
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import type { NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
@@ -773,25 +773,29 @@ export async function activate(
     ctx.agentId,
     createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive, roster: teamsRosterProvider }),
   );
-  // #2043 — readiness check per bot: installed, RSC consent, can post. Each
-  // bot's Graph calls run under its OWN app registration.
-  const readinessGraphByAppId = new Map<string, TeamsGraphResolver>();
-  facilitatorCore.registerReadinessProvider?.(
-    ctx.agentId,
-    createTeamsReadinessProvider({
-      botFor: (botAppId) => {
-        const credentials = botCredentials.find(
-          (candidate) => candidate.identity.appId.toLowerCase() === botAppId,
-        );
-        if (!credentials) return undefined;
-        const graph = readinessGraphByAppId.get(botAppId) ?? graphResolverForBot(credentials);
-        readinessGraphByAppId.set(botAppId, graph);
-        return { displayName: credentials.identity.displayName, graph };
-      },
-      refs: conversationRefs,
-      probeMembership: createTeamsMembershipProbe(sendProactive),
-    }),
-  );
+  // #2043 — readiness check: installation row, RSC grant, can post. Graph is
+  // asked with the INSTANCE's registration (the Microsoft 365 integration's
+  // app, `microsoft_app_id`): the per-agent bot registrations hold no Graph
+  // application permissions. That is the pre-provisioning bot's credential
+  // set when it is served here; a deployment without it reports
+  // `graph_unavailable` instead of asking under some agent's identity.
+  const instanceAppId = ctx.config.get<string>('microsoft_app_id')?.trim().toLowerCase();
+  const instanceCredentials =
+    botCredentials.find((candidate) => candidate.identity.appId.toLowerCase() === instanceAppId) ??
+    (configuredBots.length === 0 ? defaultBotCredentials : undefined);
+  const readinessProvider = createTeamsReadinessProvider({
+    botLabel: (botAppId) =>
+      teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
+    graph: instanceCredentials ? graphResolverForBot(instanceCredentials) : undefined,
+    refs: conversationRefs,
+  });
+  facilitatorCore.registerReadinessProvider?.(ctx.agentId, readinessProvider);
+  if (!instanceCredentials) {
+    core.log(
+      'warn',
+      'teams: the Microsoft 365 integration\'s app registration is not served by this channel — facilitator readiness checks will answer graph_unavailable',
+    );
+  }
   // #2043 / #44 — meeting source: the capability snapshot of a conversation.
   const meetingSource = createTeamsMeetingSource({ refs: conversationRefs });
   facilitatorCore.registerMeetingSourceProvider?.(ctx.agentId, meetingSource);

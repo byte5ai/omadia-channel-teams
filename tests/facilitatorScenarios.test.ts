@@ -30,7 +30,6 @@ import {
   messageWritesBlockedError,
   MIRA,
   OTHER_GROUP_CHAT_ID,
-  rscGrant,
   SimulatedConnector,
   SimulatedGraph,
   SimulatedKernel,
@@ -122,21 +121,11 @@ function startInstance(
       botLabel: (botAppId) => BOTS.find((candidate) => candidate.appId === botAppId)?.name,
     },
   });
-  const resolvers = new Map<string, TeamsGraphResolver>();
   const readiness = createTeamsReadinessProvider({
-    botFor: (botAppId) => {
-      const found = BOTS.find((candidate) => candidate.appId === botAppId);
-      if (!found) return undefined;
-      const resolver =
-        resolvers.get(botAppId) ??
-        new TeamsGraphResolver({ tenantId: TENANT_ID, clientId: botAppId, clientSecret: 'simulated', log: () => {}, fetchImpl: graph.fetch });
-      resolvers.set(botAppId, resolver);
-      return { displayName: found.name, graph: resolver };
-    },
+    botLabel: (botAppId) => BOTS.find((candidate) => candidate.appId === botAppId)?.name,
+    // The instance's registration, not a facilitator's.
+    graph: new TeamsGraphResolver({ tenantId: TENANT_ID, clientId: 'instance-app', clientSecret: 'simulated', log: () => {}, fetchImpl: graph.fetch }),
     refs,
-    probeMembership: async (reference, botAppId) => {
-      await connector.sendProactive(reference, async () => {}, { botAppId });
-    },
   });
   return {
     kernel,
@@ -198,10 +187,10 @@ describe('scenario 1 — message without mention', () => {
 describe('scenario 2 — missing consent', () => {
   it('the readiness check says exactly what is missing and the facilitation must not start', async () => {
     const i = startInstance();
-    // The bot is in the chat (it was mentioned once) but the chat granted no
-    // RSC permission: Teams then delivers mentioned messages only.
+    // The app was installed from a package without the RSC permission:
+    // Teams then delivers mentioned messages only.
     await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true }));
-    i.graph.setGrants(GROUP_CHAT_ID, []);
+    i.graph.install(GROUP_CHAT_ID, MIRA, { consented: ['TeamsActivity.Send.Chat'], version: '1.0.1' });
 
     const report = await i.readiness.check(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
 
@@ -214,11 +203,14 @@ describe('scenario 2 — missing consent', () => {
     assert.ok(report.missing[0]?.message.includes(CHAT_READ_ALL_RSC_PERMISSION));
   });
 
-  it('once the chat granted the permission the same check is ready', async () => {
+  it('the Graph upgrade grants the permission and the same check is ready', async () => {
     const i = startInstance();
     await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true }));
-    i.graph.setGrants(GROUP_CHAT_ID, [rscGrant(MIRA, CHAT_READ_ALL_RSC_PERMISSION)]);
+    i.graph.install(GROUP_CHAT_ID, MIRA, { consented: ['TeamsActivity.Send.Chat'], version: '1.0.1' });
 
+    const repair = await i.readiness.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+
+    assert.equal(repair.outcome, 'upgraded');
     assert.equal((await i.readiness.check(GROUP_CHAT_ID, { asChannelKey: MIRA.key })).ready, true);
   });
 });
