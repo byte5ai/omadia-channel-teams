@@ -11,9 +11,58 @@ import { buildPollCard, validatePollInput, type BuildPollCardInput } from './tea
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 
-/** Markers Teams documents for a 1:1 the bot may not write to. */
-const BLOCKED_MARKERS = ['messagewritesblocked', 'conversationblockedbyuser'];
-const NOT_INSTALLED_MARKERS = ['forbiddenoperationexception', 'botnotinconversationroster', 'not installed'];
+/** The two 403 answers Teams documents for a 1:1 the bot may not write to
+ *  (send-proactive-messages). Other codes seen in the wild are not on any
+ *  page we read and are deliberately not matched. */
+const BLOCKED_MARKER = 'messagewritesblocked';
+const NOT_INSTALLED_MARKER = 'forbiddenoperationexception';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Statuses Teams asks bots to retry with exponential backoff (rate-limit). */
+const RETRYABLE_STATUSES: readonly number[] = [429, 412, 502, 504];
+const MAX_SEND_ATTEMPTS = 4;
+const RETRY_BASE_DELAY_MS = 500;
+
+/** An Entra object id. A Teams user id (`29:…`) is per bot and cannot open a
+ *  conversation for another bot, so only this form is used for first contact. */
+export function isEntraObjectId(raw: string | undefined): raw is string {
+  return typeof raw === 'string' && UUID_PATTERN.test(raw);
+}
+
+function connectorStatus(err: unknown): number | undefined {
+  const record = (err ?? {}) as Record<string, unknown>;
+  const status = record['statusCode'] ?? record['status'];
+  return typeof status === 'number' ? status : undefined;
+}
+
+export interface RetryOptions {
+  /** Injected in tests; real time otherwise. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Run one Bot Connector call, retrying 429 / 412 / 502 / 504 with exponential
+ * backoff (0.5 s, 1 s, 2 s). Everything else, in particular every 403, is
+ * thrown at once: a blocked or uninstalled bot must not knock again.
+ */
+export async function retryTransient<T>(
+  call: () => Promise<T>,
+  opts: RetryOptions = {},
+  /** Return false to stop retrying (e.g. once part of the work is done). */
+  mayRetry: () => boolean = () => true,
+): Promise<T> {
+  const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await call();
+    } catch (err) {
+      const status = connectorStatus(err);
+      const isTransient = status !== undefined && RETRYABLE_STATUSES.includes(status);
+      if (attempt >= MAX_SEND_ATTEMPTS || !isTransient || !mayRetry()) throw err;
+      await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+    }
+  }
+}
 
 export interface RenderedMentions {
   text: string;
@@ -117,30 +166,28 @@ function errorHaystack(err: unknown): string {
 
 /**
  * Map a Bot Connector failure of a 1:1 send to the kernel's outcome.
- *   403 + MessageWritesBlocked / ConversationBlockedByUser → blocked
- *   403 + ForbiddenOperationException / BotNotInConversationRoster
- *                                                    → app_not_installed
- *   404                                              → user_not_found
- * Teams also answers MessageWritesBlocked when the user UNINSTALLED the bot;
- * the two cannot be told apart from the response, and both mean "do not
- * retry, remind in the group instead".
+ *   403 + subCode MessageWritesBlocked  → blocked
+ *   403 + ForbiddenOperationException   → app_not_installed
+ * Neither is ever retried. Teams answers MessageWritesBlocked both when the
+ * user blocked the bot and when they uninstalled it; the response does not
+ * say which, and both mean "remind in the group instead".
+ * A 404 is reported as user_not_found; that reading is ours, no page states it.
  */
 export function classifyDirectSendError(
   err: unknown,
   botLabel: string,
 ): Extract<FacilitatorDeliveryOutcome, { outcome: 'unreachable' }> {
-  const record = (err ?? {}) as Record<string, unknown>;
-  const status = typeof record['statusCode'] === 'number' ? record['statusCode'] : record['status'];
+  const status = connectorStatus(err);
   const haystack = errorHaystack(err);
   const detail = err instanceof Error ? err.message : String(err);
-  if (status === HTTP_FORBIDDEN && BLOCKED_MARKERS.some((marker) => haystack.includes(marker))) {
+  if (status === HTTP_FORBIDDEN && haystack.includes(BLOCKED_MARKER)) {
     return {
       outcome: 'unreachable',
       code: 'blocked',
       message: `the user blocked '${botLabel}' or removed its app; Teams refuses direct messages from it (${detail})`,
     };
   }
-  if (status === HTTP_FORBIDDEN && NOT_INSTALLED_MARKERS.some((marker) => haystack.includes(marker))) {
+  if (status === HTTP_FORBIDDEN && haystack.includes(NOT_INSTALLED_MARKER)) {
     return {
       outcome: 'unreachable',
       code: 'app_not_installed',

@@ -165,21 +165,28 @@ describe('#43 sendToConversation as the own bot', () => {
 });
 
 function directHarness(configured: SimBot[] = [MIRA, JONAS]): {
+  waits: number[];
   connector: SimulatedConnector;
   refs: TeamsConversationReferenceCache;
   sendToUser: ReturnType<typeof createTeamsTargetedSendAdapter>['sendToUser'];
 } {
   const connector = new SimulatedConnector();
   const refs = new TeamsConversationReferenceCache();
+  const waits: number[] = [];
   const adapter = createTeamsTargetedSendAdapter({
     sendProactive: connector.sendProactive,
+    retry: {
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    },
     direct: {
       refs,
       openDirectConversation: connector.openDirectConversation,
       botLabel: (botAppId) => configured.find((bot) => bot.appId === botAppId)?.name,
     },
   });
-  return { connector, refs, sendToUser: adapter.sendToUser.bind(adapter) };
+  return { waits, connector, refs, sendToUser: adapter.sendToUser.bind(adapter) };
 }
 
 function target(user: SimUser, conversationRef?: unknown): Parameters<ReturnType<typeof createTeamsTargetedSendAdapter>['sendToUser']>[0] {
@@ -261,6 +268,64 @@ describe('#43 sendToUser as the own bot', () => {
     const knownOutcome = await known.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
     assert.equal(knownOutcome.outcome === 'unreachable' ? knownOutcome.code : '', 'blocked');
     assert.deepEqual(known.connector.sent, []);
+  });
+
+  it('never retries a 403: one attempt, no waiting', async () => {
+    for (const failure of [botNotInstalledError(), messageWritesBlockedError()]) {
+      const h = directHarness();
+      h.connector.failDirect(MIRA, ANNA, failure);
+
+      await h.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+      assert.equal(h.connector.opened.length, 1);
+      assert.deepEqual(h.waits, []);
+    }
+  });
+
+  it('retries 429, 412, 502 and 504 with exponential backoff and then delivers once', async () => {
+    for (const status of [429, 412, 502, 504]) {
+      const h = directHarness();
+      h.connector.failDirect(MIRA, ANNA, connectorError(status, 'Transient', 'try later'), 2);
+
+      const outcome = await h.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+      assert.equal(outcome.outcome, 'delivered', String(status));
+      assert.deepEqual(h.waits, [500, 1000]);
+      assert.equal(h.connector.sent.length, 1, 'the message is posted exactly once');
+    }
+  });
+
+  it('gives up after four attempts and reports the error', async () => {
+    const h = directHarness();
+    h.connector.failDirect(MIRA, ANNA, connectorError(429, 'TooManyRequests', 'throttled'));
+
+    const outcome = await h.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'channel_error');
+    assert.equal(h.connector.opened.length, 4);
+    assert.deepEqual(h.waits, [500, 1000, 2000]);
+  });
+
+  it('does not match error codes no documentation names', async () => {
+    const h = directHarness();
+    h.connector.failDirect(MIRA, ANNA, connectorError(403, 'BotNotInConversationRoster', 'The bot is not part of the conversation roster.'));
+
+    const outcome = await h.sendToUser(target(ANNA), { text: 'x' }, { asChannelKey: MIRA.key });
+
+    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'channel_error');
+  });
+
+  it('opens the conversation by Entra object id only: a 29: id is per bot and is not used', async () => {
+    const h = directHarness();
+
+    const outcome = await h.sendToUser(
+      { principalId: 'user:x', userRef: { kind: 'teams-aad', id: ANNA.id } },
+      { text: 'x' },
+      { asChannelKey: MIRA.key },
+    );
+
+    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'no_binding');
+    assert.deepEqual(h.connector.opened, []);
   });
 
   it('maps an unknown user to user_not_found and anything else to channel_error', async () => {

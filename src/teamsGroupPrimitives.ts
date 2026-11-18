@@ -19,6 +19,9 @@ import type { TeamsOpenDirectConversation, TeamsProactiveSend } from './messages
 import {
   buildOutgoingActivity,
   classifyDirectSendError,
+  isEntraObjectId,
+  retryTransient,
+  type RetryOptions,
   readPollRequest,
   renderMentions,
 } from './teamsOutboundMessage.js';
@@ -384,6 +387,7 @@ export interface TeamsDirectSendDeps {
 export function createTeamsTargetedSendAdapter(deps: {
   sendProactive: TeamsProactiveSend;
   direct?: TeamsDirectSendDeps;
+  retry?: RetryOptions;
 }): TargetedSendProvider {
   type Target = Parameters<TargetedSendProvider['sendToUser']>[0];
 
@@ -396,7 +400,10 @@ export function createTeamsTargetedSendAdapter(deps: {
     await deps.sendProactive(
       reference,
       async (turnContext) => {
-        const sent = await turnContext.sendActivity(buildOutgoingActivity({ text }));
+        const sent = await retryTransient(
+          () => turnContext.sendActivity(buildOutgoingActivity({ text })),
+          deps.retry,
+        );
         messageId = sent?.id;
       },
       ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
@@ -426,7 +433,10 @@ export function createTeamsTargetedSendAdapter(deps: {
       };
     }
     const direct = deps.direct;
-    const userId = target.userRef?.kind === 'teams-aad' ? target.userRef.id : undefined;
+    // The Entra object id only: a Teams user id (`29:…`) is per bot and
+    // would address nobody for this one.
+    const userId =
+      target.userRef?.kind === 'teams-aad' && isEntraObjectId(target.userRef.id) ? target.userRef.id : undefined;
 
     const kernelRef = target.conversationRef as Partial<ConversationReference> | null | undefined;
     const kernelRefBot = kernelRef?.bot?.id ? parseTeamsBotKey(kernelRef.bot.id) : undefined;
@@ -439,21 +449,31 @@ export function createTeamsTargetedSendAdapter(deps: {
         return {
           outcome: 'unreachable',
           code: 'no_binding',
-          message: `no Teams user id is known for '${target.principalId}', so '${botLabel}' cannot open a direct conversation`,
+          message: `no Entra object id is known for '${target.principalId}', so '${botLabel}' cannot open a direct conversation`,
         };
       }
       let messageId: string | undefined;
+      let isOpened = false;
       const serviceUrl = direct.refs.serviceUrlFor(botAppId);
-      await direct.openDirectConversation(
-        botAppId,
-        { userId, ...(serviceUrl ? { serviceUrl } : {}) },
-        async (turnContext) => {
-          const conversationId = turnContext.activity.conversation?.id;
-          const sent = await turnContext.sendActivity(buildOutgoingActivity({ text }));
-          messageId = sent?.id;
-          if (conversationId) direct.refs.rememberDirectConversation(botAppId, [userId], conversationId);
-        },
-      );
+      const open = (): Promise<void> =>
+        direct.openDirectConversation(
+          botAppId,
+          { userId, ...(serviceUrl ? { serviceUrl } : {}) },
+          async (turnContext) => {
+            isOpened = true;
+            const conversationId = turnContext.activity.conversation?.id;
+            if (conversationId) direct.refs.rememberDirectConversation(botAppId, [userId], conversationId);
+            const sent = await retryTransient(
+              () => turnContext.sendActivity(buildOutgoingActivity({ text })),
+              deps.retry,
+            );
+            messageId = sent?.id;
+          },
+        );
+      // Creating the conversation is retried while nothing was sent; once the
+      // conversation is open only the send itself is (above), so a retry can
+      // never post the message twice.
+      await retryTransient(open, deps.retry, () => !isOpened);
       return delivered(messageId);
     } catch (err) {
       const outcome = classifyDirectSendError(err, botLabel);

@@ -522,8 +522,20 @@ export class SimulatedConnector {
   readonly opened: { asBot: string; userId: string; serviceUrl?: string }[] = [];
   private readonly directFailures = new Map<string, Error>();
 
-  failDirect(bot: SimBot, user: SimUser, err: Error): void {
+  /** `times` limits the failure to that many attempts (a transient error). */
+  failDirect(bot: SimBot, user: SimUser, err: Error, times = Number.POSITIVE_INFINITY): void {
     this.directFailures.set(`${bot.appId}|${user.aadObjectId}`, err);
+    this.remainingFailures.set(`${bot.appId}|${user.aadObjectId}`, times);
+  }
+
+  private readonly remainingFailures = new Map<string, number>();
+
+  private takeFailure(key: string): Error | undefined {
+    const failure = this.directFailures.get(key);
+    const remaining = this.remainingFailures.get(key) ?? 0;
+    if (!failure || remaining <= 0) return undefined;
+    this.remainingFailures.set(key, remaining - 1);
+    return failure;
   }
 
   private context(asBot: string, conversationId: string): TurnContext {
@@ -546,7 +558,8 @@ export class SimulatedConnector {
     const key = [...this.directFailures.keys()].find(
       (candidate) => reference.conversation?.id === directConversationId(candidate),
     );
-    if (key) throw this.directFailures.get(key);
+    const failure = key ? this.takeFailure(key) : undefined;
+    if (failure) throw failure;
     await build(this.context(asBot, reference.conversation?.id ?? ''));
   };
 
@@ -556,7 +569,7 @@ export class SimulatedConnector {
     build: (turnContext: TurnContext) => Promise<void>,
   ): Promise<void> => {
     this.opened.push({ asBot: `28:${botAppId}`, userId: target.userId, ...(target.serviceUrl ? { serviceUrl: target.serviceUrl } : {}) });
-    const failure = this.directFailures.get(`${botAppId}|${target.userId}`);
+    const failure = this.takeFailure(`${botAppId}|${target.userId}`);
     if (failure) throw failure;
     await build(this.context(`28:${botAppId}`, directConversationId(`${botAppId}|${target.userId}`)));
   };
