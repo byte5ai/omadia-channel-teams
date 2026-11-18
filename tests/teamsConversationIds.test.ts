@@ -71,3 +71,46 @@ describe('#2043 teamsTurnOrigin — the channel-native conversation id', () => {
     }
   });
 });
+
+describe('#2043 teamsTurnOrigin — who spoke', () => {
+  const ANNA_OID = '8f4c1d2e-3a5b-4c6d-9e7f-0a1b2c3d4e5f';
+  const speakerOf = (origin: unknown): unknown => (origin as { speaker?: unknown }).speaker;
+  const conversations: [string, { id: string; conversationType: string }][] = [
+    ['a channel thread', { id: THREAD, conversationType: 'channel' }],
+    ['a group chat', { id: '19:b8a1c0f2d3e44f5a9b6c7d8e9f0a1b2c@thread.v2', conversationType: 'groupChat' }],
+    ['a meeting chat', { id: MEETING_CHAT, conversationType: 'groupChat' }],
+    ['a 1:1', { id: 'a:1dRsHCobZ1AxURzY05Dc_personal', conversationType: 'personal' }],
+  ];
+
+  for (const [name, conversation] of conversations) {
+    it(`names the sender with Entra object id and display name in ${name}`, () => {
+      const origin = teamsTurnOrigin(
+        { conversation, from: { aadObjectId: ANNA_OID, name: 'Anna Köhler' } },
+        `teams-${BOT_KEY}-${conversation.id}`,
+        ANNA_OID,
+      );
+
+      assert.deepEqual(speakerOf(origin), { kind: 'teams-aad', id: ANNA_OID, displayName: 'Anna Köhler' });
+      // The same id the principal carries.
+      assert.equal((origin.principal as { userId?: string } | undefined)?.userId, ANNA_OID);
+    });
+  }
+
+  it('omits the display name when the activity has none', () => {
+    for (const from of [{ aadObjectId: ANNA_OID }, { aadObjectId: ANNA_OID, name: '' }, { aadObjectId: ANNA_OID, name: '  ' }]) {
+      const origin = teamsTurnOrigin({ conversation: { id: THREAD, conversationType: 'channel' }, from }, 'teams-x', ANNA_OID);
+      assert.deepEqual(speakerOf(origin), { kind: 'teams-aad', id: ANNA_OID });
+    }
+  });
+
+  it('omits the speaker without an Entra object id, also when a Teams id and a name are there', () => {
+    // An anonymous meeting guest: `from.id` only. `userId` falls back to it,
+    // the speaker does not.
+    const guest: { aadObjectId?: string; name?: string } = { name: 'Gast' };
+    const origin = teamsTurnOrigin({ conversation: { id: MEETING_CHAT, conversationType: 'groupChat' }, from: guest }, 'teams-x', '8:teamsvisitor:abc');
+    assert.equal(Object.hasOwn(origin, 'speaker'), false);
+
+    const none = teamsTurnOrigin({ conversation: { id: MEETING_CHAT, conversationType: 'groupChat' } }, 'teams-x', undefined);
+    assert.equal(Object.hasOwn(none, 'speaker'), false);
+  });
+});

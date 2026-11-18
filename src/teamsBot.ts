@@ -315,6 +315,7 @@ export function teamsTurnOrigin(
         }
       | undefined;
     readonly channelData?: unknown;
+    readonly from?: { readonly aadObjectId?: string | undefined; readonly name?: string | undefined } | undefined;
   },
   sessionScope: string,
   userId: string | undefined,
@@ -347,6 +348,19 @@ export function teamsTurnOrigin(
   // scope is NOT that id (it is `teams-<botKey>-<id>` for a bot with its own
   // identity), so the kernel must not derive one from the other.
   const rawConversationId = activity.conversation?.id;
+  // #2043 — `speaker` (channel-sdk 0.3.2): who spoke, as Teams states it on
+  // `activity.from`. Only with an Entra object id (a Teams `29:` id is per
+  // bot and names nobody to anyone else); the name only when Teams sent one.
+  const speakerId = activity.from?.aadObjectId;
+  const speakerName = activity.from?.name;
+  const speaker =
+    typeof speakerId === 'string' && speakerId.trim().length > 0
+      ? {
+          kind: 'teams-aad',
+          id: speakerId,
+          ...(typeof speakerName === 'string' && speakerName.trim().length > 0 ? { displayName: speakerName } : {}),
+        }
+      : undefined;
   const channelConversationId =
     typeof rawConversationId === 'string' && rawConversationId.trim().length > 0 ? rawConversationId : undefined;
   return {
@@ -354,6 +368,7 @@ export function teamsTurnOrigin(
     scope,
     ...(conversationType ? { conversationType } : {}),
     ...(channelConversationId ? { channelConversationId } : {}),
+    ...(speaker ? { speaker } : {}),
     ...(teamId ? { container: { kind: 'team' as const, id: teamId } } : {}),
     ...(principal ? { principal } : {}),
   };

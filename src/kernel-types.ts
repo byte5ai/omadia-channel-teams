@@ -287,6 +287,15 @@ export interface ChatTurnInput {
 }
 
 /**
+ * Options of `ConversationRosterProvider.getRoster` (`@omadia/channel-sdk`
+ * 0.3.2, #2043). `asChannelKey` is the asking agent's own identity
+ * (`28:<appId>`): the roster is then read as THAT bot, or not at all.
+ */
+export interface RosterRequestOptions {
+  asChannelKey?: string;
+}
+
+/**
  * `TurnOrigin` with the field `@omadia/channel-sdk` 0.4.0 adds (#2043):
  * the conversation as the CHANNEL names it, here `activity.conversation.id`
  * as received (no `teams-` prefix, no bot key, `;messageid=<root>` kept).
@@ -296,7 +305,17 @@ export interface ChatTurnInput {
  * Mirrored as an intersection, so it is the SDK's own type as soon as the
  * SDK declares the field, and an older kernel just ignores it.
  */
-export type TeamsTurnOrigin = TurnOrigin & { readonly channelConversationId?: string };
+export type TeamsTurnOrigin = TurnOrigin & {
+  readonly channelConversationId?: string;
+  /**
+   * channel-sdk 0.3.2 — who spoke, as the platform stated it: the Entra
+   * object id and display name of `activity.from`. The kernel builds the
+   * tool call context's `callerUserRef` from it, so a facilitator can name
+   * the person who started a facilitation. (`ChatTurnInput.channelIdentity`
+   * is NOT set by this channel: it has knowledge-graph meaning.)
+   */
+  readonly speaker?: { readonly kind: string; readonly id: string; readonly displayName?: string };
+};
 
 /**
  * Channel-facing chat agent. `chat()` returns the SDK's SemanticAnswer —

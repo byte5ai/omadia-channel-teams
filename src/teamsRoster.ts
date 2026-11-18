@@ -9,9 +9,25 @@ interface CacheEntry {
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 const PAGE_SIZE = 100;
 
+/** How one roster read ended. `refused` = the Bot Connector did not answer
+ *  with a member list (missing RSC permission, bot not in the conversation,
+ *  transport error); the participants are then empty and NOT an answer. */
+export type TeamsRosterOutcome =
+  | { outcome: 'fetched' | 'cached'; participants: ChatParticipant[] }
+  | { outcome: 'refused'; participants: ChatParticipant[]; status?: number; detail: string };
+
+function statusOf(err: unknown): number | undefined {
+  const record = (err ?? {}) as { statusCode?: unknown; status?: unknown };
+  const status = typeof record.statusCode === 'number' ? record.statusCode : record.status;
+  return typeof status === 'number' ? status : undefined;
+}
+
 /**
- * Per-conversation Teams roster cache. One instance is shared across the bot
- * and hands out cached rosters keyed by `conversation.id`.
+ * Teams roster cache. One instance is shared across every bot of the plugin
+ * and hands out cached rosters keyed by the ASKING BOT and `conversation.id`.
+ * The bot is part of the key because a roster is one bot's view: a bot that
+ * is not in a chat gets no members, and that empty answer must never be
+ * served to another bot that is in it (#2043).
  *
  * Uses `TeamsInfo.getPagedMembers` which works uniformly for 1:1, group-chat
  * and channel conversations. The call needs the appropriate RSC permission
@@ -38,11 +54,23 @@ export class TeamsRosterProvider {
     context: TurnContext,
     options: { maxAgeMs?: number } = {},
   ): Promise<ChatParticipant[]> {
+    return (await this.listWithOutcome(context, options)).participants;
+  }
+
+  /** {@link list}, saying how the read ended. */
+  async listWithOutcome(
+    context: TurnContext,
+    options: { maxAgeMs?: number } = {},
+  ): Promise<TeamsRosterOutcome> {
     const convId = context.activity.conversation?.id ?? 'unknown';
-    const hit = this.cache.get(convId);
+    // The bot this turn runs as: the recipient of an inbound activity, the
+    // bot of the conversation reference in a proactive turn.
+    const botId = (context.activity.recipient?.id ?? '').toLowerCase();
+    const cacheKey = TeamsRosterProvider.key(botId, convId);
+    const hit = this.cache.get(cacheKey);
     const maxAge = Math.min(this.ttlMs, options.maxAgeMs ?? this.ttlMs);
     if (hit && Date.now() - hit.fetchedAt < maxAge) {
-      return hit.participants;
+      return { outcome: 'cached', participants: hit.participants };
     }
     const members: ChatParticipant[] = [];
     let continuation: string | undefined;
@@ -89,14 +117,24 @@ export class TeamsRosterProvider {
       );
       // Soft-fail: cache empty with TTL so a missing RSC permission / transient
       // error doesn't hammer the Graph on every mention attempt.
-      this.cache.set(convId, { participants: [], fetchedAt: Date.now() });
-      return [];
+      this.cache.set(cacheKey, { participants: [], fetchedAt: Date.now() });
+      const status = statusOf(err);
+      return {
+        outcome: 'refused',
+        participants: [],
+        ...(status !== undefined ? { status } : {}),
+        detail: err instanceof Error ? err.message : String(err),
+      };
     }
     console.error(
       `[teams-roster] fetched conv=${convId} count=${String(members.length)}`,
     );
-    this.cache.set(convId, { participants: members, fetchedAt: Date.now() });
-    return members;
+    this.cache.set(cacheKey, { participants: members, fetchedAt: Date.now() });
+    return { outcome: 'fetched', participants: members };
+  }
+
+  private static key(botId: string, conversationId: string): string {
+    return `${botId}|${conversationId}`;
   }
 
   /**
@@ -105,6 +143,10 @@ export class TeamsRosterProvider {
    * Optional; TTL bounds staleness either way.
    */
   invalidate(conversationId: string): void {
-    this.cache.delete(conversationId);
+    // Every bot's view of the conversation: a membership change concerns all.
+    const suffix = `|${conversationId}`;
+    for (const key of [...this.cache.keys()]) {
+      if (key.endsWith(suffix)) this.cache.delete(key);
+    }
   }
 }

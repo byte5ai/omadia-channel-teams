@@ -62,6 +62,62 @@ function groupHarness(): {
   return { connector, send: adapter.sendToConversation.bind(adapter) };
 }
 
+function entitiesOf(activity: Record<string, unknown> | undefined): { type?: string; additionalType?: string[] }[] {
+  return (activity?.['entities'] as { type?: string; additionalType?: string[] }[] | undefined) ?? [];
+}
+
+function mentionEntities(activity: Record<string, unknown> | undefined): unknown[] {
+  return entitiesOf(activity).filter((entity) => entity.type === 'mention');
+}
+
+/** Teams' "AI generated" label: the activity-level entity. */
+function aiLabels(activity: Record<string, unknown> | undefined): unknown[] {
+  return entitiesOf(activity).filter((entity) => entity.additionalType?.includes('AIGeneratedContent'));
+}
+
+describe('#2043 every message posted as an agent identity carries the AI label, once', () => {
+  it('a text post, a poll card and a post with a mention each carry exactly one label', async () => {
+    const { connector, send } = groupHarness();
+
+    await send(GROUP_CHAT_ID, { text: 'Die Abstimmung läuft.' }, { asChannelKey: MIRA.key });
+    await send(
+      GROUP_CHAT_ID,
+      { text: 'Bitte wählt.', poll: { pollId: 'p1', question: 'Welche Option?', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] } },
+      { asChannelKey: MIRA.key },
+    );
+    await send(
+      GROUP_CHAT_ID,
+      { text: '@Anna Köhler bitte.', mentions: [{ user: { kind: 'teams-aad', id: ANNA.aadObjectId }, text: '@Anna Köhler' }] },
+      { asChannelKey: MIRA.key },
+    );
+
+    assert.equal(connector.sent.length, 4, 'text, text + card, text');
+    for (const sent of connector.sent) {
+      assert.equal(aiLabels(sent.activity).length, 1, JSON.stringify(sent.activity).slice(0, 120));
+    }
+    // The label is the marking: no disclosure sentence is added to the text.
+    assert.equal(connector.sent[0]?.activity['text'], 'Die Abstimmung läuft.');
+  });
+
+  it('a private reminder carries the label too', async () => {
+    const connector = new SimulatedConnector();
+    const refs = new TeamsConversationReferenceCache();
+    const adapter = createTeamsTargetedSendAdapter({
+      sendProactive: connector.sendProactive,
+      direct: { refs, openDirectConversation: connector.openDirectConversation, botLabel: () => MIRA.name },
+    });
+
+    const outcome = await adapter.sendToUser(
+      { principalId: `user:${BERT.aadObjectId}`, userRef: { kind: 'teams-aad', id: BERT.aadObjectId } },
+      { text: 'Deine Stimme fehlt noch.' },
+      { asChannelKey: MIRA.key },
+    );
+
+    assert.equal(outcome.outcome, 'delivered');
+    assert.equal(aiLabels(connector.sent[0]?.activity).length, 1);
+  });
+});
+
 describe('#43 sendToConversation as the own bot', () => {
   it('turns a mention into a real Teams mention and returns the activity id', async () => {
     const { connector, send } = groupHarness();
@@ -81,7 +137,7 @@ describe('#43 sendToConversation as the own bot', () => {
     assert.deepEqual(outcome, { outcome: 'delivered', messageId: sent.id });
     assert.equal(sent.asBot, MIRA.key);
     assert.equal(sent.activity['text'], '<at>Anna Köhler</at> deine Stimme fehlt noch.');
-    assert.deepEqual(sent.activity['entities'], [
+    assert.deepEqual(mentionEntities(sent.activity), [
       { type: 'mention', text: '<at>Anna Köhler</at>', mentioned: { id: ANNA.id, name: 'Anna Köhler' } },
     ]);
   });
@@ -103,7 +159,7 @@ describe('#43 sendToConversation as the own bot', () => {
 
     const sent = connector.sent[0];
     assert.equal(sent?.activity['text'], '@Carla Voss und <at>Bert Maier</at>: bitte abstimmen.');
-    assert.equal((sent?.activity['entities'] as unknown[]).length, 1);
+    assert.equal(mentionEntities(sent?.activity).length, 1);
   });
 
   it('sends text and poll card as separate activities and returns both ids', async () => {
@@ -150,7 +206,7 @@ describe('#43 sendToConversation as the own bot', () => {
     );
 
     assert.equal(connector.sent[0]?.activity['text'], '@Anna Köhler bitte.', 'a 29: id is not an Entra object id');
-    assert.equal('entities' in (connector.sent[0]?.activity ?? {}), false);
+    assert.deepEqual(mentionEntities(connector.sent[0]?.activity), []);
   });
 
   it('refuses an unusable poll before posting anything', async () => {

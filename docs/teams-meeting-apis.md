@@ -95,6 +95,17 @@ app; that is an owner decision.
 bot. N bots deliver N copies of a message; the kernel stores a message delivered more
 than once only once. *Simulated.*
 
+### The roster is one bot's view
+
+*Live* for the cause (first facilitation, 2026-11-18); *Simulated* for the fix.
+
+The member list of a conversation is read through the Bot Connector as ONE bot, and a
+bot that is not in the conversation gets none. `getRoster(conversationId, { asChannelKey })`
+reads it as the asking agent's own bot (its conversation reference, its credentials) or
+answers `undefined`; without `asChannelKey` it is the default bot's view, as before. The
+cache is keyed by bot and conversation. For a channel thread the members are asked for
+the channel. Each read logs one `[teams-roster] roster …` line with the outcome.
+
 ## 5. Readiness check
 
 | Finding | Evidence |

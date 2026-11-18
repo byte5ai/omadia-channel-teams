@@ -38,6 +38,7 @@ import type { TeamsConversationRefPersistence } from './teamsConversationRefStor
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type {
   ChatParticipant,
+  RosterRequestOptions,
   FacilitatorDeliveryOutcome,
   SendProviderCapabilities,
   TargetedMention,
@@ -384,6 +385,17 @@ function toParticipant(member: ChatParticipant): ConversationParticipant {
   };
 }
 
+/** The roster provider with the `asChannelKey` option of channel-sdk 0.3.2. */
+export interface TeamsRosterAdapter extends ConversationRosterProvider {
+  getRoster(conversationId: string, opts?: RosterRequestOptions): Promise<ConversationRoster | undefined>;
+}
+
+/** Conversation ids are long; the log shows enough to tell chats and
+ *  threads apart (the thread part is at the end). */
+function conversationForLog(conversationId: string): string {
+  return conversationId.length <= 72 ? conversationId : `${conversationId.slice(0, 40)}…${conversationId.slice(-28)}`;
+}
+
 /**
  * SDK roster provider over the existing `TeamsRosterProvider` (5-min cache,
  * RSC-permission soft-fail). Opens a proactive turn on the cached
@@ -392,22 +404,85 @@ function toParticipant(member: ChatParticipant): ConversationParticipant {
  * real Teams conversation has at least the requesting bot as a member, so
  * emptiness here is the roster provider's permission/transport soft-fail, not
  * an answer.
+ *
+ * WHOSE VIEW (#2043). A roster is what ONE bot sees. With
+ * `opts.asChannelKey` the reference of exactly that bot is used and the
+ * members are read with that bot's credentials; a bot without a reference in
+ * the conversation gets `undefined`, never another bot's view. Without it the
+ * lookup is the one of #330: the default bot's reference. A facilitator's
+ * chat usually does not contain the default bot, which is why its handshake
+ * listed nobody before this option existed.
+ *
+ * Every path logs one line, so an empty or missing roster can be explained
+ * from the log.
  */
 export function createTeamsRosterAdapter(deps: {
   refs: TeamsConversationReferenceCache;
-  roster: TeamsRosterProvider;
+  roster: Pick<TeamsRosterProvider, 'list'> & Partial<Pick<TeamsRosterProvider, 'listWithOutcome'>>;
   sendProactive: TeamsProactiveSend;
-}): ConversationRosterProvider {
+}): TeamsRosterAdapter {
+  const log = (conversationId: string, as: string, outcome: string): void => {
+    console.error(`[teams-roster] roster conv=${conversationForLog(conversationId)} as=${as} ${outcome}`);
+  };
   return {
     channelType: 'teams',
-    async getRoster(conversationId: string): Promise<ConversationRoster | undefined> {
-      const cached = await deps.refs.getOrLoad(conversationId);
-      if (!cached) return undefined;
+    async getRoster(conversationId: string, opts?: RosterRequestOptions): Promise<ConversationRoster | undefined> {
+      const asChannelKey = opts?.asChannelKey;
+      const botAppId = asChannelKey !== undefined ? parseTeamsBotKey(asChannelKey) : undefined;
+      const as = asChannelKey === undefined ? 'default-bot' : (botAppId ? `${TEAMS_BOT_KEY_PREFIX}${botAppId.slice(0, 8)}…` : 'invalid');
+      if (asChannelKey !== undefined && !botAppId) {
+        log(conversationId, as, `refused: '${asChannelKey}' is not a Teams bot identity key`);
+        return undefined;
+      }
+      if (isBotKeyPrefixedConversationId(conversationId)) {
+        reportBotKeyPrefixedConversationId(conversationId, 'roster');
+        log(conversationId, as, 'refused: not a Teams conversation id (bot-key-prefixed)');
+        return undefined;
+      }
+      const cached = await deps.refs.getOrLoad(conversationId, botAppId);
+      // Asked as one bot: only that bot's own reference counts.
+      const ownerAppId = cached?.ref.bot?.id ? parseTeamsBotKey(cached.ref.bot.id) : undefined;
+      if (!cached || (botAppId && ownerAppId && ownerAppId !== botAppId)) {
+        log(conversationId, as, 'no reference: this bot has not received an activity from the conversation');
+        return undefined;
+      }
+
+      // The members of a channel are asked for the CHANNEL; a thread id
+      // (`…;messageid=<root>`) is this plugin's and the kernel's key only.
+      const bareId = bareConversationId(conversationId);
+      const rosterRef: Partial<ConversationReference> =
+        bareId === conversationId
+          ? cached.ref
+          : { ...cached.ref, conversation: { ...cached.ref.conversation, id: bareId } as ConversationReference['conversation'] };
 
       let members: ChatParticipant[] = [];
-      await deps.sendProactive(cached.ref, async (turnContext) => {
-        members = await deps.roster.list(turnContext);
-      });
+      let problem: string | undefined;
+      try {
+        await deps.sendProactive(
+          rosterRef,
+          async (turnContext) => {
+            if (!deps.roster.listWithOutcome) {
+              members = await deps.roster.list(turnContext);
+              return;
+            }
+            const read = await deps.roster.listWithOutcome(turnContext);
+            members = read.participants;
+            if (read.outcome === 'refused') {
+              problem = `refused status=${read.status !== undefined ? String(read.status) : 'none'} detail=${read.detail}`;
+            }
+          },
+          ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
+        );
+      } catch (err) {
+        // Asked as one bot, a failed turn is "unknown", not a crash of the
+        // caller. The legacy path keeps throwing, as it always did.
+        if (!botAppId) {
+          log(conversationId, as, `refused status=none detail=${err instanceof Error ? err.message : String(err)}`);
+          throw err;
+        }
+        problem = `refused status=${String((err as { statusCode?: unknown } | null)?.statusCode ?? 'none')} detail=${err instanceof Error ? err.message : String(err)}`;
+      }
+      log(conversationId, as, problem ?? `fetched count=${String(members.length)}`);
 
       const bot = cached.ref.bot;
       const self: ConversationParticipant | undefined = bot
@@ -719,13 +794,37 @@ export function createTeamsConversationSendAdapter(deps: {
       let isTextPosted = false;
       const hasText = message.text.trim().length > 0;
       const senderAppId = botAppId ?? refBotAppId;
+      const proactiveOpts = botAppId ? ([{ botAppId }] as const) : ([] as const);
+      const wantsRoster = hasText && mentions !== undefined && mentions.length > 0 && deps.roster !== undefined;
+      // In a channel THREAD the members are those of the channel: asked in a
+      // turn of its own on the bare channel id, before anything is posted.
+      // A roster that cannot be read leaves the mentions as plain text.
+      let channelMembers: ChatParticipant[] | undefined;
+      const bareId = bareConversationId(conversationId);
+      if (wantsRoster && bareId !== conversationId) {
+        const roster = deps.roster;
+        channelMembers = [];
+        await deps
+          .sendProactive(
+            { ...cached.ref, conversation: { ...cached.ref.conversation, id: bareId } as ConversationReference['conversation'] },
+            async (turnContext) => {
+              channelMembers = roster ? await roster.list(turnContext) : [];
+            },
+            ...proactiveOpts,
+          )
+          .catch((err: unknown) => {
+            console.error(
+              `[teams-roster] mention roster conv=${conversationForLog(conversationId)} refused detail=${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+      }
       try {
         await deps.sendProactive(
           cached.ref,
           async (turnContext) => {
             if (hasText) {
               const members =
-                mentions && mentions.length > 0 && deps.roster ? await deps.roster.list(turnContext) : [];
+                channelMembers ?? (wantsRoster && deps.roster ? await deps.roster.list(turnContext) : []);
               // Resolved from the roster by Entra object id: only a member of
               // this chat can be mentioned, and the entity text equals the
               // `<at>…</at>` token in the body exactly.
