@@ -233,7 +233,13 @@ export interface SimulatedBot {
  * production) wired to the simulated kernel. Calling it again with the same
  * kernel models a middleware restart: new process state, same subscriptions.
  */
-export function simulatedBot(kernel: SimulatedKernel): SimulatedBot {
+export function simulatedBot(
+  kernel: SimulatedKernel,
+  group?: {
+    captureConversationReference: (context: TurnContext) => void;
+    emitMembershipEvent: (event: Record<string, unknown>) => void;
+  },
+): SimulatedBot {
   const turns: string[] = [];
   const sent: unknown[] = [];
   const history = new Map<string, unknown[]>();
@@ -263,6 +269,9 @@ export function simulatedBot(kernel: SimulatedKernel): SimulatedBot {
       currentTurnId: () => undefined,
       currentTurnDate: () => '2026-11-18',
     },
+    // attachmentStore … resolveConductorAwait: not part of these scenarios.
+    ...Array.from({ length: 12 }, () => undefined),
+    group,
   );
   bot.attachConversationMessages(
     new TeamsConversationMessages({

@@ -421,7 +421,10 @@ export function createTeamsTargetedSendAdapter(deps: {
       );
       return delivered(messageId);
     } catch (err) {
-      return classifyDirectSendError(err, botLabel);
+      const outcome = classifyDirectSendError(err, botLabel);
+      // Log-safe: the bot's display name and the outcome code, no ids.
+      console.error(`[teams] direct message as '${botLabel}' not delivered: ${outcome.code}`);
+      return outcome;
     }
   };
 
