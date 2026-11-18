@@ -291,6 +291,40 @@ describe('scenario 5 — restart', () => {
     assert.deepEqual(after.bot.turns, []);
   });
 
+  it('after a restart nothing waits for a new bot_added: readiness, roster, post, DM and message events work at once', async () => {
+    const before = startInstance();
+    before.kernel.subscribe(GROUP_CHAT_ID, MIRA);
+    before.graph.install(GROUP_CHAT_ID, MIRA);
+    await before.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'A' }));
+    await settle();
+
+    // Teams, Graph, the kernel's subscriptions and the reference table stay;
+    // every map of the plugin is new and no membership event is delivered.
+    const after = startInstance({ kernel: before.kernel, graph: before.graph, connector: before.connector, table: before.table });
+    const sentBefore = after.connector.sent.length;
+
+    const report = await after.readiness.check(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+    const posted = await after.post(
+      GROUP_CHAT_ID,
+      { text: '@Bert, deine Stimme fehlt.', mentions: [{ user: { kind: 'teams-aad', id: BERT.aadObjectId }, text: '@Bert' }] },
+      { asChannelKey: MIRA.key },
+    );
+    const reminded = await after.dm(dmTarget(BERT), { text: 'Deine Stimme fehlt noch.' }, { asChannelKey: MIRA.key });
+    await after.bot.deliver(messageActivity({ bot: MIRA, from: BERT, text: 'B' }));
+
+    assert.equal(report.ready, true, JSON.stringify(report.missing));
+    assert.equal(posted.outcome, 'delivered');
+    assert.equal(reminded.outcome, 'delivered');
+    assert.ok(
+      JSON.stringify(after.connector.sent.slice(sentBefore)).includes('"type":"mention"'),
+      'the roster was fetched on demand and the mention resolved',
+    );
+    assert.ok(after.connector.sent.slice(sentBefore).every((sent) => sent.asBot === MIRA.key));
+    assert.deepEqual(after.kernel.events.map((e) => e.text), ['A', 'B']);
+    assert.deepEqual(after.bot.turns, []);
+    assert.deepEqual(after.membership, [], 'no membership event was needed');
+  });
+
   it('after a restart an edit still carries the message id and its platform time', async () => {
     const before = startInstance();
     before.kernel.subscribe(GROUP_CHAT_ID, MIRA);

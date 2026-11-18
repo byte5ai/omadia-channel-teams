@@ -25,6 +25,11 @@ feature-detected, on an older kernel nothing changes.
   `ChannelMessage.Read.Group`); can-post = own conversation reference plus the last
   send result. `repairConsent` upgrades an install that lacks the grant
   (`installedApps/{id}/upgrade` with the full consented set).
+- **Restart**: a subscribed conversation needs no new `bot_added` after a middleware
+  restart. The subscription is asked from the kernel per message, the roster is
+  fetched per call, the conversation reference comes from `teams_conversation_refs`,
+  and the team of a channel (needed by the readiness check) is now stored with that
+  reference. Without a database pool the references are memory only, as before.
 - **Posts as the own bot**: real @mentions resolved from the roster by Entra object
   id; text and card are separate activities, the outcome carries `messageId` and
   `cardMessageId`.

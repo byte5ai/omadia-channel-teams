@@ -313,6 +313,66 @@ describe('#43 readiness provider', () => {
     assert.deepEqual((await h.check(MIRA, CHANNEL_ID)).missing.map((m) => m.code), ['consent_missing']);
   });
 
+  it('still knows the team of a channel after a restart, before any new activity', async () => {
+    // The reference table is all that survives a restart. A subscribed
+    // channel must stay ready from it alone: no new `bot_added`, no message.
+    const rows = new Map<string, { ref: Record<string, unknown>; teamsType?: string; botAppId?: string }>();
+    const table = {
+      save: async (conversationId: string, ref: unknown, teamsType?: string, botAppId?: string): Promise<void> => {
+        // Through JSON, as the database column stores it.
+        rows.set(`${botAppId ?? ''}|${conversationId}`, {
+          ref: JSON.parse(JSON.stringify(ref)) as Record<string, unknown>,
+          ...(teamsType ? { teamsType } : {}),
+          ...(botAppId ? { botAppId } : {}),
+        });
+      },
+      load: async (conversationId: string, botAppId?: string) => rows.get(`${botAppId ?? ''}|${conversationId}`),
+    };
+    const before = harness();
+    before.refs.attachPersistence(table as never);
+    seen(before, MIRA, CHANNEL_ID, {
+      conversation: { id: CHANNEL_ID, conversationType: 'channel', tenantId: TENANT_ID, isGroup: true },
+      channelData: { team: { id: '19:general@thread.tacv2', aadGroupId: TEAM_ID }, tenant: { id: TENANT_ID } },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const after = harness();
+    after.refs.attachPersistence(table as never);
+    after.graph.install(TEAM_ID, MIRA, { consented: ['ChannelMessage.Read.Group', 'TeamsActivity.Send.Group'] });
+
+    assert.equal(after.refs.teamIdFor(CHANNEL_ID), undefined, 'nothing is in memory in the new process');
+    const report = await after.check(MIRA, CHANNEL_ID);
+
+    assert.deepEqual(report, { installed: true, canReadAllMessages: true, canPost: true, ready: true, missing: [] });
+    assert.ok(after.graph.requests.includes(`GET https://graph.microsoft.com/v1.0/teams/${TEAM_ID}/permissionGrants`));
+    // The team id rides in the stored row only; the reference handed to the
+    // Bot Framework is a plain one.
+    const loaded = await after.refs.getOrLoad(CHANNEL_ID, MIRA.appId);
+    assert.equal(Object.keys(loaded?.ref ?? {}).some((key) => key.startsWith('omadia')), false);
+  });
+
+  it('ignores a stored team id that is not an AAD group id', async () => {
+    const h = harness();
+    h.refs.attachPersistence({
+      save: async () => {},
+      load: async () => ({
+        ref: {
+          serviceUrl: 'https://smba.trafficmanager.net/emea/',
+          conversation: { id: CHANNEL_ID },
+          bot: { id: `28:${MIRA.appId}` },
+          omadiaTeamAadGroupId: '../users',
+        },
+        teamsType: 'channel',
+        botAppId: MIRA.appId,
+      }),
+    } as never);
+
+    const report = await h.check(MIRA, CHANNEL_ID);
+
+    assert.deepEqual(report.missing.map((m) => m.code), ['team_unknown']);
+    assert.deepEqual(h.graph.requests, []);
+  });
+
   it('says the team is unknown for a channel it has not heard from', async () => {
     const h = harness();
     const report = await h.check(MIRA, CHANNEL_ID);

@@ -40,6 +40,25 @@ import type {
 
 const MAX_CACHED_REFERENCES = 500;
 
+/** #2043 — key under which a channel's team (AAD group id) rides in the
+ *  PERSISTED reference. The reference column is the only state of this
+ *  plugin that survives a restart, and the readiness check of a channel
+ *  needs the team before any new activity arrives. Stripped again on load:
+ *  the in-memory reference stays a plain Bot Framework reference. */
+const PERSISTED_TEAM_ID_KEY = 'omadiaTeamAadGroupId';
+const AAD_GROUP_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Splits a persisted reference into the plain reference and the team id it
+ *  may carry. A value that is not an AAD group id is dropped, never used. */
+function splitPersistedReference(persisted: Partial<ConversationReference>): {
+  ref: Partial<ConversationReference>;
+  teamId?: string;
+} {
+  const { [PERSISTED_TEAM_ID_KEY]: stored, ...ref } = persisted as Record<string, unknown>;
+  const teamId = typeof stored === 'string' && AAD_GROUP_ID_PATTERN.test(stored) ? stored : undefined;
+  return { ref: ref as Partial<ConversationReference>, ...(teamId ? { teamId } : {}) };
+}
+
 /** Teams' native `conversation.conversationType` → the SDK's binary notion.
  *  'personal' is the bot's own 1:1 with a person; 'groupChat' and 'channel'
  *  are groups; unknown stays undefined (consumers treat unknown as direct —
@@ -193,10 +212,14 @@ export class TeamsConversationReferenceCache {
     }
     this.refs.set(key, { ref, ...(teamsType ? { teamsType } : {}) });
     if (this.persistence) {
-      const serialized = JSON.stringify({ ref, teamsType: teamsType ?? null });
+      // The team of a channel is written with the reference so that it is
+      // known again after a restart (see PERSISTED_TEAM_ID_KEY).
+      const teamId = this.teamIds.get(conversationId);
+      const persistedRef = teamId ? { ...ref, [PERSISTED_TEAM_ID_KEY]: teamId } : ref;
+      const serialized = JSON.stringify({ ref: persistedRef, teamsType: teamsType ?? null });
       if (this.lastWritten.get(key) !== serialized) {
         this.lastWritten.set(key, serialized);
-        void this.persistence.save(conversationId, ref, teamsType, botAppId).catch(() => {
+        void this.persistence.save(conversationId, persistedRef, teamsType, botAppId).catch(() => {
           // Next capture retries: forgetting the marker keeps save attempts alive.
           this.lastWritten.delete(key);
         });
@@ -237,8 +260,10 @@ export class TeamsConversationReferenceCache {
     return this.refs.get(TeamsConversationReferenceCache.key(conversationId, bot));
   }
 
-  /** #2043 — AAD group id of the team a channel conversation belongs to,
-   *  known once an activity from that channel was seen in this process. */
+  /** #2043 — AAD group id of the team a channel conversation belongs to.
+   *  Known once an activity from that channel was seen in this process, or
+   *  once `getOrLoad` read the persisted reference of that channel (after a
+   *  restart no activity has arrived yet). */
   teamIdFor(conversationId: string): string | undefined {
     return this.teamIds.get(conversationId);
   }
@@ -291,8 +316,10 @@ export class TeamsConversationReferenceCache {
     // capture() supersedes — see resolveBotKeyPart). Seeding under a key
     // capture() never writes would split one bot across two cache slots.
     const owningBotAppId = normalizeTeamsBotAppId(persisted.botAppId) ?? effective;
+    const { ref, teamId } = splitPersistedReference(persisted.ref);
+    if (teamId && !this.teamIds.has(conversationId)) this.teamIds.set(conversationId, teamId);
     const entry = {
-      ref: persisted.ref,
+      ref,
       ...(persisted.teamsType ? { teamsType: persisted.teamsType } : {}),
     };
     const key = TeamsConversationReferenceCache.key(conversationId, owningBotAppId ?? '');
