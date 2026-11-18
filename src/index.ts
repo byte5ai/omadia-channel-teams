@@ -85,8 +85,10 @@ export {
 } from './teamsConversationMessages.js';
 export {
   buildPollCard,
+  cardActionData,
   parsePollAnswerValue,
   POLL_ANSWER_VALUE_TYPE,
+  POLL_ANSWER_VERB,
   validatePollInput,
   type BuildPollCardInput,
   type PollAnswerValue,

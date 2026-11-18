@@ -7,6 +7,19 @@
 // A capability is listed only when this plugin implements it. The snapshot
 // says what the bot can do in the conversation, not what Teams could offer
 // with more permissions.
+//
+//   always            chat (text, edits), cards and polls, mentions, private
+//                     messages. The roster is available too, through the
+//                     kernel's roster provider, not through this snapshot.
+//   not yet           meeting lifecycle and `presence`. Teams offers them for
+//                     SCHEDULED meetings only, and only with the RSC
+//                     permissions `OnlineMeeting.ReadBasic.Chat` and
+//                     `OnlineMeetingParticipant.Read.Chat`. The app package
+//                     does not request them in 0.36.0 (see the decision in
+//                     docs/teams-meeting-apis.md), so they are never declared.
+//   never             `hand_raise` (no bot event exists) and
+//                     `transcribed_speech` / `voice` (real-time media needs a
+//                     .NET service on Windows; not on this stack).
 
 import type {
   MeetingSourceProvider,

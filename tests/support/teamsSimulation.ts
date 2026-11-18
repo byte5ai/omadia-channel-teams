@@ -186,6 +186,23 @@ export function cardSubmitActivity(
   };
 }
 
+/** An `Action.Execute` click: an `adaptiveCard/action` invoke whose
+ *  `value.action` carries verb and data; `replyToId` is the card message. */
+export function cardExecuteActivity(
+  input: BaseInput & { verb: string; data: unknown; cardMessageId: string; anonymous?: boolean },
+): Partial<Activity> {
+  const base = baseActivity(input);
+  return {
+    ...base,
+    // An anonymous meeting participant has no Entra object id.
+    ...(input.anonymous ? { from: { id: `8:teamsvisitor:${input.from.aadObjectId.slice(0, 8)}`, name: `${input.from.name} (Gast)` } } : {}),
+    type: 'invoke',
+    name: 'adaptiveCard/action',
+    replyToId: input.cardMessageId,
+    value: { action: { type: 'Action.Execute', verb: input.verb, data: input.data }, trigger: 'manual' },
+  };
+}
+
 /** `conversationUpdate` for a person added to the chat. */
 export function membersAddedActivity(input: BaseInput & { added: SimUser[] }): Partial<Activity> {
   return {

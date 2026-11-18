@@ -10,6 +10,7 @@ import {
   createTeamsReadinessProvider,
   createTeamsTargetedSendAdapter,
   POLL_ANSWER_VALUE_TYPE,
+  POLL_ANSWER_VERB,
   TeamsConversationReferenceCache,
   TeamsGraphResolver,
 } from '@omadia/channel-teams';
@@ -20,7 +21,7 @@ import {
   BERT,
   botNotInstalledError,
   CARLA,
-  cardSubmitActivity,
+  cardExecuteActivity,
   editActivity,
   GROUP_CHAT_ID,
   JONAS,
@@ -377,27 +378,32 @@ describe('scenario 8 — poll answers', () => {
     assert.ok(posted.outcome === 'delivered' && posted.messageId && posted.cardMessageId);
     assert.notEqual(posted.outcome === 'delivered' ? posted.messageId : '', posted.outcome === 'delivered' ? posted.cardMessageId : '');
     const cardMessageId = posted.outcome === 'delivered' ? (posted.cardMessageId as string) : '';
-    const click = (from: SimUser, optionId: string): Promise<void> =>
+    const click = (from: SimUser, optionId: string, anonymous = false): Promise<void> =>
       i.bot.deliver(
-        cardSubmitActivity({
+        cardExecuteActivity({
           bot: MIRA,
           from,
+          anonymous,
           conversationId: MEETING_CHAT_ID,
           cardMessageId,
-          value: { type: POLL_ANSWER_VALUE_TYPE, pollId: 'poll-budget', optionId },
+          verb: POLL_ANSWER_VERB,
+          data: { type: POLL_ANSWER_VALUE_TYPE, pollId: 'poll-budget', optionId },
         }),
       );
 
     await click(ANNA, 'yes');
     await click(BERT, 'no');
     await click(BERT, 'yes');
+    await click(CARLA, 'no', true);
 
     assert.deepEqual(
       i.kernel.events.slice(before).map((e) => [e.kind, e.messageId, e.author.id, e.cardAnswer]),
       [
-        ['card_answer', cardMessageId, ANNA.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes' } }],
-        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'no' } }],
-        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes' } }],
+        ['card_answer', cardMessageId, ANNA.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes', answererVerified: true } }],
+        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'no', answererVerified: true } }],
+        ['card_answer', cardMessageId, BERT.aadObjectId, { cardId: 'poll-budget', value: { optionId: 'yes', answererVerified: true } }],
+        // An anonymous participant: no Entra object id, flagged as unverified.
+        ['card_answer', cardMessageId, '8:teamsvisitor:7d3a4e5f', { cardId: 'poll-budget', value: { optionId: 'no', answererVerified: false } }],
       ],
       'a changed answer is a second event; the engine decides which one counts',
     );

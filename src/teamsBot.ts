@@ -5,6 +5,8 @@ import {
   TeamsActivityHandler,
   TurnContext,
   type Activity,
+  type AdaptiveCardInvokeResponse,
+  type AdaptiveCardInvokeValue,
   type SigninStateVerificationQuery,
 } from 'botbuilder';
 import {
@@ -45,6 +47,10 @@ interface TurnAgentResolution {
    */
   readonly refused?: true;
 }
+
+/** #2043 / #44 — acknowledgement of a poll click. */
+export const POLL_ANSWER_SENT_TEXT = 'Antwort übermittelt.';
+export const POLL_NOT_ACTIVE_TEXT = 'Diese Abstimmung ist nicht mehr aktiv.';
 
 /** byte5ai/omadia#1598 — what a user sees when no agent serves the chat. */
 export const NO_AGENT_FOR_CONVERSATION_TEXT =
@@ -597,6 +603,27 @@ export class TeamsBot extends TeamsActivityHandler {
       this.emitMessageLifecycleEvent(context, 'reaction');
       await next();
     });
+  }
+
+  /**
+   * #2043 / #44 — a poll click (`Action.Execute`) arrives as an
+   * `adaptiveCard/action` invoke. It is an answer for the engine, never a
+   * question for the agent: emit it and acknowledge. Whether the answer
+   * counts is the engine's decision; the acknowledgement only says whether
+   * anybody is listening.
+   */
+  protected override async onAdaptiveCardInvoke(
+    context: TurnContext,
+    invokeValue: AdaptiveCardInvokeValue,
+  ): Promise<AdaptiveCardInvokeResponse> {
+    if (!parsePollAnswerValue(invokeValue)) return super.onAdaptiveCardInvoke(context, invokeValue);
+    this.groupPrimitives?.captureConversationReference(context);
+    const isRecorded = this.conversationMessages?.emitCardAnswer(context.activity) === true;
+    return {
+      statusCode: 200,
+      type: 'application/vnd.microsoft.activity.message',
+      value: (isRecorded ? POLL_ANSWER_SENT_TEXT : POLL_NOT_ACTIVE_TEXT) as unknown as Record<string, unknown>,
+    };
   }
 
   /** #2043 — late-bound like the proactive sender: present only when the

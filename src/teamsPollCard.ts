@@ -1,14 +1,21 @@
 // Live poll card for native facilitators (byte5ai/omadia#2043 §6.3, #44).
 //
-// A poll is an Adaptive Card with one Action.Submit per option. A click
-// arrives as a message activity whose `value` is a PollAnswerValue and whose
-// `from` is the clicking person, stated by Teams: nobody can answer for
-// someone else. The bot does not count, store or answer the click; it emits a
-// `card_answer` message event and the engine records it.
+// A poll is an Adaptive Card with one `Action.Execute` per option. A click
+// arrives as an `adaptiveCard/action` invoke whose `value.action.data` is a
+// PollAnswerValue and whose `from` is set by Teams: nobody can answer for
+// someone else. The answerer is `from.aadObjectId`; a click without one (an
+// anonymous meeting participant) is passed on flagged as unverified. The bot
+// does not count or store the click; it emits a `card_answer` message event
+// and the engine records it.
+//
+// `Action.Submit` payloads of the same shape (a message activity with
+// `value`) are still read, for cards posted by an earlier build.
 
 import { CardFactory, type Attachment } from 'botbuilder';
 
 export const POLL_ANSWER_VALUE_TYPE = 'facilitation.poll';
+/** `verb` of the poll's `Action.Execute`. */
+export const POLL_ANSWER_VERB = 'facilitation.poll.answer';
 
 /** Adaptive Card limit for one ActionSet in Teams. */
 const MAX_POLL_OPTIONS = 6;
@@ -69,7 +76,8 @@ export function buildPollCard(input: BuildPollCardInput): Attachment {
     msteams: { width: 'Full' },
     body,
     actions: input.options.map((option) => ({
-      type: 'Action.Submit',
+      type: 'Action.Execute',
+      verb: POLL_ANSWER_VERB,
       title: option.label,
       data: {
         type: POLL_ANSWER_VALUE_TYPE,
@@ -80,10 +88,17 @@ export function buildPollCard(input: BuildPollCardInput): Attachment {
   });
 }
 
-/** Runtime guard for a poll click. Some Teams clients deliver the
- *  Action.Submit `data` as a JSON string in `activity.value`; both are read. */
+/** The card payload of an activity: `value.action.data` of an
+ *  `adaptiveCard/action` invoke, else the `value` of an Action.Submit. */
+export function cardActionData(value: unknown): unknown {
+  const action = (value as { action?: { type?: unknown; data?: unknown } } | null)?.action;
+  return action && typeof action === 'object' && action.type === 'Action.Execute' ? action.data : value;
+}
+
+/** Runtime guard for a poll click, from either action type. Some Teams
+ *  clients deliver the `data` as a JSON string; both forms are read. */
 export function parsePollAnswerValue(value: unknown): PollAnswerValue | undefined {
-  let candidate: unknown = value;
+  let candidate: unknown = cardActionData(value);
   if (typeof candidate === 'string') {
     try {
       candidate = JSON.parse(candidate);

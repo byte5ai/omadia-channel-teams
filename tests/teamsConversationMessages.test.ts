@@ -7,6 +7,7 @@ import {
   plainMessageText,
   platformAuthor,
   POLL_ANSWER_VALUE_TYPE,
+  POLL_ANSWER_VERB,
   readQuoteInfo,
   validatePollInput,
 } from '@omadia/channel-teams';
@@ -14,6 +15,7 @@ import {
 import {
   ANNA,
   BERT,
+  cardExecuteActivity,
   cardSubmitActivity,
   deleteActivity,
   editActivity,
@@ -233,10 +235,79 @@ describe('#43 edits, deletions, reactions and card answers', () => {
     assert.ok(event);
     assert.equal(event.kind, 'card_answer');
     assert.equal(event.messageId, '1731930004567');
-    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'b' } });
+    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'b', answererVerified: true } });
     assert.equal(event.author.id, BERT.aadObjectId);
     assert.deepEqual(sim.turns, []);
     assert.deepEqual(sim.sent, []);
+  });
+
+  it('an Action.Execute poll click is emitted with from.aadObjectId as answerer and acknowledged', async () => {
+    const kernel = new SimulatedKernel();
+    kernel.subscribe(GROUP_CHAT_ID, MIRA);
+    const sim = simulatedBot(kernel);
+
+    await sim.deliver(
+      cardExecuteActivity({
+        bot: MIRA,
+        from: BERT,
+        cardMessageId: '1731930004600',
+        verb: POLL_ANSWER_VERB,
+        data: { type: POLL_ANSWER_VALUE_TYPE, pollId: 'poll-7', optionId: 'a', voter: ANNA.name },
+      }),
+    );
+
+    assert.equal(kernel.events.length, 1);
+    const event = kernel.events[0];
+    assert.ok(event);
+    assert.equal(event.kind, 'card_answer');
+    assert.equal(event.messageId, '1731930004600');
+    assert.equal(event.author.id, BERT.aadObjectId);
+    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'a', answererVerified: true } });
+    assert.deepEqual(sim.turns, []);
+    assert.deepEqual(sim.sent, [
+      { type: 'invokeResponse', value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: 'Antwort übermittelt.' } } },
+    ]);
+  });
+
+  it('an answer without aadObjectId (anonymous participant) is emitted flagged as unverified', async () => {
+    const kernel = new SimulatedKernel();
+    kernel.subscribe(GROUP_CHAT_ID, MIRA);
+    const sim = simulatedBot(kernel);
+
+    await sim.deliver(
+      cardExecuteActivity({
+        bot: MIRA,
+        from: BERT,
+        anonymous: true,
+        cardMessageId: '1731930004601',
+        verb: POLL_ANSWER_VERB,
+        data: { type: POLL_ANSWER_VALUE_TYPE, pollId: 'poll-7', optionId: 'a' },
+      }),
+    );
+
+    const event = kernel.events[0];
+    assert.ok(event);
+    assert.deepEqual(event.cardAnswer, { cardId: 'poll-7', value: { optionId: 'a', answererVerified: false } });
+    assert.match(event.author.id, /^8:teamsvisitor:/);
+  });
+
+  it('tells the person when nobody is listening for the poll any more', async () => {
+    const kernel = new SimulatedKernel();
+    const sim = simulatedBot(kernel);
+
+    await sim.deliver(
+      cardExecuteActivity({
+        bot: MIRA,
+        from: BERT,
+        cardMessageId: '1731930004602',
+        verb: POLL_ANSWER_VERB,
+        data: { type: POLL_ANSWER_VALUE_TYPE, pollId: 'poll-7', optionId: 'a' },
+      }),
+    );
+
+    assert.deepEqual(kernel.events, []);
+    const response = sim.sent[0] as { value: { body: { value: string } } };
+    assert.equal(response.value.body.value, 'Diese Abstimmung ist nicht mehr aktiv.');
   });
 
   it('never turns a poll click into a chat turn, subscribed or not', async () => {
@@ -327,11 +398,11 @@ describe('#44 poll card', () => {
       ],
     });
     assert.equal(card.contentType, 'application/vnd.microsoft.card.adaptive');
-    const content = card.content as { body: { text: string }[]; actions: { type: string; title: string; data: unknown }[] };
+    const content = card.content as { body: { text: string }[]; actions: { type: string; verb: string; title: string; data: unknown }[] };
     assert.deepEqual(content.body.map((b) => b.text), ['Welcher Termin?', 'Eine Stimme pro Person']);
-    assert.deepEqual(content.actions.map((a) => [a.type, a.title]), [
-      ['Action.Submit', 'Montag'],
-      ['Action.Submit', 'Dienstag'],
+    assert.deepEqual(content.actions.map((a) => [a.type, a.verb, a.title]), [
+      ['Action.Execute', POLL_ANSWER_VERB, 'Montag'],
+      ['Action.Execute', POLL_ANSWER_VERB, 'Dienstag'],
     ]);
     assert.deepEqual(parsePollAnswerValue(content.actions[1]?.data), {
       type: POLL_ANSWER_VALUE_TYPE,

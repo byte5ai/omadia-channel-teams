@@ -20,7 +20,7 @@ import type { ConversationMessageEvent, TeamsUserRef } from './kernel-types.js';
 import { parseTeamsBotKey, teamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
 import { toSdkConversationType } from './teamsGroupPrimitives.js';
 import { stripMentionTokens } from './teamsMentions.js';
-import { parsePollAnswerValue } from './teamsPollCard.js';
+import { cardActionData, parsePollAnswerValue } from './teamsPollCard.js';
 
 const CHANNEL_TYPE = 'teams';
 /** Replaced with the catalog id by plugin.ts; the bot cannot know it. */
@@ -208,17 +208,25 @@ export class TeamsConversationMessages {
     return emitted;
   }
 
-  /** An Adaptive Card click (`Action.Submit`). For a poll the card id is the
-   *  poll id and the value the chosen option; `replyToId` is the card. */
+  /**
+   * An Adaptive Card click (`Action.Execute` invoke or `Action.Submit`
+   * message); `replyToId` is the card. For a poll the card id is the poll id
+   * and the value `{ optionId, answererVerified }`. The answerer is verified
+   * when Teams states an Entra object id for `from`; an anonymous meeting
+   * participant has none and is passed on with `answererVerified: false`, so
+   * the engine can refuse to count the answer.
+   */
   emitCardAnswer(activity: InboundActivity): boolean {
     const poll = parsePollAnswerValue(activity.value);
+    const data = cardActionData(activity.value);
+    const answererVerified = typeof activity.from?.aadObjectId === 'string' && activity.from.aadObjectId.length > 0;
     return this.emit(activity, {
       kind: 'card_answer',
       messageId: activity.replyToId ?? activity.id,
       revision: 0,
       cardAnswer: poll
-        ? { cardId: poll.pollId, value: { optionId: poll.optionId } }
-        : { cardId: genericCardId(activity.value), value: activity.value },
+        ? { cardId: poll.pollId, value: { optionId: poll.optionId, answererVerified } }
+        : { cardId: genericCardId(data), value: data },
     });
   }
 
