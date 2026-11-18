@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.36.1
+
+0.36.0 could not be installed and was withdrawn: the kernel's plugin zip ingest refuses
+extension-less files, and the package contained `appPackage/TEMPLATE_REVISION`
+(`422 zip.forbidden_extension`, on every kernel). 0.36.1 is 0.36.0 with that fixed.
+
+- **Renamed** `appPackage/TEMPLATE_REVISION` to `appPackage/TEMPLATE_REVISION.txt`,
+  same content (`2` and a newline). The plugin reads the new name; the old file is no
+  longer shipped.
+- **Packaging test**: every entry of the zip that `npm run package` builds is checked
+  against the kernel ingest's rules (extension allowlist, the `appPackage/` and `ui/`
+  exceptions, extension-less names, symlinks, escaping paths).
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
 ## 0.36.0
 
 Native facilitators (byte5ai/omadia#2043; #43 and the baseline of #44). Needs the
