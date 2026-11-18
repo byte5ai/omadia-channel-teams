@@ -389,3 +389,88 @@ export function referenceFor(bot: SimBot, conversationId: string, from: SimUser 
     serviceUrl: SERVICE_URL,
   };
 }
+
+/** Teams' answer when the user blocked the bot or removed its app: 403 with
+ *  `subCode: MessageWritesBlocked` in the inner error. */
+export function messageWritesBlockedError(): Error {
+  const body = {
+    error: {
+      code: 'Forbidden',
+      message: '',
+      innerHttpError: {
+        statusCode: 403,
+        body: { subCode: 'MessageWritesBlocked', details: 'Thread is blocked from message writes.', errorCode: 209, message: '' },
+      },
+    },
+  };
+  return Object.assign(new Error('Forbidden'), { statusCode: 403, code: 'Forbidden', body, details: body });
+}
+
+/** Teams' answer to a first 1:1 message when the app is not installed in the
+ *  user's personal scope: 403 `ForbiddenOperationException`. */
+export function botNotInstalledError(): Error {
+  return connectorError(403, 'ForbiddenOperationException', "Bot is not installed in user's personal scope");
+}
+
+export interface SentActivity {
+  /** `28:<appId>` of the bot the activity went out as. */
+  asBot: string;
+  conversationId: string;
+  activity: Record<string, unknown>;
+  id: string;
+}
+
+/**
+ * The outbound half of the Bot Connector: every proactive post and every
+ * opened 1:1, with the bot it went out as. `failDirect` makes the next 1:1
+ * to a user fail the way Teams does.
+ */
+export class SimulatedConnector {
+  readonly sent: SentActivity[] = [];
+  readonly opened: { asBot: string; userId: string; serviceUrl?: string }[] = [];
+  private readonly directFailures = new Map<string, Error>();
+
+  failDirect(bot: SimBot, user: SimUser, err: Error): void {
+    this.directFailures.set(`${bot.appId}|${user.aadObjectId}`, err);
+  }
+
+  private context(asBot: string, conversationId: string): TurnContext {
+    return {
+      activity: { conversation: { id: conversationId }, recipient: { id: asBot }, serviceUrl: SERVICE_URL },
+      sendActivity: async (activity: Record<string, unknown>) => {
+        const id = newMessageId();
+        this.sent.push({ asBot, conversationId, activity, id });
+        return { id };
+      },
+    } as unknown as TurnContext;
+  }
+
+  readonly sendProactive = async (
+    reference: { bot?: { id?: string }; conversation?: { id?: string } },
+    build: (turnContext: TurnContext) => Promise<void>,
+    opts?: { botAppId?: string },
+  ): Promise<void> => {
+    const asBot = opts?.botAppId ? `28:${opts.botAppId}` : (reference.bot?.id ?? '28:default');
+    const key = [...this.directFailures.keys()].find(
+      (candidate) => reference.conversation?.id === directConversationId(candidate),
+    );
+    if (key) throw this.directFailures.get(key);
+    await build(this.context(asBot, reference.conversation?.id ?? ''));
+  };
+
+  readonly openDirectConversation = async (
+    botAppId: string,
+    target: { userId: string; serviceUrl?: string },
+    build: (turnContext: TurnContext) => Promise<void>,
+  ): Promise<void> => {
+    this.opened.push({ asBot: `28:${botAppId}`, userId: target.userId, ...(target.serviceUrl ? { serviceUrl: target.serviceUrl } : {}) });
+    const failure = this.directFailures.get(`${botAppId}|${target.userId}`);
+    if (failure) throw failure;
+    await build(this.context(`28:${botAppId}`, directConversationId(`${botAppId}|${target.userId}`)));
+  };
+}
+
+/** Teams 1:1 conversation ids are opaque `a:…` strings, stable per bot+user. */
+export function directConversationId(botAndUser: string): string {
+  return `a:1${Buffer.from(botAndUser).toString('base64url').slice(0, 40)}`;
+}

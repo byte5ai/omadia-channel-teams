@@ -703,7 +703,7 @@ export async function activate(
   // `/api/messages` + `/api/teams/messages` alias the default bot
   // (teams_bots[0], i.e. the shimmed legacy bot on scalar deployments);
   // `/api/teams/:botSlug/messages` hits exactly that bot's credentials.
-  const { router, sendProactive } = createTeamsRouter({
+  const { router, sendProactive, openDirectConversation } = createTeamsRouter({
     bot,
     bots: botCredentials,
   });
@@ -740,7 +740,20 @@ export async function activate(
     ctx.agentId,
     createTeamsRosterAdapter({ refs: conversationRefs, roster: teamsRosterProvider, sendProactive }),
   );
-  core.registerTargetedSendProvider?.(ctx.agentId, createTeamsTargetedSendAdapter({ sendProactive }));
+  core.registerTargetedSendProvider?.(
+    ctx.agentId,
+    createTeamsTargetedSendAdapter({
+      sendProactive,
+      // #2043 — a DM "as bot X" (asChannelKey): per-bot references and first
+      // contact, never another bot.
+      direct: {
+        refs: conversationRefs,
+        openDirectConversation,
+        botLabel: (botAppId) =>
+          teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
+      },
+    }),
+  );
   // People directory (Conductor human steps resolve "Teresita Biel" → her address). Same
   // feature-detect lifecycle; Graph `/users` under the default bot's registration, needs
   // the User.Read.All application permission — without it the provider answers
@@ -751,7 +764,7 @@ export async function activate(
   );
   core.registerConversationSendProvider?.(
     ctx.agentId,
-    createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive }),
+    createTeamsConversationSendAdapter({ refs: conversationRefs, sendProactive, roster: teamsRosterProvider }),
   );
   // #2043 — readiness check per bot: installed, RSC consent, can post. Each
   // bot's Graph calls run under its OWN app registration.

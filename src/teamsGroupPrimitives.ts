@@ -11,17 +11,27 @@ import type {
   ConversationRosterProvider,
   ConversationSendProvider,
   ConversationType,
-  TargetedDeliveryOutcome,
   TargetedMessage,
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
 
-import type { TeamsProactiveSend } from './messagesRouter.js';
+import type { TeamsOpenDirectConversation, TeamsProactiveSend } from './messagesRouter.js';
+import {
+  buildOutgoingActivity,
+  classifyDirectSendError,
+  readPollRequest,
+  renderMentions,
+} from './teamsOutboundMessage.js';
 import { parseTeamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
-import type { ChatParticipant } from './kernel-types.js';
+import type {
+  ChatParticipant,
+  FacilitatorDeliveryOutcome,
+  TargetedMention,
+  TargetedSendOptions,
+} from './kernel-types.js';
 
 const MAX_CACHED_REFERENCES = 500;
 
@@ -71,6 +81,11 @@ export class TeamsConversationReferenceCache {
   private readonly lastWritten = new Map<string, string>();
   private persistence?: TeamsConversationRefPersistence;
   private defaultBotAppId?: string;
+  /** #2043 — `${botAppId}|${userId}` → the 1:1 conversation of that bot with
+   *  that user (both the AAD object id and the Teams id are indexed). */
+  private readonly directConversations = new Map<string, string>();
+  /** #2043 — the regional connector endpoint each bot was last reached on. */
+  private readonly serviceUrls = new Map<string, string>();
 
   /** #330 field report — optional write-through store (kernel graph table
    *  `teams_conversation_refs`) so references survive restarts. Writes are
@@ -148,6 +163,13 @@ export class TeamsConversationReferenceCache {
     // Map.delete+set keeps insertion order = recency, making the FIFO an LRU.
     this.refs.delete(key);
     const teamsType = context.activity.conversation?.conversationType;
+    if (botAppId !== undefined) {
+      if (typeof ref.serviceUrl === 'string') this.serviceUrls.set(botAppId, ref.serviceUrl);
+      if (teamsType === 'personal') {
+        const from = context.activity.from;
+        this.rememberDirectConversation(botAppId, [from?.aadObjectId, from?.id], conversationId);
+      }
+    }
     this.refs.set(key, { ref, ...(teamsType ? { teamsType } : {}) });
     if (this.persistence) {
       const serialized = JSON.stringify({ ref, teamsType: teamsType ?? null });
@@ -160,6 +182,44 @@ export class TeamsConversationReferenceCache {
       }
     }
     this.evictOverflow();
+  }
+
+  /** #2043 — remember which conversation is the 1:1 of `botAppId` with a
+   *  user. Bounded like the reference cache. */
+  rememberDirectConversation(
+    botAppId: string,
+    userIds: readonly (string | undefined)[],
+    conversationId: string,
+  ): void {
+    const bot = normalizeTeamsBotAppId(botAppId);
+    if (bot === undefined) return;
+    for (const userId of userIds) {
+      if (!userId) continue;
+      const key = `${bot}|${userId.toLowerCase()}`;
+      this.directConversations.delete(key);
+      this.directConversations.set(key, conversationId);
+    }
+    while (this.directConversations.size > MAX_CACHED_REFERENCES * 2) {
+      const oldest = this.directConversations.keys().next().value;
+      if (oldest === undefined) break;
+      this.directConversations.delete(oldest);
+    }
+  }
+
+  /** #2043 — the 1:1 reference of exactly this bot with this user, or
+   *  `undefined`. Never another bot's conversation with the same user. */
+  getDirect(botAppId: string, userId: string): { ref: Partial<ConversationReference>; teamsType?: string } | undefined {
+    const bot = normalizeTeamsBotAppId(botAppId);
+    if (bot === undefined) return undefined;
+    const conversationId = this.directConversations.get(`${bot}|${userId.toLowerCase()}`);
+    if (!conversationId) return undefined;
+    return this.refs.get(TeamsConversationReferenceCache.key(conversationId, bot));
+  }
+
+  /** #2043 — the connector endpoint this bot was last reached on. */
+  serviceUrlFor(botAppId: string): string | undefined {
+    const bot = normalizeTeamsBotAppId(botAppId);
+    return bot === undefined ? undefined : this.serviceUrls.get(bot);
   }
 
   get(conversationId: string, botAppId?: string): { ref: Partial<ConversationReference>; teamsType?: string } | undefined {
@@ -259,20 +319,121 @@ export function createTeamsRosterAdapter(deps: {
   };
 }
 
+/** What a DM "as bot X" needs beyond the legacy path (#2043). */
+export interface TeamsDirectSendDeps {
+  refs: Pick<TeamsConversationReferenceCache, 'getDirect' | 'rememberDirectConversation' | 'serviceUrlFor'>;
+  openDirectConversation: TeamsOpenDirectConversation;
+  /** Display name of a CONFIGURED bot; `undefined` for an unknown app id. */
+  botLabel(botAppId: string): string | undefined;
+}
+
 /**
- * SDK targeted-send provider (#330 B3). The kernel resolves the Principal and
- * hands over ONE user plus the cached per-user conversation reference from the
- * Conductor channel-binding store (captured on the user's inbound turns). No
- * reference = `no_binding` — creating a brand-new 1:1 conversation requires
- * the Teams app to be installed for that user and is a deliberate non-goal of
- * this slice; the outcome names the gap instead of hiding it.
+ * SDK targeted-send provider (#330 B3, #2043).
+ *
+ * Without `asChannelKey` the behaviour is the one of #330: the kernel hands
+ * over the cached per-user conversation reference, and no reference means
+ * `no_binding`.
+ *
+ * With `asChannelKey` (a facilitator's private reminder) the DM comes from
+ * exactly that bot or not at all:
+ *   1. the kernel's reference, if it belongs to that bot;
+ *   2. the 1:1 this bot already has with the user (captured on the user's
+ *      own messages to it);
+ *   3. first contact: the bot opens the 1:1 itself, which Teams allows when
+ *      its app is installed for the user. This is also how the 1:1 is found
+ *      again after a restart.
+ * `app_not_installed` and `blocked` are returned as outcomes so the caller
+ * can fall back to a neutral reminder in the group. Another bot's reference
+ * with the same user is never used.
  */
 export function createTeamsTargetedSendAdapter(deps: {
   sendProactive: TeamsProactiveSend;
+  direct?: TeamsDirectSendDeps;
 }): TargetedSendProvider {
+  type Target = Parameters<TargetedSendProvider['sendToUser']>[0];
+
+  const sendOnReference = async (
+    reference: Partial<ConversationReference>,
+    text: string,
+    botAppId: string | undefined,
+  ): Promise<string | undefined> => {
+    let messageId: string | undefined;
+    await deps.sendProactive(
+      reference,
+      async (turnContext) => {
+        const sent = await turnContext.sendActivity(buildOutgoingActivity({ text }));
+        messageId = sent?.id;
+      },
+      ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
+    );
+    return messageId;
+  };
+
+  const delivered = (messageId: string | undefined): FacilitatorDeliveryOutcome => ({
+    outcome: 'delivered',
+    ...(messageId ? { messageId } : {}),
+  });
+
+  const sendAsBot = async (
+    target: Target,
+    text: string,
+    asChannelKey: string,
+  ): Promise<FacilitatorDeliveryOutcome> => {
+    const botAppId = parseTeamsBotKey(asChannelKey);
+    const botLabel = botAppId ? deps.direct?.botLabel(botAppId) : undefined;
+    if (!botAppId || !deps.direct || botLabel === undefined) {
+      return {
+        outcome: 'unreachable',
+        code: 'not_permitted',
+        message: botAppId
+          ? 'the requested sender is not a bot configured in the Teams channel - refusing to send the direct message as another bot'
+          : `'${asChannelKey}' is not a Teams bot identity key (expected '${TEAMS_BOT_KEY_PREFIX}<appId>') - refusing to send under an unresolved sender`,
+      };
+    }
+    const direct = deps.direct;
+    const userId = target.userRef?.kind === 'teams-aad' ? target.userRef.id : undefined;
+
+    const kernelRef = target.conversationRef as Partial<ConversationReference> | null | undefined;
+    const kernelRefBot = kernelRef?.bot?.id ? parseTeamsBotKey(kernelRef.bot.id) : undefined;
+    const known =
+      (kernelRef && kernelRefBot === botAppId ? kernelRef : undefined) ??
+      (userId ? direct.refs.getDirect(botAppId, userId)?.ref : undefined);
+    try {
+      if (known) return delivered(await sendOnReference(known, text, botAppId));
+      if (!userId) {
+        return {
+          outcome: 'unreachable',
+          code: 'no_binding',
+          message: `no Teams user id is known for '${target.principalId}', so '${botLabel}' cannot open a direct conversation`,
+        };
+      }
+      let messageId: string | undefined;
+      const serviceUrl = direct.refs.serviceUrlFor(botAppId);
+      await direct.openDirectConversation(
+        botAppId,
+        { userId, ...(serviceUrl ? { serviceUrl } : {}) },
+        async (turnContext) => {
+          const conversationId = turnContext.activity.conversation?.id;
+          const sent = await turnContext.sendActivity(buildOutgoingActivity({ text }));
+          messageId = sent?.id;
+          if (conversationId) direct.refs.rememberDirectConversation(botAppId, [userId], conversationId);
+        },
+      );
+      return delivered(messageId);
+    } catch (err) {
+      return classifyDirectSendError(err, botLabel);
+    }
+  };
+
   return {
     channelType: 'teams',
-    async sendToUser(target, message) {
+    // Rest tuple for the same reason as `sendToConversation` below: the third
+    // argument exists from channel-sdk 0.3.0 on.
+    async sendToUser(
+      ...args: [target: Target, message: TargetedMessage, opts?: TargetedSendOptions]
+    ): Promise<FacilitatorDeliveryOutcome> {
+      const [target, message, opts] = args;
+      if (opts?.asChannelKey !== undefined) return sendAsBot(target, message.text, opts.asChannelKey);
       if (target.conversationRef === undefined || target.conversationRef === null) {
         return {
           outcome: 'unreachable',
@@ -281,10 +442,9 @@ export function createTeamsTargetedSendAdapter(deps: {
         };
       }
       try {
-        await deps.sendProactive(target.conversationRef as Partial<ConversationReference>, async (turnContext) => {
-          await turnContext.sendActivity({ type: 'message', text: message.text });
-        });
-        return { outcome: 'delivered' };
+        return delivered(
+          await sendOnReference(target.conversationRef as Partial<ConversationReference>, message.text, undefined),
+        );
       } catch (err) {
         return {
           outcome: 'unreachable',
@@ -307,6 +467,9 @@ export function createTeamsTargetedSendAdapter(deps: {
 export function createTeamsConversationSendAdapter(deps: {
   refs: TeamsConversationReferenceCache;
   sendProactive: TeamsProactiveSend;
+  /** #2043 — resolves a mentioned person to their member id in the chat.
+   *  Without it mentions stay plain text. */
+  roster?: Pick<TeamsRosterProvider, 'list'>;
   // The declared return type is a SUPERSET of the SDK interface, for the same
   // reason the send method takes a rest tuple: this plugin ships independently
   // and is compiled against whatever `@omadia/channel-sdk` is installed, which
@@ -328,7 +491,7 @@ export function createTeamsConversationSendAdapter(deps: {
     // behaves exactly as before.
     async sendToConversation(
       ...args: [conversationId: string, message: TargetedMessage, opts?: { asChannelKey?: string }]
-    ): Promise<TargetedDeliveryOutcome> {
+    ): Promise<FacilitatorDeliveryOutcome> {
       const [conversationId, message, opts] = args;
       // WHICH BOT SAYS IT.
       //
@@ -376,15 +539,40 @@ export function createTeamsConversationSendAdapter(deps: {
         };
       }
 
+      // #2043 — a poll that cannot be rendered is refused before anything is
+      // posted: half a poll in the chat is worse than a named failure.
+      const pollRequest = readPollRequest(message);
+      if (pollRequest && 'problem' in pollRequest) {
+        return { outcome: 'unreachable', code: 'channel_error', message: `invalid poll: ${pollRequest.problem}` };
+      }
+      const mentions = (message as { mentions?: readonly TargetedMention[] }).mentions;
+
       try {
+        let messageId: string | undefined;
         await deps.sendProactive(
           cached.ref,
           async (turnContext) => {
-            await turnContext.sendActivity({ type: 'message', text: message.text });
+            const members =
+              mentions && mentions.length > 0 && deps.roster ? await deps.roster.list(turnContext) : [];
+            const rendered = renderMentions(message.text, mentions, (userId) => {
+              const wanted = userId.toLowerCase();
+              return members.find(
+                (member) =>
+                  member.aadObjectId?.toLowerCase() === wanted || member.channelUserId.toLowerCase() === wanted,
+              )?.channelUserId;
+            });
+            const sent = await turnContext.sendActivity(
+              buildOutgoingActivity({
+                text: rendered.text,
+                entities: rendered.entities,
+                ...(pollRequest ? { poll: pollRequest.poll } : {}),
+              }),
+            );
+            messageId = sent?.id;
           },
           ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
         );
-        return { outcome: 'delivered' };
+        return { outcome: 'delivered', ...(messageId ? { messageId } : {}) };
       } catch (err) {
         return {
           outcome: 'unreachable',
