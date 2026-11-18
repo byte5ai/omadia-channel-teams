@@ -212,6 +212,34 @@ describe('scenario 0 — the mention that opens a facilitation', () => {
     }
   });
 
+  it('the turn names its sender with Entra object id and display name', async () => {
+    // The kernel builds `callerUserRef` of the tool call context from this, so
+    // the facilitator can name who started a facilitation. A card click that
+    // continues detached builds its origin from the original activity with
+    // the same function (`teamsTurnOrigin`); that path needs the proactive
+    // adapter and is not run here.
+    for (const conversationId of [GROUP_CHAT_ID, channelThreadId('1795023950656'), MEETING_CHAT_ID]) {
+      const i = startInstance({ ownIdentity: true });
+
+      await i.bot.deliver(
+        messageActivity({
+          bot: MIRA,
+          from: ANNA,
+          text: 'starte eine Abstimmung',
+          mention: true,
+          conversationId,
+          ...(conversationId.includes('@thread.tacv2') ? { conversationType: 'channel' as const } : {}),
+        }),
+      );
+
+      assert.deepEqual(
+        i.bot.origins.map((origin) => (origin as { speaker?: unknown }).speaker),
+        [{ kind: 'teams-aad', id: ANNA.aadObjectId, displayName: ANNA.name }],
+        conversationId,
+      );
+    }
+  });
+
   it('a message in the 1:1 with the bot reaches the turn as a private request', async () => {
     const i = startInstance();
 

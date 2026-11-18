@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.36.5
+
+From the first live facilitation in a Teams meeting chat (2026-11-18).
+
+- **Roster as the asking agent's own bot.** The handshake's participant list was empty:
+  the roster was looked up without a bot, i.e. as the instance's default bot, which is
+  not in a facilitator's chat. `getRoster(conversationId, { asChannelKey })`
+  (`@omadia/channel-sdk` 0.3.2) now resolves the conversation reference of exactly that
+  bot and reads the members with that bot's credentials; `self` is that bot. A bot
+  without a reference in the conversation gets `undefined`, never another bot's view.
+  Without `asChannelKey` the behaviour is unchanged.
+- **The roster cache is per bot and conversation.** It was per conversation, so one
+  bot's refused (empty) read could be served to another bot in the same chat for five
+  minutes.
+- **Channel threads**: the members are asked for the channel (the bare id), also when a
+  post into a thread resolves mentions.
+- **One log line on every roster path**: `[teams-roster] roster conv=… as=… fetched
+  count=N`, `no reference: …`, or `refused status=… detail=…`.
+- **AI label on everything posted as an agent identity.** Posts through
+  `sendToConversation` and `sendToUser` (engine posts, polls, private reminders) carried
+  no "AI generated" label; only turn answers did. Every such message activity now
+  carries the label entity once. No disclosure sentence is added to the text.
+- **The turn origin names the speaker** (`TurnOrigin.speaker`, channel-sdk 0.3.2):
+  `{ kind: 'teams-aad', id: <Entra object id>, displayName? }` from `activity.from`.
+  Omitted without an Entra object id. The kernel builds `callerUserRef` from it, so a
+  facilitator can name who started a facilitation. `channelIdentity` is still not set.
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
+Not verified live: the member read on the bare channel id for a thread.
+
 ## 0.36.4
 
 A facilitation could not be started from Teams: the engine asked the readiness check

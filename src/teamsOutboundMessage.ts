@@ -5,6 +5,7 @@
 import type { Activity } from 'botbuilder';
 
 import type { FacilitatorDeliveryOutcome, TargetedMention, TargetedPoll } from './kernel-types.js';
+import { aiLabelEntity } from './teamsCard.js';
 import type { MentionEntity } from './teamsMentions.js';
 import { buildPollCard, validatePollInput, type BuildPollCardInput } from './teamsPollCard.js';
 
@@ -144,17 +145,23 @@ export function readPollRequest(
  * The outgoing activities of one post: the text (with mentions) and the card
  * are SEPARATE activities. Teams may split an activity that carries both and
  * then returns no message id; sent separately, each returns its own id.
+ *
+ * EVERY message posted as an agent identity carries Teams' "AI generated"
+ * label, once, as the activity-level entity (#643 / #2043). Turn answers
+ * always had it (`sendAnswer`); the proactive path (engine posts, polls,
+ * direct reminders) builds its activities here and did not. The label is the
+ * channel's marking; no disclosure sentence is added to the text.
  */
 export function buildOutgoingActivity(input: { text: string; entities?: readonly MentionEntity[] }): Partial<Activity> {
   return {
     type: 'message',
     text: input.text,
-    ...(input.entities && input.entities.length > 0 ? { entities: [...input.entities] } : {}),
+    entities: [...(input.entities ?? []), aiLabelEntity()],
   };
 }
 
 export function buildPollActivity(poll: BuildPollCardInput): Partial<Activity> {
-  return { type: 'message', attachments: [buildPollCard(poll)] };
+  return { type: 'message', attachments: [buildPollCard(poll)], entities: [aiLabelEntity()] };
 }
 
 function errorHaystack(err: unknown): string {
