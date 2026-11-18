@@ -27,6 +27,7 @@ import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
 import { TeamsConversationMessages } from './teamsConversationMessages.js';
 import { createTeamsMembershipProbe, createTeamsReadinessProvider } from './teamsReadiness.js';
+import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import type { NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
@@ -471,12 +472,18 @@ export async function activate(
       `teams: ${String(teamsBots.length)} bots configured without a graph pool — conversation references are cache-only and not isolated across restarts`,
     );
   }
+  // #2043 / #44 — set further down, once the meeting source exists.
+  let announceCapabilities: ((conversationId: string, asChannelKey: string) => void) | undefined;
   const groupPrimitives = {
     captureConversationReference: (turnCtx: Parameters<TeamsConversationReferenceCache['capture']>[0]): void =>
       conversationRefs.capture(turnCtx),
     emitMembershipEvent: (event: Parameters<NonNullable<CoreApi['emitConversationEvent']>>[0]): void => {
       // The catalog id is authoritative here — the bot cannot know it.
       core.emitConversationEvent?.({ ...event, channelId: ctx.agentId });
+      if (event.kind === 'bot_added') {
+        const recipientId = (event.rawEvent as { recipient?: { id?: unknown } } | undefined)?.recipient?.id;
+        if (typeof recipientId === 'string') announceCapabilities?.(event.conversationId, recipientId);
+      }
     },
   };
 
@@ -785,9 +792,27 @@ export async function activate(
       probeMembership: createTeamsMembershipProbe(sendProactive),
     }),
   );
+  // #2043 / #44 — meeting source: the capability snapshot of a conversation.
+  const meetingSource = createTeamsMeetingSource({ refs: conversationRefs });
+  facilitatorCore.registerMeetingSourceProvider?.(ctx.agentId, meetingSource);
+  // A bot that joins a chat changes what that chat offers its agent: report
+  // the snapshot once, the kernel reads it on demand afterwards.
+  const emitSessionCapabilities = facilitatorCore.emitSessionCapabilities?.bind(facilitatorCore);
+  if (emitSessionCapabilities) {
+    announceCapabilities = (conversationId, asChannelKey): void => {
+      void meetingSource
+        .snapshot(conversationId, { asChannelKey })
+        .then((snapshot) => {
+          if (snapshot) emitSessionCapabilities(snapshot);
+        })
+        .catch((err: unknown) => {
+          core.log('warn', '[teams] capability snapshot failed', { error: String(err) });
+        });
+    };
+  }
   core.log(
     'info',
-    `native facilitators (#2043): messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? 'on' : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
+    `native facilitators (#2043): meetingSource=${typeof facilitatorCore.registerMeetingSourceProvider === 'function' ? 'on' : 'kernel<2043'}, messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? 'on' : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
   );
   core.log(
     'info',

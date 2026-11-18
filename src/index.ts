@@ -99,6 +99,11 @@ export {
   type TeamsReadinessDeps,
   type TeamsReadinessGraph,
 } from './teamsReadiness.js';
+export {
+  createTeamsMeetingSource,
+  isTeamsMeetingChat,
+  type TeamsMeetingSourceDeps,
+} from './teamsMeetingSource.js';
 export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 
