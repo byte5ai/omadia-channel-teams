@@ -4,6 +4,8 @@ import { strict as assert } from 'node:assert';
 import type { TurnContext } from 'botbuilder';
 
 import {
+  APP_CATALOG_GRAPH_PERMISSION,
+  CHAT_CONSENT_GRAPH_PERMISSION,
   CHAT_INSTALL_READ_GRAPH_PERMISSION,
   CHAT_READ_ALL_RSC_PERMISSION,
   createTeamsReadinessProvider,
@@ -41,7 +43,7 @@ interface Harness {
   check(bot: SimBot, conversationId?: string): ReturnType<ReturnType<typeof createTeamsReadinessProvider>['check']>;
 }
 
-function harness(opts: { configured?: SimBot[]; withGraph?: boolean } = {}): Harness {
+function harness(opts: { configured?: SimBot[]; withGraph?: boolean; reason?: string } = {}): Harness {
   const configured = opts.configured ?? [MIRA, JONAS];
   const graph = new SimulatedGraph();
   const refs = new TeamsConversationReferenceCache();
@@ -58,6 +60,9 @@ function harness(opts: { configured?: SimBot[]; withGraph?: boolean } = {}): Har
             fetchImpl: graph.fetch,
           }),
     refs,
+    ...(opts.reason ? { graphUnavailableReason: opts.reason } : {}),
+    // The shipped template: revision 2 with the meeting permissions.
+    template: { revision: 2, permissions: TEMPLATE_RSC },
   });
   return {
     graph,
@@ -158,14 +163,82 @@ describe('#43 readiness provider', () => {
     assert.match(report.missing[0]?.message ?? '', /instance's app registration/);
   });
 
-  it('answers graph_unavailable when the instance credentials are not served here', async () => {
-    const h = harness({ withGraph: false });
+  it('answers graph_unavailable with exactly which secret or setting is missing', async () => {
+    const reason =
+      "the app password of the Microsoft 365 integration's app registration is not in the vault of the Teams channel under the secret name 'microsoft_app_password'";
+    const h = harness({ withGraph: false, reason });
     seen(h, MIRA);
 
     const report = await h.check(MIRA);
 
     assert.deepEqual(report.missing.map((m) => m.code), ['graph_unavailable']);
+    assert.equal(report.missing[0]?.message, reason);
     assert.deepEqual(h.graph.requests, []);
+    const repair = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+    assert.deepEqual(repair, { outcome: 'failed', code: 'graph_unavailable', message: reason });
+  });
+
+  it('names an install from an earlier app package as package_outdated', async () => {
+    const h = harness();
+    seen(h, MIRA);
+    // Version scheme 1.<template revision>.<identity revision>; versions from
+    // before the scheme (1.0.n) are revision 0.
+    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: LEGACY_CHAT_RSC, version: '1.0.4' });
+
+    const report = await h.check(MIRA);
+
+    assert.equal(report.ready, false);
+    assert.deepEqual(
+      { installed: report.installed, canReadAllMessages: report.canReadAllMessages, canPost: report.canPost },
+      { installed: true, canReadAllMessages: true, canPost: true },
+    );
+    assert.deepEqual(report.missing.map((m) => m.code), ['package_outdated']);
+    assert.match(report.missing[0]?.message ?? '', /version 1\.0\.4, template revision 0; current is 2/);
+    assert.match(report.missing[0]?.message ?? '', /repair the consent/);
+  });
+
+  it('does not call an install outdated when its version says nothing about the template', async () => {
+    const h = harness();
+    seen(h, MIRA);
+    h.graph.install(GROUP_CHAT_ID, MIRA, { version: '2024.11' });
+
+    assert.equal((await h.check(MIRA)).ready, true);
+  });
+
+  it('uses only readiness codes the kernel contract documents', async () => {
+    const documented = [
+      'no_identity', 'app_not_installed', 'consent_missing', 'cannot_post', 'graph_forbidden',
+      'graph_error', 'graph_unavailable', 'team_unknown', 'unsupported_conversation', 'package_outdated',
+    ];
+    const seenCodes = new Set<string>();
+    const collect = async (run: (h: Harness) => Promise<unknown>): Promise<void> => {
+      const h = harness();
+      const result = (await run(h)) as { missing?: { code: string }[]; code?: string };
+      for (const issue of result.missing ?? []) seenCodes.add(issue.code);
+      if (result.code) seenCodes.add(result.code);
+    };
+    await collect((h) => h.check(MIRA, CHANNEL_ID));
+    await collect((h) => h.provider.check(GROUP_CHAT_ID, { asChannelKey: '29:x' }));
+    await collect((h) => h.check(MIRA));
+    await collect((h) => {
+      seen(h, MIRA);
+      h.graph.install(GROUP_CHAT_ID, JONAS);
+      return h.check(MIRA);
+    });
+    await collect((h) => {
+      seen(h, MIRA);
+      h.graph.install(GROUP_CHAT_ID, MIRA, { consented: [], version: '1.0.1' });
+      return h.check(MIRA);
+    });
+    await collect((h) => {
+      seen(h, MIRA);
+      h.graph.install(GROUP_CHAT_ID, MIRA);
+      h.graph.fail(GROUP_CHAT_ID, 'installedApps', 403, 'Forbidden', 'x');
+      return h.check(MIRA);
+    });
+    await collect((h) => h.provider.repairConsent(CHANNEL_ID, { asChannelKey: MIRA.key }));
+    for (const code of seenCodes) assert.ok(documented.includes(code), `undocumented readiness code: ${code}`);
+    assert.ok(seenCodes.size >= 6);
   });
 
   it('takes "can post" from the own reference and the last send, not from a GET', async () => {
@@ -289,22 +362,61 @@ describe('#43 consent repair through the Graph upgrade', () => {
   it('brings an older install of the same app to the full set, meeting permissions included', async () => {
     const h = harness();
     seen(h, MIRA);
-    // Installed from the package before the meeting permissions: the chat
-    // can already be read, so the readiness check is green.
-    h.graph.publish(MIRA, LEGACY_TEMPLATE_RSC, '1.1.3');
+    // Installed from the package before the meeting permissions.
+    h.graph.publish(MIRA, LEGACY_TEMPLATE_RSC, '1.0.4');
     h.graph.install(GROUP_CHAT_ID, MIRA, { consented: LEGACY_CHAT_RSC });
-    assert.equal((await h.check(MIRA)).ready, true);
-    assert.deepEqual(await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key }), { outcome: 'not_needed' });
+    assert.deepEqual((await h.check(MIRA)).missing.map((m) => m.code), ['package_outdated']);
+
+    // The catalog still holds the old package: nothing to upgrade to.
+    const early = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+    assert.equal(early.outcome === 'failed' ? early.code : '', 'package_outdated');
+    assert.match(early.outcome === 'failed' ? early.message : '', /does not declare OnlineMeeting\.ReadBasic\.Chat/);
+    assert.match(early.outcome === 'failed' ? early.message : '', /template revision 2/);
+    assert.deepEqual(h.graph.upgrades, []);
 
     // The new package version is published to the catalog.
-    h.graph.publish(MIRA, TEMPLATE_RSC, '1.2.3');
+    h.graph.publish(MIRA, TEMPLATE_RSC, '1.2.4');
     const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
 
     assert.equal(outcome.outcome, 'upgraded');
     assert.deepEqual(h.graph.upgrades.at(-1)?.permissions, TEMPLATE_RSC, 'the complete set, not only the new permissions');
     const chat = encodeURIComponent(GROUP_CHAT_ID);
     assert.ok(h.graph.requests.some((r) => r.startsWith(`POST https://graph.microsoft.com/v1.0/chats/${chat}/installedApps/`) && r.endsWith('/upgrade')));
+    assert.equal((await h.check(MIRA)).ready, true, 'the upgraded install is at the current revision');
     assert.deepEqual(await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key }), { outcome: 'not_needed' });
+  });
+
+  it('says which Graph permission is missing when a repair step is refused', async () => {
+    const cases: ['installedApps' | 'catalog' | 'permissionGrants' | 'upgrade', string][] = [
+      ['installedApps', CHAT_INSTALL_READ_GRAPH_PERMISSION],
+      ['catalog', APP_CATALOG_GRAPH_PERMISSION],
+      ['permissionGrants', CHAT_INSTALL_READ_GRAPH_PERMISSION],
+      ['upgrade', CHAT_CONSENT_GRAPH_PERMISSION],
+    ];
+    for (const [resource, permission] of cases) {
+      const h = harness();
+      seen(h, MIRA);
+      h.graph.install(GROUP_CHAT_ID, MIRA, { consented: ['TeamsActivity.Send.Chat'] });
+      h.graph.fail(GROUP_CHAT_ID, resource, 403, 'Forbidden', 'Missing role permissions on the request.');
+
+      const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+
+      assert.equal(outcome.outcome === 'failed' ? outcome.code : '', 'graph_forbidden', resource);
+      assert.ok(outcome.outcome === 'failed' && outcome.message.includes(permission), `${resource}: ${permission}`);
+      assert.deepEqual(h.graph.upgrades, []);
+    }
+  });
+
+  it('reports a mismatch Graph answers as graph_error with the service text', async () => {
+    const h = harness();
+    seen(h, MIRA);
+    h.graph.install(GROUP_CHAT_ID, MIRA, { consented: ['TeamsActivity.Send.Chat'] });
+    h.graph.fail(GROUP_CHAT_ID, 'upgrade', 400, 'BadRequest', 'ResourceSpecificPermissionsMismatch');
+
+    const outcome = await h.provider.repairConsent(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
+
+    assert.equal(outcome.outcome === 'failed' ? outcome.code : '', 'graph_error');
+    assert.match(outcome.outcome === 'failed' ? outcome.message : '', /ResourceSpecificPermissionsMismatch/);
   });
 
   it('does nothing when every chat permission of the definition is granted', async () => {

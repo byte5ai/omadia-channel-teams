@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readTeamsAppTemplateInfo, templateRevisionOfAppVersion } from '@omadia/channel-teams';
+
 /**
  * #19 (epic byte5ai/omadia#860, W0) — versioned Teams appPackage template.
  *
@@ -314,6 +316,26 @@ describe('#19 W0 — appPackage icons + README', () => {
     // Revision 2 = the meeting permissions of #44. Raise it with every change
     // of the template that changes the published app definition.
     assert.ok(Number(revision) >= 2);
+  });
+
+  it('the plugin reads revision and permissions from the shipped template', () => {
+    const info = readTeamsAppTemplateInfo(appPackageDir);
+    assert.ok(info);
+    assert.equal(info.revision, Number(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8')));
+    assert.deepEqual(info.permissions, RSC_GRANTS);
+    assert.equal(readTeamsAppTemplateInfo(join(appPackageDir, 'does-not-exist')), undefined);
+  });
+
+  it('TEMPLATE_REVISION is exactly a non-negative integer and a newline, as the kernel requires', () => {
+    assert.match(readFileSync(join(appPackageDir, 'TEMPLATE_REVISION'), 'utf8'), /^\d{1,6}\n$/);
+  });
+
+  it('reads the template revision out of an agent app version', () => {
+    assert.equal(templateRevisionOfAppVersion('1.2.7'), 2);
+    assert.equal(templateRevisionOfAppVersion('1.0.4'), 0);
+    assert.equal(templateRevisionOfAppVersion('2.0.0'), undefined);
+    assert.equal(templateRevisionOfAppVersion('1.2'), undefined);
+    assert.equal(templateRevisionOfAppVersion(undefined), undefined);
   });
 
   it('README documents every placeholder the template uses', () => {

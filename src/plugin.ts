@@ -27,6 +27,7 @@ import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
 import { TeamsConversationMessages } from './teamsConversationMessages.js';
 import { createTeamsReadinessProvider } from './teamsReadiness.js';
+import { readTeamsAppTemplateInfo } from './teamsAppTemplate.js';
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
 import type { NativeFacilitatorCoreApi } from './kernel-types.js';
@@ -784,27 +785,38 @@ export async function activate(
   const instanceCredentials =
     botCredentials.find((candidate) => candidate.identity.appId.toLowerCase() === instanceAppId) ??
     (configuredBots.length === 0 ? defaultBotCredentials : undefined);
+  // Named precisely: the kernel refuses a facilitation whose readiness check
+  // does not pass, so this text is what an operator has to act on.
+  const graphUnavailableReason = instanceCredentials
+    ? undefined
+    : !instanceAppId
+      ? "the Microsoft 365 integration has no app registration configured (setting 'microsoft_app_id' is empty), so the Teams channel has no identity to read installations and consent with. Configure the Microsoft 365 integration."
+      : `the app password of the Microsoft 365 integration's app registration is not in the vault of the Teams channel under the secret name '${legacyScalarBot?.appPasswordSecretRef ?? 'microsoft_app_password'}', so installations and consent cannot be read. Store that secret for the Teams channel plugin and reactivate it.`;
+  const appTemplate = readTeamsAppTemplateInfo();
+  if (!appTemplate) {
+    core.log('warn', 'teams: appPackage/TEMPLATE_REVISION or manifest.json.template could not be read — installs from an earlier app package will not be reported as outdated');
+  }
   const readinessProvider = createTeamsReadinessProvider({
     botLabel: (botAppId) =>
       teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
     graph: instanceCredentials ? graphResolverForBot(instanceCredentials) : undefined,
     refs: conversationRefs,
+    ...(graphUnavailableReason ? { graphUnavailableReason } : {}),
+    ...(appTemplate ? { template: appTemplate } : {}),
   });
   facilitatorCore.registerReadinessProvider?.(ctx.agentId, readinessProvider);
   if (!instanceCredentials) {
     core.log(
       'warn',
-      'teams: the Microsoft 365 integration\'s app registration is not served by this channel — facilitator readiness checks will answer graph_unavailable',
+      `teams: facilitator readiness checks will answer graph_unavailable — ${graphUnavailableReason ?? ''}`,
     );
   }
   // #2043 / #44 — meeting source: the capability snapshot of a conversation.
   // Meeting start/end and participant events: recorded per bot and chat,
-  // passed to the kernel as session events (`emitSessionEvent` arrives with
-  // kernel K5 and is read structurally until then), and the reason to push a
-  // fresh snapshot.
-  const emitSessionEvent = (
-    core as { emitSessionEvent?: (event: TeamsSessionEvent) => void }
-  ).emitSessionEvent?.bind(core);
+  // passed to the kernel as session events, and the reason to push a fresh
+  // snapshot. Every event is emitted; the kernel filters by subscription and
+  // removes the per-bot duplicates.
+  const emitSessionEvent = facilitatorCore.emitSessionEvent?.bind(facilitatorCore);
   const meetingSessions = new TeamsMeetingSessions({
     ...(emitSessionEvent
       ? {

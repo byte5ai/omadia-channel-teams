@@ -512,9 +512,23 @@ export interface ConversationMessageEvent {
   rawEvent?: unknown;
 }
 
+/** The readiness codes the kernel contract documents (plugin-api
+ *  `ChannelReadinessCode`). */
+export type ChannelReadinessCode =
+  | 'no_identity'
+  | 'app_not_installed'
+  | 'consent_missing'
+  | 'cannot_post'
+  | 'graph_forbidden'
+  | 'graph_error'
+  | 'graph_unavailable'
+  | 'team_unknown'
+  | 'unsupported_conversation'
+  | 'package_outdated';
+
 export interface ChannelReadinessIssue {
-  /** e.g. 'app_not_installed', 'consent_missing', 'cannot_post', 'no_identity'. */
-  code: string;
+  /** One of {@link ChannelReadinessCode}, or a code a newer channel added. */
+  code: ChannelReadinessCode | (string & {});
   /** Precise, operator-readable reason. */
   message: string;
 }
@@ -527,12 +541,42 @@ export interface ChannelReadinessReport {
   canPost: boolean;
   /** Empty when `ready`. One entry per thing that is missing. */
   missing: readonly ChannelReadinessIssue[];
+  /** Set by the kernel: `false` when no channel checked. A provider's own
+   *  report never sets it. */
+  verified?: boolean;
 }
+
+/** Outcome of a consent repair (plugin-api `ChannelConsentRepairOutcome`). */
+export type ChannelConsentRepairOutcome =
+  | { outcome: 'upgraded'; installationId?: string; permissions?: readonly string[] }
+  | { outcome: 'not_needed' }
+  | { outcome: 'failed'; code: ChannelReadinessCode | 'unsupported' | (string & {}); message: string };
 
 /** RETURNS what is missing instead of throwing. */
 export interface ChannelReadinessProvider {
   channelType: string;
   check(conversationId: string, opts: { asChannelKey: string }): Promise<ChannelReadinessReport>;
+  /** Optional: repair missing consent for that identity in the conversation
+   *  (Teams: upgrade the app installation). RETURNS a failure, never throws. */
+  repairConsent?(conversationId: string, opts: { asChannelKey: string }): Promise<ChannelConsentRepairOutcome>;
+}
+
+export type SessionEventKind = 'session_started' | 'session_ended' | 'participant_joined' | 'participant_left';
+
+/** A meeting lifecycle event (channel-sdk `SessionEvent`). The adapter emits
+ *  every one it receives, once per receiving bot; the kernel filters by
+ *  subscription and removes the duplicates. */
+export interface SessionEvent {
+  channelId: string;
+  channelType: string;
+  conversationId: string;
+  /** The live session (meeting) the event is about. */
+  sessionRef: string;
+  kind: SessionEventKind;
+  /** Present for 'participant_joined' / 'participant_left'. */
+  participants?: readonly TeamsUserRef[];
+  /** ISO 8601 timestamp of the platform event. */
+  occurredAt: string;
 }
 
 export type SessionInputCapability =
@@ -628,4 +672,6 @@ export interface NativeFacilitatorCoreApi {
   registerReadinessProvider?(channelId: string, provider: ChannelReadinessProvider): void;
   registerMeetingSourceProvider?(channelId: string, provider: MeetingSourceProvider): void;
   emitSessionCapabilities?(snapshot: SessionCapabilitySnapshot): void;
+  /** Meeting start / end and participants joining / leaving (kernel K5). */
+  emitSessionEvent?(event: SessionEvent): void;
 }

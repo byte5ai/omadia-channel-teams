@@ -20,7 +20,7 @@
 
 import type { Activity } from 'botbuilder';
 
-import type { TeamsUserRef } from './kernel-types.js';
+import type { SessionEvent, SessionEventKind, TeamsUserRef } from './kernel-types.js';
 import { receivingBotKey } from './teamsConversationMessages.js';
 
 export const MEETING_START_EVENT = 'application/vnd.microsoft.meetingStart';
@@ -35,25 +35,9 @@ const MAX_TRACKED_MEETINGS = 500;
 /** `value.MeetingType` values of a meeting created in the calendar. */
 const SCHEDULED_MEETING_TYPES: readonly string[] = ['scheduled', 'recurring'];
 
-export type TeamsSessionEventKind =
-  | 'session_started'
-  | 'session_ended'
-  | 'participant_joined'
-  | 'participant_left';
-
-/** A session event for the kernel (`core.emitSessionEvent`, kernel K5). */
-export interface TeamsSessionEvent {
-  channelId: string;
-  channelType: string;
-  conversationId: string;
-  /** The meeting: `channelData.meeting.id`, else the meeting chat id. */
-  sessionRef: string;
-  kind: TeamsSessionEventKind;
-  /** The people who joined or left; absent for start and end. */
-  participants?: TeamsUserRef[];
-  /** ISO 8601 timestamp of the platform event. */
-  occurredAt: string;
-}
+/** The contract's session event; these names are kept for this module's API. */
+export type TeamsSessionEventKind = SessionEventKind;
+export type TeamsSessionEvent = SessionEvent & { participants?: TeamsUserRef[] };
 
 /** What has been seen of the meeting in one conversation, for one bot. */
 export interface TeamsMeetingState {

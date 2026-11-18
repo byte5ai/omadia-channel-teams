@@ -25,10 +25,12 @@
 // The provider returns what is missing and never throws.
 
 import type {
+  ChannelConsentRepairOutcome,
   ChannelReadinessIssue,
   ChannelReadinessProvider,
   ChannelReadinessReport,
 } from './kernel-types.js';
+import { templateRevisionOfAppVersion, type TeamsAppTemplateInfo } from './teamsAppTemplate.js';
 import { parseTeamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
 import type { TeamsConversationReferenceCache } from './teamsGroupPrimitives.js';
 
@@ -39,6 +41,8 @@ export const CHAT_INSTALL_READ_GRAPH_PERMISSION = 'TeamsAppInstallation.ReadForC
 export const TEAM_INSTALL_READ_GRAPH_PERMISSION = 'TeamsAppInstallation.ReadForTeam.All';
 /** What the consent upgrade needs. */
 export const CHAT_CONSENT_GRAPH_PERMISSION = 'TeamsAppInstallation.ReadWriteAndConsentForChat.All';
+/** What reading the published app definition needs. */
+export const APP_CATALOG_GRAPH_PERMISSION = 'AppCatalog.ReadWrite.All';
 
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
@@ -64,6 +68,13 @@ export interface TeamsReadinessDeps {
    *  `undefined` when its credentials are not available to this plugin. */
   graph: TeamsReadinessGraph | undefined;
   refs: Pick<TeamsConversationReferenceCache, 'getOrLoad' | 'teamIdFor' | 'lastPostResult'>;
+  /** Why `graph` is absent, naming the exact setting or secret. The kernel
+   *  refuses a facilitation that is not ready, so this message is what an
+   *  operator has to act on. */
+  graphUnavailableReason?: string;
+  /** The shipped app package template; absent when it could not be read, in
+   *  which case no install is ever called outdated. */
+  template?: TeamsAppTemplateInfo;
 }
 
 /** Where Graph keeps the installation: a chat, or the team of a channel. */
@@ -232,14 +243,12 @@ function report(
 
 const NOTHING = { installed: false, canReadAllMessages: false, canPost: false } as const;
 
-/** The outcome of {@link TeamsReadinessProvider.repairConsent}. */
-export type ConsentRepairOutcome =
-  | { outcome: 'upgraded'; installationId: string; permissions: readonly string[] }
-  | { outcome: 'not_needed' }
-  | { outcome: 'failed'; code: string; message: string };
+/** The outcome of {@link TeamsReadinessProvider.repairConsent}: the kernel
+ *  contract's `ChannelConsentRepairOutcome`. */
+export type ConsentRepairOutcome = ChannelConsentRepairOutcome;
 
-/** The kernel contract plus the fix for a missing grant. The extra method is
- *  a superset: a kernel that does not know it never calls it. */
+/** The kernel contract with `repairConsent` always present, plus one method
+ *  the meeting source uses. */
 export interface TeamsReadinessProvider extends ChannelReadinessProvider {
   /**
    * Bring an install to the full consent set of the published app: Graph
@@ -353,7 +362,9 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
         return report({ ...NOTHING, canPost }, [
           {
             code: 'graph_unavailable',
-            message: 'the credentials of the instance\'s app registration (Microsoft 365 integration) are not available to the Teams channel, so installation and consent cannot be read.',
+            message:
+              deps.graphUnavailableReason ??
+              'the credentials of the instance\'s app registration (Microsoft 365 integration) are not available to the Teams channel, so installation and consent cannot be read.',
           },
           ...(postIssue ? [postIssue] : []),
         ]);
@@ -388,6 +399,22 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
           message: `'${label}' is installed in this ${scope.kind}${installation.state === 'read' && installation.value?.version ? ` (app version ${installation.value.version})` : ''}, but the permission ${scope.permission} is not granted to it here, so it only receives messages that @mention it. Fix: upgrade the installation with the full consented permission set (Graph installedApps/{id}/upgrade, needs ${CHAT_CONSENT_GRAPH_PERMISSION} on the instance's app registration). If the tenant blocks resource-specific consent for apps, an administrator has to allow it first.`,
         });
       }
+      // An install made from an earlier app package: the chat can be read,
+      // but permissions the template added since (the meeting ones) are not
+      // there. The kernel's fix is `repairConsent`.
+      const installedRevision =
+        installation.state === 'read' ? templateRevisionOfAppVersion(installation.value?.version) : undefined;
+      if (
+        canReadAllMessages &&
+        deps.template &&
+        installedRevision !== undefined &&
+        installedRevision < deps.template.revision
+      ) {
+        missing.push({
+          code: 'package_outdated',
+          message: `'${label}' is installed in this ${scope.kind} from an earlier app package (version ${installation.state === 'read' ? (installation.value?.version ?? '?') : '?'}, template revision ${String(installedRevision)}; current is ${String(deps.template.revision)}). Permissions added since are not granted here. Fix: repair the consent, which upgrades the installation to the published package.`,
+        });
+      }
       if (postIssue) missing.push(postIssue);
       return report({ installed, canReadAllMessages, canPost }, missing);
     },
@@ -408,52 +435,97 @@ export function createTeamsReadinessProvider(deps: TeamsReadinessDeps): TeamsRea
       if ('code' in identity) return { outcome: 'failed', code: identity.code, message: identity.message };
       const graph = deps.graph;
       if (!graph?.postJson) {
-        return { outcome: 'failed', code: 'graph_unavailable', message: 'no Graph client that can write is available to the Teams channel.' };
+        return {
+          outcome: 'failed',
+          code: 'graph_unavailable',
+          message: deps.graphUnavailableReason ?? 'no Graph client that can write is available to the Teams channel.',
+        };
       }
       const reference = await ownReference(conversationId, identity.botAppId);
       const scope = scopeFor(conversationId, reference?.teamsType);
       if ('missingTeamId' in scope || scope.kind !== 'chat') {
         return { outcome: 'failed', code: 'unsupported_conversation', message: 'the consent upgrade is implemented for chats only.' };
       }
-      try {
-        const installation = await findInstallation(graph, scope, identity.botAppId);
-        if (!installation) {
-          return { outcome: 'failed', code: 'app_not_installed', message: `the app of '${identity.label}' is not installed in this chat; there is nothing to upgrade.` };
+      // Each Graph step names the permission it needs: "forbidden" alone
+      // would not tell an operator what to grant.
+      const step = async <T>(read: () => Promise<T>, what: string, permission: string): Promise<{ value: T } | ConsentRepairOutcome> => {
+        try {
+          return { value: await read() };
+        } catch (err) {
+          const status = statusOf(err);
+          if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN) {
+            return {
+              outcome: 'failed',
+              code: 'graph_forbidden',
+              message: `Microsoft Graph refused to ${what} (HTTP ${String(status)}). The instance's app registration (the one of the Microsoft 365 integration) needs the application permission ${permission} with admin consent.`,
+            };
+          }
+          return { outcome: 'failed', code: 'graph_error', message: `could not ${what}: ${describeError(err)}` };
         }
-        if (!installation.catalogAppId) {
-          return { outcome: 'failed', code: 'graph_error', message: 'the installation row carries no catalog app id; the declared permission set cannot be read.' };
-        }
-        // The set of the PUBLISHED definition: the upgrade moves the install
-        // to it, and Graph compares the consented set against it.
-        const resourceSpecificPermissions = await declaredPermissionSet(graph, installation.catalogAppId);
-        const names = resourceSpecificPermissions.map((entry) => entry.permissionValue);
-        if (!names.includes(scope.permission)) {
-          return {
-            outcome: 'failed',
-            code: 'package_outdated',
-            message: `the published app of '${identity.label}' does not declare ${scope.permission}; publish a current app package to the catalog first, then upgrade.`,
-          };
-        }
-        // Needed while any chat-scoped permission the definition declares is
-        // not granted here: an older install is brought to the FULL set, not
-        // only to the one permission the readiness check looks at.
-        const granted = await readGrants(graph, scope, identity.botAppId);
-        const isComplete = names
-          .filter((name) => name.endsWith(CHAT_SCOPE_SUFFIX))
-          .every((name) => granted.includes(name));
-        if (isComplete) return { outcome: 'not_needed' };
-        await graph.postJson(`${scope.path}/installedApps/${encodeURIComponent(installation.id)}/upgrade`, {
-          consentedPermissionSet: { resourceSpecificPermissions },
-        });
-        return { outcome: 'upgraded', installationId: installation.id, permissions: names };
-      } catch (err) {
-        const status = statusOf(err);
+      };
+
+      const found = await step(
+        () => findInstallation(graph, scope, identity.botAppId),
+        'list the apps installed in this chat',
+        CHAT_INSTALL_READ_GRAPH_PERMISSION,
+      );
+      if ('outcome' in found) return found;
+      const installation = found.value;
+      if (!installation) {
+        return { outcome: 'failed', code: 'app_not_installed', message: `the app of '${identity.label}' is not installed in this chat; there is nothing to upgrade.` };
+      }
+      if (!installation.catalogAppId) {
+        return { outcome: 'failed', code: 'graph_error', message: 'the installation row carries no catalog app id; the declared permission set cannot be read.' };
+      }
+      const catalogAppId = installation.catalogAppId;
+      // The set of the PUBLISHED definition: the upgrade moves the install
+      // to it, and Graph compares the consented set against it.
+      const declared = await step(
+        () => declaredPermissionSet(graph, catalogAppId),
+        'read the published app definition from the tenant app catalog',
+        APP_CATALOG_GRAPH_PERMISSION,
+      );
+      if ('outcome' in declared) return declared;
+      const resourceSpecificPermissions = declared.value;
+      const names = resourceSpecificPermissions.map((entry) => entry.permissionValue);
+      // What the published app has to declare before an upgrade is worth it:
+      // the read permission, and every chat permission of the shipped template.
+      const expected = [
+        scope.permission,
+        ...(deps.template?.permissions.filter((name) => name.endsWith(CHAT_SCOPE_SUFFIX)) ?? []),
+      ];
+      const undeclared = [...new Set(expected)].filter((name) => !names.includes(name));
+      if (undeclared.length > 0) {
         return {
           outcome: 'failed',
-          code: status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN ? 'graph_forbidden' : 'graph_error',
-          message: describeError(err),
+          code: 'package_outdated',
+          message: `the published app of '${identity.label}' does not declare ${undeclared.join(', ')}. Publish the current app package${deps.template ? ` (template revision ${String(deps.template.revision)})` : ''} to the tenant app catalog first, then repair again.`,
         };
       }
+      // Needed while any chat-scoped permission the definition declares is
+      // not granted here: an older install is brought to the FULL set, not
+      // only to the one permission the readiness check looks at.
+      const granted = await step(
+        () => readGrants(graph, scope, identity.botAppId),
+        'list the permission grants of this chat',
+        CHAT_INSTALL_READ_GRAPH_PERMISSION,
+      );
+      if ('outcome' in granted) return granted;
+      const isComplete = names
+        .filter((name) => name.endsWith(CHAT_SCOPE_SUFFIX))
+        .every((name) => granted.value.includes(name));
+      if (isComplete) return { outcome: 'not_needed' };
+      const upgrade = graph.postJson.bind(graph);
+      const upgraded = await step(
+        () =>
+          upgrade(`${scope.path}/installedApps/${encodeURIComponent(installation.id)}/upgrade`, {
+            consentedPermissionSet: { resourceSpecificPermissions },
+          }),
+        'upgrade the app installation in this chat',
+        CHAT_CONSENT_GRAPH_PERMISSION,
+      );
+      if ('outcome' in upgraded) return upgraded;
+      return { outcome: 'upgraded', installationId: installation.id, permissions: names };
     },
   };
 }

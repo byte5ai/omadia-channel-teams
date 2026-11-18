@@ -112,11 +112,18 @@ Ready = an installation row whose app definition carries the bot **and** a grant
 `clientAppId` = bot app id and `ChatMessage.Read.Chat` (team channel:
 `ChannelMessage.Read.Group` on the team, known once the bot received an activity from
 the channel). `canPost` = the bot's own conversation reference exists and its last
-post there did not fail. Reasons: `no_identity`, `app_not_installed`,
-`consent_missing`, `graph_forbidden`, `graph_error`, `graph_unavailable`,
-`team_unknown`, `cannot_post`. `repairConsent` performs the Graph upgrade with the set
-the installed definition declares. *Simulated; the upgrade and reading the declared
-set from `teamsAppDefinition.authorization` are Open → M5.*
+post there did not fail. Reasons, all from the kernel contract's list: `no_identity`,
+`app_not_installed`, `consent_missing`, `package_outdated` (the install is from an
+earlier app package: its version `1.<template revision>.<n>` is below the shipped
+`TEMPLATE_REVISION`), `graph_forbidden`, `graph_error`, `graph_unavailable` (names the
+missing setting or vault secret), `team_unknown`, `cannot_post`. The kernel asks this
+check when an engine subscribes and refuses a conversation that is not ready.
+`repairConsent` (part of the contract) performs the Graph upgrade with the set the
+**published** definition declares; when a step is refused it answers `graph_forbidden`
+naming the permission that step needs (`TeamsAppInstallation.ReadForChat.All`,
+`AppCatalog.ReadWrite.All` or `TeamsAppInstallation.ReadWriteAndConsentForChat.All`),
+and `package_outdated` when the catalog still holds an older package. *Simulated; the
+upgrade call itself is Open → M5.*
 
 ## 6. Mentions and returned ids in proactive posts
 
@@ -221,11 +228,11 @@ are allowed). New are `OnlineMeeting.ReadBasic.Chat`,
   from the definition is answered with `400 ResourceSpecificPermissionsMismatch`, so
   neither side derives it from the template text. The connector needed no change.
 - **The package version.** Teams replaces a published package only by a higher version.
-  The kernel derives an agent app's version from the agent's identity revision alone, so
-  a template change would republish nothing. `appPackage/TEMPLATE_REVISION` exists for
-  that: the generator has to fold it into the version (for example
-  `1.<TEMPLATE_REVISION>.<identity revision>`). **That change is in the kernel and is
-  not made yet.**
+  The kernel builds an agent app's version as
+  `1.<TEMPLATE_REVISION>.<identity revision>`, reading `appPackage/TEMPLATE_REVISION` of
+  the installed plugin; content that is not a non-negative integer fails the package
+  build. Raise the file with every change of the template that changes the published
+  definition.
 - **Existing installs.** Facilitators are new agents; their apps are provisioned from
   the new template, nothing has to be mass-upgraded. An agent app that was installed
   from the earlier package keeps the consent set it was installed with (live: installs

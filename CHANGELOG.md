@@ -46,8 +46,9 @@ feature-detected, on an older kernel nothing changes.
 - **App package**: the template requests `OnlineMeeting.ReadBasic.Chat`,
   `OnlineMeetingParticipant.Read.Chat`, `OnlineMeetingNotification.Send.Chat` and
   `ChannelMeeting.ReadBasic.Group` (eleven RSC permissions of sixteen allowed).
-  `appPackage/TEMPLATE_REVISION` is 2; the package generator has to fold it into the
-  app version, otherwise a template change republishes nothing. Agent apps installed
+  `appPackage/TEMPLATE_REVISION` is 2; the kernel builds the agent app version as
+  `1.<TEMPLATE_REVISION>.<identity revision>`. An install from an earlier package is
+  reported as `package_outdated` by the readiness check. Agent apps installed
   from the earlier package keep their consent set until `repairConsent` upgrades the
   install; that is fine for agents that do not use meeting events. Participant events
   additionally need a manual per-app setting in Developer Portal.
@@ -70,8 +71,7 @@ feature-detected, on an older kernel nothing changes.
   subscription and the consent upgrade (M2, M3, rest of M4 and M5).
 - Limits: the edit revision the adapter sends is a hint (the kernel assigns the stored
   one); a team channel can be
-  checked only after the bot received an activity from it; `repairConsent` is not part
-  of the kernel's readiness contract yet.
+  checked only after the bot received an activity from it.
 
 ## 0.35.0
 

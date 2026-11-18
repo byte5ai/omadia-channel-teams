@@ -472,7 +472,13 @@ export class SimulatedGraph {
   }
 
   /** Make `installedApps` or `permissionGrants` of a scope fail. */
-  fail(scope: string, resource: 'installedApps' | 'permissionGrants', status: number, code: string, message: string): void {
+  fail(
+    scope: string,
+    resource: 'installedApps' | 'permissionGrants' | 'upgrade' | 'catalog',
+    status: number,
+    code: string,
+    message: string,
+  ): void {
     this.failures.set(`${scope}|${resource}`, { status, body: graphError(code, message) });
   }
 
@@ -500,6 +506,8 @@ export class SimulatedGraph {
       return json(200, { token_type: 'Bearer', expires_in: 3599, access_token: 'simulated-token' });
     }
     if (url.startsWith('https://graph.microsoft.com/v1.0/appCatalogs/teamsApps?')) {
+      const catalogFailure = [...this.failures.entries()].find(([key]) => key.endsWith('|catalog'))?.[1];
+      if (catalogFailure) return json(catalogFailure.status, catalogFailure.body);
       const wanted = /id eq '([^']+)'/.exec(decodeURIComponent(url))?.[1];
       const bots = [...this.installs.values()].flat().map((entry) => entry.bot);
       const bot = bots.find((candidate) => `catalog-${candidate.appId.slice(0, 8)}` === wanted);
@@ -527,7 +535,7 @@ export class SimulatedGraph {
     if (!match) return json(404, graphError('NotFound', 'NotFound'));
     const scope = decodeURIComponent(match[2] ?? '');
     const resource = match[3] as 'installedApps' | 'permissionGrants';
-    const failure = this.failures.get(`${scope}|${resource}`);
+    const failure = this.failures.get(`${scope}|${match[5] ? 'upgrade' : resource}`);
     if (failure) return json(failure.status, failure.body);
     const installs = this.installs.get(scope);
     if (!installs) return json(404, graphError('NotFound', 'NotFound'));

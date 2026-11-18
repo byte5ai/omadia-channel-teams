@@ -95,6 +95,12 @@ export {
   type PollOption,
 } from './teamsPollCard.js';
 export {
+  readTeamsAppTemplateInfo,
+  templateRevisionOfAppVersion,
+  type TeamsAppTemplateInfo,
+} from './teamsAppTemplate.js';
+export {
+  APP_CATALOG_GRAPH_PERMISSION,
   CHANNEL_READ_ALL_RSC_PERMISSION,
   CHAT_CONSENT_GRAPH_PERMISSION,
   CHAT_INSTALL_READ_GRAPH_PERMISSION,
