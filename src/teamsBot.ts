@@ -22,6 +22,8 @@ import type {
   TurnOrigin,
 } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
+import type { TeamsConversationMessages } from './teamsConversationMessages.js';
+import { parsePollAnswerValue } from './teamsPollCard.js';
 import { pickChatAgentForTurn } from './agentForTurn.js';
 
 /**
@@ -575,6 +577,51 @@ export class TeamsBot extends TeamsActivityHandler {
       this.handleMembershipChange(context, 'removed');
       await next();
     });
+
+    // #2043 — edits, deletions and reactions in a conversation this bot
+    // moderates become message events. Never a turn, never a reply.
+    this.onTeamsMessageEditEvent(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'edited');
+      await next();
+    });
+    this.onTeamsMessageUndeleteEvent(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'edited');
+      await next();
+    });
+    this.onTeamsMessageSoftDeleteEvent(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'deleted');
+      await next();
+    });
+    // One handler for added AND removed: the activity carries both lists.
+    this.onMessageReaction(async (context, next) => {
+      this.emitMessageLifecycleEvent(context, 'reaction');
+      await next();
+    });
+  }
+
+  /** #2043 — late-bound like the proactive sender: present only when the
+   *  kernel offers `emitConversationMessage` + `isAllMessagesSubscribed`. */
+  private conversationMessages?: TeamsConversationMessages;
+
+  attachConversationMessages(messages: TeamsConversationMessages): void {
+    this.conversationMessages = messages;
+  }
+
+  private emitMessageLifecycleEvent(
+    context: TurnContext,
+    kind: 'edited' | 'deleted' | 'reaction',
+  ): void {
+    const messages = this.conversationMessages;
+    if (!messages) return;
+    this.groupPrimitives?.captureConversationReference(context);
+    const activity = context.activity;
+    if (kind === 'edited') {
+      messages.emitEdited(activity);
+    } else if (kind === 'deleted') {
+      messages.emitDeleted(activity);
+    } else {
+      messages.emitReactions(activity);
+    }
   }
 
   /** #330 B2 — translate a Bot-Framework conversationUpdate into the SDK's
@@ -908,11 +955,31 @@ export class TeamsBot extends TeamsActivityHandler {
     const isCardAction =
       typeof context.activity.value === 'object' &&
       context.activity.value !== null;
+    // #2043 — a bot that moderates this conversation receives every human
+    // message. The subscription is per bot AND conversation: another bot in
+    // the same chat is not subscribed and keeps the gate below. A message
+    // event is not a turn; whether a turn follows is decided exactly as
+    // before (personal chat, card click or @mention).
+    const isSubscribed = this.conversationMessages?.isSubscribed(context.activity) === true;
+    if (isSubscribed) {
+      if (isCardAction) {
+        this.conversationMessages?.emitCardAnswer(context.activity);
+      } else {
+        this.conversationMessages?.emitCreated(context.activity);
+      }
+    }
+    // A poll click is an answer for the engine, never a question for the
+    // agent: it ends here whether or not anybody is subscribed.
+    if (isCardAction && parsePollAnswerValue(context.activity.value)) {
+      return;
+    }
     if (!isPersonal && !isCardAction && !this.isMentioned(context.activity)) {
       const conversationIdShort =
         (context.activity.conversation?.id ?? '-').slice(0, 24);
       console.error(
-        `[teams] drop non-mention conv=${conversationIdShort}… type=${conversationType}`,
+        isSubscribed
+          ? `[teams] non-mention recorded, no turn conv=${conversationIdShort}… type=${conversationType}`
+          : `[teams] drop non-mention conv=${conversationIdShort}… type=${conversationType}`,
       );
       return;
     }

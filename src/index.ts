@@ -72,6 +72,25 @@ export {
   TeamsConversationReferenceCache,
   toSdkConversationType,
 } from './teamsGroupPrimitives.js';
+// #2043 — native facilitators: authenticated inbound message events and the
+// live poll card. Re-exported for the tests under tests/.
+export {
+  plainMessageText,
+  platformAuthor,
+  readQuoteInfo,
+  receivingBotKey,
+  TeamsConversationMessages,
+  type TeamsConversationMessageSink,
+} from './teamsConversationMessages.js';
+export {
+  buildPollCard,
+  parsePollAnswerValue,
+  POLL_ANSWER_VALUE_TYPE,
+  validatePollInput,
+  type BuildPollCardInput,
+  type PollAnswerValue,
+  type PollOption,
+} from './teamsPollCard.js';
 export { PgTeamsConversationRefStore } from './teamsConversationRefStore.js';
 export type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 

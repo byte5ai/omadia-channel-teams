@@ -25,6 +25,8 @@ import {
 import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
+import { TeamsConversationMessages } from './teamsConversationMessages.js';
+import type { NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
 /**
@@ -708,6 +710,24 @@ export async function activate(
   // Card-click early-ack (#330 field report): the bot needs the proactive
   // sender to detach long orchestrator turns from Action.Submit HTTP turns.
   bot.attachProactiveSend(sendProactive);
+
+  // #2043 — authenticated inbound messages for native facilitators. Both
+  // kernel members are needed: without the subscription lookup the adapter
+  // cannot tell which bot moderates which conversation, and it then keeps the
+  // mention gate for everybody.
+  const facilitatorCore: NativeFacilitatorCoreApi = core;
+  const emitConversationMessage = facilitatorCore.emitConversationMessage?.bind(facilitatorCore);
+  const isAllMessagesSubscribed = facilitatorCore.isAllMessagesSubscribed?.bind(facilitatorCore);
+  if (emitConversationMessage && isAllMessagesSubscribed) {
+    bot.attachConversationMessages(
+      new TeamsConversationMessages({
+        isAllMessagesSubscribed: (conversationId, channelKey) =>
+          isAllMessagesSubscribed('teams', conversationId, channelKey),
+        // The catalog id is authoritative here — the bot cannot know it.
+        emit: (event) => emitConversationMessage({ ...event, channelId: ctx.agentId }),
+      }),
+    );
+  }
 
   // Mount at /api — same prefix as before, now owned by the channel
   // runtime so deactivation cleanly returns 503 instead of crashing.
