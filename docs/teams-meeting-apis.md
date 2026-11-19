@@ -167,6 +167,40 @@ upgrade call itself is Open → M5.*
   thread's id" is from the documentation; the post into a thread and the team consent
   upgrade ran against the simulation only.
 
+## 5b. AI marking per send path
+
+The rule (kernel #2098): every message under an agent's name gets the channel's AI label
+where the channel has one, the instance's disclosure sentence otherwise; once, never both.
+Teams has a label (the `AIGeneratedContent` entity on the message activity), so in Teams
+it is always the label and never the sentence. *Simulated*: no row was looked at in a
+Teams client for this release.
+
+| Send path | What arrives from the kernel | What Teams shows | Test (`tests/teamsAiMarking.test.ts` unless named) |
+|---|---|---|---|
+| Turn answer (card) | text with the sentence folded in, `aiDisclosure` | label; sentence stripped | "a model answer with the folded sentence" |
+| Fixed refusal / "not set up" answer of a facilitator | same shape as a model answer | label; sentence stripped | "a fixed refusal of the facilitator" |
+| Turn answer, disclosure turned off | text, no `aiDisclosure` | label | "an answer without a disclosure" |
+| Long turn answer (several plain messages) | as a turn answer | label on the first part; sentence stripped | "a long answer that is posted as plain text" |
+| Blocking choice card | question, options | label | "a blocking choice card" |
+| `NO_REPLY` answer, also with the sentence behind it | sentinel | nothing is posted | "a NO_REPLY answer stays silent" |
+| Proactive text (`sendToConversation`) | text without the sentence, because `supports.aiLabel` is declared | label | "both providers declare the label" |
+| Poll card (`sendToConversation`) | poll | label | same test |
+| Private reminder (`sendToUser`) | text without the sentence | label | same test; `teamsOutboundAsOwnBot.test.ts` |
+| Routine delivery, card | text with the sentence folded in, `aiDisclosure` | label; sentence stripped from the card body | "a routine delivery as a card" |
+| Routine delivery, plain text | same | label; sentence stripped | "a routine delivery as plain text" |
+| Conductor reminder (`{ text }`) | text, no `aiDisclosure` | label | "a delivery without aiDisclosure" |
+| Approval card | deterministic text | label | "an approval card" |
+| `NO_REPLY` routine answer | sentinel | nothing is posted | "a NO_REPLY routine answer is still dropped" |
+| Streaming | does not exist: the adapter calls `chat()` and posts the final answer | n/a | n/a |
+
+- Both send providers declare `supports.aiLabel: true` (channel-sdk 0.3.2). The kernel
+  then leaves the sentence out of own-identity sends. The flag and the two activity
+  builders live in `teamsOutboundMessage.ts`; a test holds them together.
+- **Not marked, on purpose so far:** the adapter's own fixed texts and side cards in a
+  turn (acknowledgements of card clicks, "no agent is assigned here", error texts, the
+  recalled-context card, slot / consent / routine-list cards, the topic question). They
+  are not model output and carry neither label nor sentence. No test covers them.
+
 ## 6. Mentions and returned ids in proactive posts
 
 | Finding | Evidence |

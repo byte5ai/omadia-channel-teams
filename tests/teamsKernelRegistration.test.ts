@@ -70,7 +70,7 @@ describe('declared send capabilities on the registered providers', () => {
     assert.ok(conversation);
     assert.equal(conversation.channelId, CATALOG_ID);
     assert.equal(conversation.provider['channelType'], 'teams');
-    assert.deepEqual(conversation.provider['supports'], { asChannelKey: true, mentions: true, poll: true });
+    assert.deepEqual(conversation.provider['supports'], { asChannelKey: true, mentions: true, poll: true, aiLabel: true });
   });
 
   it('the targeted send provider declares own identity', () => {
@@ -80,7 +80,7 @@ describe('declared send capabilities on the registered providers', () => {
     assert.ok(targeted);
     assert.equal(targeted.channelId, CATALOG_ID);
     assert.equal(targeted.provider['channelType'], 'teams');
-    assert.deepEqual(targeted.provider['supports'], { asChannelKey: true });
+    assert.deepEqual(targeted.provider['supports'], { asChannelKey: true, aiLabel: true });
   });
 
   it('what is declared is what the registered objects do: a post and a DM as the named bot', async () => {
@@ -108,11 +108,15 @@ describe('declared send capabilities on the registered providers', () => {
   it('does not declare what it is not wired for', () => {
     const connector = new SimulatedConnector();
     const refs = new TeamsConversationReferenceCache();
-    assert.deepEqual(createTeamsTargetedSendAdapter({ sendProactive: connector.sendProactive }).supports, { asChannelKey: false });
+    assert.deepEqual(createTeamsTargetedSendAdapter({ sendProactive: connector.sendProactive }).supports, {
+      asChannelKey: false,
+      aiLabel: true,
+    });
     assert.deepEqual(createTeamsConversationSendAdapter({ refs, sendProactive: connector.sendProactive }).supports, {
       asChannelKey: true,
       mentions: false,
       poll: true,
+      aiLabel: true,
     });
   });
 });

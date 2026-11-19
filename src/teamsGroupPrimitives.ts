@@ -21,6 +21,7 @@ import {
   buildPollActivity,
   classifyDirectSendError,
   isEntraObjectId,
+  PROACTIVE_POSTS_CARRY_AI_LABEL,
   retryTransient,
   type RetryOptions,
   readPollRequest,
@@ -636,7 +637,12 @@ export function createTeamsTargetedSendAdapter(deps: {
     // provider that says it honours `asChannelKey`. True only when the per-bot
     // path is wired: without it a named sender is refused, never substituted,
     // but there would be nothing to deliver with either.
-    supports: { asChannelKey: deps.direct !== undefined } satisfies SendProviderCapabilities,
+    //   aiLabel       every activity of this provider is built by
+    //                 `buildOutgoingActivity`, which attaches the label
+    supports: {
+      asChannelKey: deps.direct !== undefined,
+      aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL,
+    } satisfies SendProviderCapabilities,
     // Rest tuple for the same reason as `sendToConversation` below: the third
     // argument exists from channel-sdk 0.3.0 on.
     async sendToUser(
@@ -712,6 +718,9 @@ export function createTeamsConversationSendAdapter(deps: {
       asChannelKey: true,
       mentions: deps.roster !== undefined,
       poll: true,
+      // Text and poll card are built by `buildOutgoingActivity` /
+      // `buildPollActivity`, which attach the label.
+      aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL,
     } satisfies SendProviderCapabilities,
     // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
     // independently of the kernel and is compiled against whatever
