@@ -87,6 +87,24 @@ export function isBotMentioned(activity: InboundActivity): boolean {
   );
 }
 
+/**
+ * The id a message activity is known by to the kernel: `messageId` of the
+ * event this module emits for it, and `messageId` of the origin of the turn
+ * it starts (`teamsTurnOrigin`). ONE function so the two cannot differ.
+ * A message: its own activity id (in a channel thread the reply's id, never
+ * the thread root). An `Action.Submit` click (a message activity with a
+ * `value` object): the card message it was clicked on.
+ */
+export function inboundMessageId(activity: {
+  readonly id?: string | undefined;
+  readonly replyToId?: string | undefined;
+  readonly value?: unknown;
+}): string | undefined {
+  const isCardClick = typeof activity.value === 'object' && activity.value !== null;
+  const id = isCardClick ? (activity.replyToId ?? activity.id) : activity.id;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
+}
+
 /** `activity.from` as the kernel's author, or `undefined` for a bot / absent
  *  sender. Only people are authors of contributions. */
 export function platformAuthor(activity: InboundActivity): TeamsUserRef | undefined {
@@ -257,7 +275,7 @@ export class TeamsConversationMessages {
     const quote = readQuoteInfo(activity);
     return this.emit(activity, {
       kind: 'created',
-      messageId: activity.id,
+      messageId: inboundMessageId(activity),
       revision: 0,
       text: plainMessageText(activity.text),
       ...(quote.replyToMessageId ? { replyToMessageId: quote.replyToMessageId } : {}),
@@ -321,7 +339,7 @@ export class TeamsConversationMessages {
     const answererVerified = typeof activity.from?.aadObjectId === 'string' && activity.from.aadObjectId.length > 0;
     return this.emit(activity, {
       kind: 'card_answer',
-      messageId: activity.replyToId ?? activity.id,
+      messageId: inboundMessageId(activity),
       revision: 0,
       cardAnswer: poll
         ? { cardId: poll.pollId, value: { optionId: poll.optionId }, answererVerified }

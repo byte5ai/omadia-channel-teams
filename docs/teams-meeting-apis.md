@@ -431,6 +431,12 @@ kernel's private status path compares with the people a running process lists. A
 without an Entra object id (not seen in a 1:1) is stated with the per-bot Teams id and
 matches nobody.
 
+**The turn names its message (0.40.0, kernel K4.8).** The origin of every turn carries
+`messageId`: the id the message event of the same activity carries, from one function
+(`inboundMessageId`). A message: the activity id (in a channel thread the reply's own
+id, not the root). An `Action.Submit` click: the card message id, shared by all clicks
+on that card. *Simulated.*
+
 **One answer per message.** For a mention in `addressed` mode the adapter hands over the
 event and runs the ordinary turn; it posts exactly the turn's answer, and nothing when
 that answer is empty. Whether the engine ALSO answers the event is not the adapter's to
