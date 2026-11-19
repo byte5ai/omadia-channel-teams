@@ -396,7 +396,7 @@ carries `messageId` (the text, or the card when there is no text) and `cardMessa
 | Card answer with a verified answerer | yes, with condition | `Action.Execute` arrives as an `adaptiveCard/action` invoke; `from.id` and `from.aadObjectId` are set by Teams. Anonymous users have no `aadObjectId` but may interact with cards. Docs [D18][D19] |
 | Native Teams poll (Polls / Forms) | not possible | No bot API. Docs |
 | Roster and meeting details on demand | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat`; participant lookup only below 350 participants; details also for Meet now, 1:1 and group calls. Docs [D19] |
-| Meeting start and end events | yes, with condition | RSC `OnlineMeeting.ReadBasic.Chat`; "supported for scheduled and channel meetings". Docs [D19] |
+| Meeting start and end events | yes, with condition | RSC `OnlineMeeting.ReadBasic.Chat`; "supported for scheduled and channel meetings". Docs [D19]; **Live** for a scheduled meeting: `meetingStart` and `meetingEnd` arrived on 2026-11-19 (05:36:01Z, 06:02:17Z) |
 | Participant join and leave events | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat` **and** the event subscription in the Developer Portal (no manifest field or API documented); scheduled meetings only; the bot must be in the meeting before people join. Docs [D19] |
 | In-meeting and targeted notification | possible, **not built** | Needs a web page of the app in `validDomains`; targeted needs RSC `OnlineMeetingNotification.Send.Chat`, at most 50 recipients, `29:` ids only. Docs [D20] |
 | Side panel, stage | yes, with condition | A tab with meeting context; stage needs delegated RSC. Docs [D21] |
@@ -437,8 +437,10 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
    `participants` are `value.members[].user` with the Entra object id. `occurredAt` is
    `value.StartTime` / `value.EndTime` for start and end, else the activity timestamp.
    The documentation prints the start and end names with a leading space; names are
-   trimmed before dispatch. Docs [D19] for names and fields; *Simulated*, nothing
-   observed live.
+   trimmed before dispatch. Docs [D19] for names and fields. *Live* for start and end
+   of a scheduled meeting (2026-11-19: `meetingStart` 05:36:01Z, `meetingEnd`
+   06:02:17Z, each recorded); participant join and leave are *Simulated* only (no
+   Developer Portal subscription was set).
 4. **The capability snapshot**, per conversation and bot:
    - **always:** inputs `text`, `message_edits`, `card_answers`; outputs `text`,
      `mentions`, `cards`, `polls`, `private_messages`. The roster is available through

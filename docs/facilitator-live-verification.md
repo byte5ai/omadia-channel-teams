@@ -97,11 +97,17 @@ end to end:
   where the app is installed does.
 - **Settles:** that the plugin's own send path produces these outcomes.
 
-### M5: meeting (first half done 2026-11-18: delivery in the meeting chat confirmed)
+### M5: meeting (delivery confirmed 2026-11-18, start and end events confirmed 2026-11-19)
 
-Result so far: a message without mention in the chat of a scheduled meeting reached the
-bot as `[teams] drop non-mention conv=19:meeting_… type=groupChat`. The consent upgrade
-and the meeting events are still open.
+Results so far:
+
+- 2026-11-18: a message without mention in the chat of a scheduled meeting reached the
+  bot as `[teams] drop non-mention conv=19:meeting_… type=groupChat`.
+- 2026-11-19, test meeting: **the meeting start and end events arrived.** `meetingStart`
+  at 05:36:01Z and `meetingEnd` at 06:02:17Z, one
+  `[teams] meeting event name=… recorded=true` log line each.
+- **Still open:** participant join and leave events (not seen: the app has no "Meeting
+  event subscriptions" set in Developer Portal, see below), and the consent upgrade.
 
 - **Do:** schedule a meeting, add an agent app to it, post in the meeting chat without
   a mention.
@@ -371,7 +377,7 @@ Android) and read the `[teams]` log lines and the kernel events.
 | Q12 | Post a card with five questions and open it on a phone and in the meeting side panel. | Size and scrolling on the narrowest surfaces; whether five questions are too many |
 | Q13 | Click the poll card of 0.36.0 (two to six buttons). | That an `Action.Execute` click arrives at all and shows the acknowledgement; never done live |
 | Q14 | Post a card, deploy (or restart the middleware), then click it and let the engine close it. Read the log at activation. | That the table `teams_question_cards` is created on the instance's database through the pooler (no "kept in memory only" line), that the click is accepted and the close update goes through after the restart |
-| Q15 | Start a scheduled meeting, deploy during it, then read the stored capability snapshot; end the meeting and read it again. | That `teams_meeting_states` is created, that the snapshot says `online` after the restart and `chat` after the end. Also: that meeting start and end events arrive at all (never seen live) |
+| Q15 | Start a scheduled meeting, deploy during it, then read the stored capability snapshot; end the meeting and read it again. | That `teams_meeting_states` is created, that the snapshot says `online` after the restart and `chat` after the end. Meeting start and end events themselves were seen live on 2026-11-19; a restart between them was not |
 
 Record the results in a new "Recorded run" section. An item that fails becomes an issue;
 the fallback for every form is the chat ballot, which stays valid.
@@ -411,7 +417,8 @@ meeting event was seen.
 | M3 returned message id | **Confirmed** | see M3 above |
 | M4 first-contact errors | **Confirmed** | product path: the report to the initiator failed with `app_not_installed` (no personal install) and the facilitator said so in the group |
 | M5 delivery in the meeting chat | **Confirmed** | every message without a mention was recorded (`recorded for the engine, no turn`) |
-| M5 meeting events, portal subscription | **Not run** | needs a person in the call |
+| M5 meeting start and end events | **Confirmed 2026-11-19** | not in this run: test meeting the next day, `meetingStart` 05:36:01Z and `meetingEnd` 06:02:17Z, one `recorded=true` log line each |
+| M5 participant join / leave events, portal subscription | **Not seen** | no Developer Portal subscription was set for the app |
 | M5 consent upgrade (`repairConsent`) | **Not run** | no install from an earlier package was left to upgrade |
 | M6 tenant RSC switch | Read on 2026-11-18 | unchanged |
 
@@ -451,8 +458,9 @@ meeting event was seen.
 
 - Every "Expected" that did not hold becomes an issue in
   `byte5ai/omadia-channel-teams` with the log lines.
-- Still open after the run of 2026-11-18: the second half of M5 (consent upgrade,
-  meeting events, portal subscription), and the scenarios marked "Not run" above:
+- Still open: from M5 the consent upgrade and the participant join / leave events with
+  the portal subscription (meeting start and end were seen on 2026-11-19), and the
+  scenarios marked "Not run" above:
   missing consent, a successful first-contact DM, a blocked DM, a middleware restart
   during a facilitation, two facilitator bots in one chat, poll answers, a late joiner.
   Everything with more than one human participant is unverified.
