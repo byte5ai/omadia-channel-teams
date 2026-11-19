@@ -557,7 +557,16 @@ export interface ConversationMessageEvent {
   reaction?: { name: string; removed: boolean };
   /** `answererVerified: false` when the platform did not state who clicked
    *  (no verified user id on the activity). */
-  cardAnswer?: { cardId: string; value: unknown; answererVerified?: boolean };
+  cardAnswer?: {
+    cardId: string;
+    value: unknown;
+    answererVerified?: boolean;
+    /** Question cards (#2089): what was answered, from the card. */
+    proposalId?: string;
+    proposalVersion?: number;
+    /** Question cards: one typed value per answered question. */
+    answers?: readonly CardAnswerValue[];
+  };
   /** ISO 8601 timestamp of the platform event. */
   occurredAt: string;
   /** The original platform event, opaque to the kernel and not stored. */
@@ -714,6 +723,8 @@ export interface SendProviderCapabilities {
    * first message an agent posts as itself into a conversation.
    */
   aiLabel?: boolean;
+  /** Posts `message.card` as a question card; absent = not supported. */
+  card?: CardSupport;
 }
 
 /** Third argument of `TargetedSendProvider.sendToUser`. */
@@ -752,3 +763,92 @@ export interface NativeFacilitatorCoreApi {
   /** Meeting start / end and participants joining / leaving (kernel K5). */
   emitSessionEvent?(event: SessionEvent): void;
 }
+
+// ---------------------------------------------------------------------------
+// Question cards (byte5ai/omadia#2043 §6.1, #2089) — mirror of the kernel's
+// `@omadia/plugin-api` `questionCard.ts` (same names: QuestionCard,
+// CardQuestion, CardOption, CardAnswerValue, CardSupport, CardUpdate,
+// CardUpdateOutcome). Mirrored because this plugin ships independently and
+// compiles against SDKs that do not have them yet.
+//
+// Ids of cards, questions and options: 1..64 characters of `A-Z a-z 0-9 _ -`
+// (the kernel's CARD_ID_PATTERN). A question is required unless it says
+// `required: false`.
+// ---------------------------------------------------------------------------
+
+export interface CardOption {
+  id: string;
+  label: string;
+}
+
+interface CardQuestionBase {
+  /** The engine's id of the question; round-tripped with the answer. */
+  id: string;
+  label: string;
+  help?: string;
+  /** Default `true`. */
+  required?: boolean;
+}
+
+export type CardQuestion = CardQuestionBase &
+  (
+    | { kind: 'single_choice'; options: readonly CardOption[] }
+    | { kind: 'multiple_choice'; options: readonly CardOption[]; min?: number; max?: number }
+    /** `ranks`: how many places are ranked (default: all options). */
+    | { kind: 'ranking'; options: readonly CardOption[]; ranks?: number; rankLabels?: readonly string[] }
+    | { kind: 'consent'; agreeLabel?: string; objectLabel?: string; reasonRequiredOnObject?: boolean }
+    | { kind: 'assignment'; candidates: 'conversation_members' | readonly CardOption[]; allowVolunteer?: boolean }
+    | { kind: 'text'; multiline?: boolean; maxLength?: number; mode?: 'replace' | 'append' }
+    | { kind: 'number'; min?: number; max?: number }
+    | { kind: 'date' }
+  );
+
+export type CardQuestionKind = CardQuestion['kind'];
+
+/** A card with one to five questions, sent as `TargetedMessage.card`. */
+export interface QuestionCard {
+  /** 1..128 characters; round-tripped as `cardAnswer.cardId`. */
+  cardId: string;
+  /** What is being answered. An answer to another version never counts. */
+  proposalId?: string;
+  proposalVersion?: number;
+  title: string;
+  intro?: string;
+  questions: readonly CardQuestion[];
+  /** ISO 8601. Shown on the card; later clicks are refused. */
+  closesAt?: string;
+  /** Whether a person may change the answer until the close. Default true. */
+  changeable?: boolean;
+  /** BCP 47, for the adapter's own labels. */
+  locale?: string;
+}
+
+export type CardAnswerValue = { questionId: string } & (
+  | { kind: 'single_choice'; optionId: string }
+  | { kind: 'multiple_choice'; optionIds: readonly string[] }
+  /** Option ids, best first. */
+  | { kind: 'ranking'; ranking: readonly string[] }
+  | { kind: 'consent'; decision: 'agree' | 'object'; reason?: string }
+  | { kind: 'assignment'; assignee: 'self' | { kind: string; id: string; displayName?: string } }
+  | { kind: 'text'; text: string }
+  | { kind: 'number'; value: number }
+  | { kind: 'date'; value: string }
+);
+
+/** `supports.card` of a send provider: what it really renders. */
+export interface CardSupport {
+  kinds: readonly CardQuestionKind[];
+  maxQuestions: number;
+  /** `updateCard` is implemented. */
+  update: boolean;
+}
+
+/** What `updateCard` changes a posted card into. */
+export type CardUpdate =
+  | { state: 'closed'; title: string; resultLines: readonly string[]; closedAt: string }
+  /** A corrected card with the same `cardId`. */
+  | { state: 'open'; card: QuestionCard };
+
+export type CardUpdateOutcome =
+  | { outcome: 'updated' }
+  | { outcome: 'unreachable'; code: string; message: string };

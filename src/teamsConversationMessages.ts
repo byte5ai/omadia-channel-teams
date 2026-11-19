@@ -17,7 +17,7 @@
 
 import type { Activity } from 'botbuilder';
 
-import type { ConversationMessageEvent, TeamsUserRef } from './kernel-types.js';
+import type { CardAnswerValue, ConversationMessageEvent, TeamsUserRef } from './kernel-types.js';
 import { parseTeamsBotKey, teamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
 import { toSdkConversationType } from './teamsGroupPrimitives.js';
 import { stripMentionTokens } from './teamsMentions.js';
@@ -230,6 +230,32 @@ export class TeamsConversationMessages {
       cardAnswer: poll
         ? { cardId: poll.pollId, value: { optionId: poll.optionId }, answererVerified }
         : { cardId: genericCardId(data), value: data, answererVerified },
+    });
+  }
+
+  /**
+   * One accepted submission of a question card (#2089): typed values per
+   * question, with the proposal id and version the card was posted for. The
+   * author is `activity.from` of the click, set by Teams, never anything the
+   * card carried. `value` repeats the answers for readers that only know it.
+   */
+  emitQuestionCardAnswer(
+    activity: InboundActivity,
+    answer: { cardId: string; proposalId?: string; proposalVersion?: number; answers: readonly CardAnswerValue[] },
+  ): boolean {
+    const answererVerified = typeof activity.from?.aadObjectId === 'string' && activity.from.aadObjectId.length > 0;
+    return this.emit(activity, {
+      kind: 'card_answer',
+      messageId: activity.replyToId ?? activity.id,
+      revision: 0,
+      cardAnswer: {
+        cardId: answer.cardId,
+        value: { answers: answer.answers },
+        answererVerified,
+        ...(answer.proposalId !== undefined ? { proposalId: answer.proposalId } : {}),
+        ...(answer.proposalVersion !== undefined ? { proposalVersion: answer.proposalVersion } : {}),
+        answers: answer.answers,
+      },
     });
   }
 

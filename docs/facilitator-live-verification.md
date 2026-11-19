@@ -326,6 +326,38 @@ verified only when every "Expected" line was observed.
 4. The same in a Meet-now call, or without the portal subscription.
    - Expected: Mira does not notice until the person writes. This is the stated limit.
 
+## Question cards (0.38.0): not run yet
+
+Everything below is **unverified**: the question cards were built against Microsoft's
+documentation and a simulated transport, and no card of this kind has been clicked in a
+Teams client. The poll card of 0.36.0 has not been clicked live either. The server
+enforces every rule itself, so none of these points can let a wrong answer through; they
+decide whether the cards are pleasant to use or need a change.
+
+Needed: at least three people in one group chat, one channel thread and one meeting
+chat; one of them on Teams mobile (iOS or Android); one guest of the tenant; one
+anonymous participant in a meeting. For each step note the client (desktop, web, iOS,
+Android) and read the `[teams]` log lines and the kernel events.
+
+| # | Do | Settles (what Microsoft's pages do not state) |
+|---|---|---|
+| Q1 | Post a single-choice card with three options, and one with eight. | That `Input.ChoiceSet` renders as radio buttons (`expanded`) and as a dropdown (`compact`) in Teams, in a group chat, a channel and a meeting chat, on desktop, web and mobile |
+| Q2 | Post a multiple-choice card; select two options; send. | That `isMultiSelect` works in Teams and the value arrives as a comma-separated list |
+| Q3 | On a card with a required question, click "Antwort senden" without choosing. | Whether the client checks `isRequired` before an `Action.Execute` click. Either the client shows its own message, or the card comes back with "Bitte eine Option wählen."; both are fine, note which |
+| Q4 | On a free-text card with `maxLength` 200, try to type or paste 300 characters. | Whether Teams enforces `maxLength`. If not, the card must come back with "Bitte höchstens 200 Zeichen." |
+| Q5 | On a ranking card, give the same option two places and send. | How a returned card with an error line is displayed: the same card with the values kept and the red line, for the clicker only |
+| Q6 | Submit a valid answer. | That the person sees their own answer card with "Ändern", that nobody else's card changes, and that the spelling `application/vnd.microsoft.card.adaptive` of the response type is accepted |
+| Q7 | Stop the middleware for a moment while clicking, or delay it. | The invoke timeout: what the client shows when the answer takes too long (the adapter answers without waiting for the engine, so this should not happen in normal use) |
+| Q8 | After answering, leave the chat, wait two minutes, come back. Repeat in a conversation with more than 60 members. | The per-person refresh: the own-answer card is shown again in a conversation of up to 60 members; above that the question card is shown and the message menu offers "Refresh Card" |
+| Q9 | Let the engine close the step right away, and once more a day later. | That the update of the posted message is visible to everybody, replaces the personal views, and whether an update still works on an old message (no time limit is documented) |
+| Q10 | As a guest of the tenant and as an anonymous meeting participant, click a card. | Whether the click carries `from.aadObjectId`. A click without one is recorded with `answererVerified: false` and the person gets "… kann dir nicht sicher zugeordnet werden" |
+| Q11 | On an assignment card, search a person in the picker and send; click "Ich übernehme das"; try the picker as a guest. | That the people picker with `scope=currentContext` lists the conversation's members in a group chat, a channel and a meeting chat, and returns the Entra object id |
+| Q12 | Post a card with five questions and open it on a phone and in the meeting side panel. | Size and scrolling on the narrowest surfaces; whether five questions are too many |
+| Q13 | Click the poll card of 0.36.0 (two to six buttons). | That an `Action.Execute` click arrives at all and shows the acknowledgement; never done live |
+
+Record the results in a new "Recorded run" section. An item that fails becomes an issue;
+the fallback for every form is the chat ballot, which stays valid.
+
 ## Recorded run: 2026-11-18, byte5 tenant
 
 The record issue #43 asks for. Source: the rollout log of that day and the evaluation

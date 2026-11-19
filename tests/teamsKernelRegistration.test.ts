@@ -14,6 +14,7 @@ import {
   TeamsConversationMessages,
   TeamsConversationReferenceCache,
   TeamsMeetingSessions,
+  TeamsQuestionCards,
 } from '@omadia/channel-teams';
 import type { ConversationMessageEvent, SessionEvent } from '../src/kernel-types.js';
 
@@ -33,7 +34,7 @@ import {
 
 const CATALOG_ID = '@omadia/channel-teams';
 
-function register(): {
+function register(withCards = false): {
   registered: { kind: string; channelId: string; provider: Record<string, unknown> }[];
   connector: SimulatedConnector;
   refs: TeamsConversationReferenceCache;
@@ -57,6 +58,7 @@ function register(): {
       roster: { list: async () => [] },
       openDirectConversation: connector.openDirectConversation,
       botLabel: (botAppId) => (botAppId === MIRA.appId ? MIRA.name : undefined),
+      ...(withCards ? { cards: new TeamsQuestionCards() } : {}),
     },
   );
   return { registered, connector, refs };
@@ -71,6 +73,27 @@ describe('declared send capabilities on the registered providers', () => {
     assert.equal(conversation.channelId, CATALOG_ID);
     assert.equal(conversation.provider['channelType'], 'teams');
     assert.deepEqual(conversation.provider['supports'], { asChannelKey: true, mentions: true, poll: true, aiLabel: true });
+  });
+
+  it('wired as the plugin wires it, the conversation provider declares question cards and can update them', () => {
+    // plugin.ts passes the card registry; then the registered object says
+    // which question kinds it renders (#2089) and offers `updateCard`.
+    const { registered } = register(true);
+    const conversation = registered.find((entry) => entry.kind === 'conversation');
+
+    assert.ok(conversation);
+    assert.deepEqual(conversation.provider['supports'], {
+      asChannelKey: true,
+      mentions: true,
+      poll: true,
+      aiLabel: true,
+      card: {
+        kinds: ['single_choice', 'multiple_choice', 'ranking', 'consent', 'assignment', 'text'],
+        maxQuestions: 5,
+        update: true,
+      },
+    });
+    assert.equal(typeof conversation.provider['updateCard'], 'function');
   });
 
   it('the targeted send provider declares own identity', () => {

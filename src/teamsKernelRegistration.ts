@@ -16,6 +16,7 @@ import {
   createTeamsTargetedSendAdapter,
   type TeamsConversationReferenceCache,
 } from './teamsGroupPrimitives.js';
+import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 
 /** The `channel_bindings.channel_type` every provider and event of this
@@ -35,6 +36,8 @@ export interface TeamsSendProviderDeps {
   openDirectConversation: TeamsOpenDirectConversation;
   /** Display name of a CONFIGURED bot (app id lowercase), else `undefined`. */
   botLabel(botAppId: string): string | undefined;
+  /** #2089 — the question cards registry the bot answers clicks from. */
+  cards?: TeamsQuestionCards;
 }
 
 /**
@@ -64,6 +67,7 @@ export function registerTeamsSendProviders(
     refs: deps.refs,
     sendProactive: deps.sendProactive,
     roster: deps.roster,
+    ...(deps.cards ? { cards: deps.cards } : {}),
   });
   core.registerTargetedSendProvider?.(channelId, targeted);
   core.registerConversationSendProvider?.(channelId, conversation);

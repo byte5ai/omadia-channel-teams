@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.38.0
+
+Question cards: votes and structured input in Teams as Adaptive Cards (kernel spec B
+§6.1, byte5ai/omadia#2089; design note "Design: questionnaire cards in Teams"). Additive:
+the 0.36.0 poll and chat ballots work as before, and the plugin compiles against the
+channel-sdk of the kernel's main branch as well as the newer one. The contract types are
+mirrored in `kernel-types.ts` until the kernel publishes them.
+
+- **Six forms on one card type** (`TargetedMessage.card`): single choice, multiple
+  choice, ranked vote (one dropdown per place), consent (agree / object with a reason),
+  assignment (people picker of the conversation or a given list, plus "Ich übernehme
+  das"), free text (`append` for collecting ideas, `replace` for one statement). A
+  questionnaire is up to five questions on one card. Adaptive Card 1.5, `Action.Execute`.
+- **Declared**: `supports.card` with exactly the six kinds, five questions and `update`.
+  `number` and `date` are in the contract and not built; a card with one is refused.
+- **Typed answers**: one `card_answer` event per accepted submission with `proposalId`,
+  `proposalVersion`, `answers[]` and `answererVerified`. The author is who Teams says
+  clicked.
+- **Own answer for the clicker only**: the click is answered with a card that shows the
+  person their answer and "Ändern". The posted card is not touched: no names, no running
+  tally for the group.
+- **`updateCard`**: the engine replaces the posted card with its closed form (its result
+  lines, no inputs) or with a corrected open card, on the stored message id, as the bot
+  that posted it.
+- **Every rule on the server**: required answers, unknown options, a place used twice,
+  an objection without a reason, too long a text. A refused submission emits nothing and
+  comes back as the same card with the values kept and the reason shown.
+- **Forged or stale clicks**: another conversation, an earlier proposal version, a
+  closed card, a passed closing time, another bot, an author named in the data. None of
+  them is recorded.
+- **AI label** on the posted card and on every update (one marking per message).
+- **Live checklist**: thirteen items for everything Microsoft's pages do not state
+  (`docs/facilitator-live-verification.md`, "Question cards").
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
+Not verified: nothing was clicked in a Teams client. Not built: a card in a direct
+message, the step-by-step questionnaire, an own-answer view that survives a restart.
+
 ## 0.37.0
 
 Roster status as the kernel spec defines it (spec B §5.5, byte5ai/omadia#2091, issue

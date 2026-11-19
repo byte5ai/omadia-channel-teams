@@ -753,6 +753,10 @@ export interface SentActivity {
  */
 export class SimulatedConnector {
   readonly sent: SentActivity[] = [];
+  /** Every `PUT …/activities/{id}`: a posted message replaced. */
+  readonly updated: SentActivity[] = [];
+  /** Make the next message update fail (deleted or too old a message). */
+  updateFailure: Error | undefined;
   readonly opened: { asBot: string; userId: string; serviceUrl?: string }[] = [];
   private readonly directFailures = new Map<string, Error>();
 
@@ -792,6 +796,11 @@ export class SimulatedConnector {
         const id = newMessageId();
         this.sent.push({ asBot, conversationId, activity, id });
         return { id };
+      },
+      updateActivity: async (activity: Record<string, unknown>) => {
+        if (this.updateFailure) throw this.updateFailure;
+        this.updated.push({ asBot, conversationId, activity, id: String(activity['id'] ?? '') });
+        return { id: activity['id'] };
       },
     } as unknown as TurnContext;
   }

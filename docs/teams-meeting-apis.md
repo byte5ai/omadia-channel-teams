@@ -258,6 +258,75 @@ Teams client for this release.
   recalled-context card, slot / consent / routine-list cards, the topic question). They
   are not model output and carry neither label nor sentence. No test covers them.
 
+## 5c. Question cards
+
+*Docs* and *Simulated*. Nothing here was seen in a Teams client; the open points are
+the items Q1 to Q13 in `facilitator-live-verification.md`. Design: task note "Design:
+questionnaire cards in Teams" (2026-11-19); kernel spec B §6.1 and byte5ai/omadia#2089.
+
+**What a card is.** The engine sends `TargetedMessage.card` (a `QuestionCard`: id,
+proposal id and version, title, one to five questions, closing time). The adapter posts
+it as an Adaptive Card 1.5 with one submit button (`Action.Execute`).
+
+| Kind | On the card | Typed answer |
+|---|---|---|
+| `single_choice` | radio buttons up to six options, a dropdown above | `{ optionId }` |
+| `multiple_choice` | checkboxes | `{ optionIds }` |
+| `ranking` | one dropdown per place, up to six options | `{ ranking }`, best first |
+| `consent` | agree / object, and a reason field | `{ decision, reason? }` |
+| `assignment` | the people picker of the conversation (or a given list), and "Ich übernehme das" | `{ assignee }`: `self` or a person |
+| `text` | a text field; `append` (idea collection) or `replace` | `{ text }` |
+
+`number` and `date` are in the contract and not built; a card with one is refused. The
+provider declares `supports.card` with exactly these kinds, five questions and `update`.
+
+**Three views of one card.**
+
+- The question card is what everybody sees. No names, no running tally.
+- The own-answer card is returned to the person who clicked and shown to them only, with
+  "Ändern" while the card is changeable. It is kept in memory per person; after a
+  middleware restart a refresh shows the question card again (the engine still holds the
+  answer).
+- The closed card replaces the posted message when the engine asks for it
+  (`updateCard`): the engine's result lines, no inputs.
+
+**Per-person refresh.** The card carries `refresh` without `userIds`. Teams then refreshes
+automatically for conversations of up to 60 members and offers "Refresh Card" above that.
+The own-answer card returned to a click does not depend on it.
+
+**Every rule is enforced on the server.** `isRequired`, `errorMessage` and `maxLength`
+are set on the inputs as a convenience; whether a client honours them for
+`Action.Execute` is not documented. A submission is read again against the card:
+unknown option, a place used twice, a missing reason, too long a text, an empty click.
+A refused submission emits nothing and comes back as the same card with the person's
+values kept and the reason shown, to that person only.
+
+**What a click is checked against.**
+
+| Click | Answer |
+|---|---|
+| card clicked in another conversation than it was posted into | refused, nothing emitted |
+| click on an earlier version of the proposal | the current card with a notice, nothing emitted |
+| click after the close update, or after `closesAt` | the closed card / "nicht mehr aktiv", nothing emitted |
+| click when no facilitation holds the conversation, or sent to another bot | "nicht mehr aktiv" |
+| an author named in the click's data | ignored; the author is `activity.from` |
+| a click Teams does not attribute to a person | emitted with `answererVerified: false`, and the person is told |
+
+The card a click carries comes from the client. While this process remembers the card it
+posted, that one counts. After a restart the click is read against the card it carries,
+and the engine, which knows what it sent, drops what does not match.
+
+**The event.** One `card_answer` per accepted submission: `cardId`, `proposalId`,
+`proposalVersion`, `answers[]` (one typed value per answered question),
+`answererVerified`; `value` repeats `{ answers }` for readers that only know it.
+`messageId` is the card's message id.
+
+**Chat ballots stay.** A typed answer in the chat is as valid as a click; the engine lets
+the newest answer of a person win. The 0.36.0 poll (`message.poll`) is unchanged.
+
+**Not built:** a card in a direct message (the targeted send takes text only), the
+step-by-step questionnaire, a personal view that survives a restart.
+
 ## 6. Mentions and returned ids in proactive posts
 
 | Finding | Evidence |
