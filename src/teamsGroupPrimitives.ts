@@ -37,7 +37,8 @@ import {
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
 import { aiLabelEntity } from './teamsCard.js';
-import { buildClosedCardContent, buildQuestionCardContent, toCardAttachment } from './teamsQuestionCardRender.js';
+import { buildQuestionCardContent, toCardAttachment } from './teamsQuestionCardRender.js';
+import { buildClosedCardActivity } from './teamsQuestionCardSweep.js';
 import { questionCardProblem, TEAMS_CARD_CAPABILITY } from './teamsQuestionCardSpec.js';
 import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import type { TeamsRosterProvider, TeamsRosterRead } from './teamsRoster.js';
@@ -1051,20 +1052,12 @@ export function createTeamsConversationSendAdapter(deps: {
         }
         activity = buildQuestionCardActivity(update.card);
       } else {
-        activity = {
-          type: 'message',
-          attachments: [
-            toCardAttachment(
-              buildClosedCardContent({
-                title: update.title,
-                resultLines: update.resultLines,
-                closedAt: update.closedAt,
-                ...(posted.card.locale ? { locale: posted.card.locale } : {}),
-              }),
-            ),
-          ],
-          entities: [aiLabelEntity()],
-        };
+        activity = buildClosedCardActivity({
+          title: update.title,
+          resultLines: update.resultLines,
+          closedAt: update.closedAt,
+          ...(posted.card.locale ? { locale: posted.card.locale } : {}),
+        });
       }
       const cached = await deps.refs.getOrLoad(conversationId, botAppId).catch(() => undefined);
       const ownerAppId = cached?.ref.bot?.id ? parseTeamsBotKey(cached.ref.bot.id) : undefined;

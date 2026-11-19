@@ -41,6 +41,10 @@ export interface TeamsQuestionCardPersistence {
   save(record: StoredQuestionCard): Promise<void>;
   loadByCard(botAppId: string, cardId: string): Promise<StoredQuestionCard | undefined>;
   loadByMessage(botAppId: string, messageId: string): Promise<StoredQuestionCard | undefined>;
+  /** Cards still open whose closing time lies at or before `before`, oldest
+   *  first. Optional: a persistence without it leaves the sweep to what the
+   *  registry holds in memory. */
+  listOverdueOpen?(before: Date, limit: number): Promise<readonly StoredQuestionCard[]>;
 }
 
 export const QUESTION_CARDS_TABLE = 'teams_question_cards';
@@ -170,6 +174,20 @@ export class PgTeamsQuestionCardStore implements TeamsQuestionCardPersistence {
 
   async loadByMessage(botAppId: string, messageId: string): Promise<StoredQuestionCard | undefined> {
     return this.loadOne(`bot_app_id = $1 AND message_id = $2`, [botAppId.toLowerCase(), messageId]);
+  }
+
+  async listOverdueOpen(before: Date, limit: number): Promise<readonly StoredQuestionCard[]> {
+    if (!(await this.ensureTable())) return [];
+    try {
+      const result = await this.pool.query<Row>(
+        `SELECT ${COLUMNS} FROM ${QUESTION_CARDS_TABLE} WHERE state = 'open' AND closes_at <= $1 AND expires_at > now() ORDER BY closes_at LIMIT $2`,
+        [before.toISOString(), limit],
+      );
+      return result.rows.map(toRecord);
+    } catch (err) {
+      this.log?.(`[teams] question card lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
   }
 
   private async loadOne(where: string, params: readonly string[]): Promise<StoredQuestionCard | undefined> {

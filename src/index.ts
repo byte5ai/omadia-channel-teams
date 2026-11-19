@@ -308,7 +308,13 @@ export { buildRoutineDeliveryActivity, createTeamsRoutineDelivery } from './team
 export { PROACTIVE_POSTS_CARRY_AI_LABEL } from './teamsOutboundMessage.js';
 
 // #2089 — question cards (votes, consent, assignment, free text, questionnaires).
-export { TeamsQuestionCards, type QuestionCardAnswer } from './teamsQuestionCards.js';
+export { OVERDUE_GRACE_MS, TeamsQuestionCards, type QuestionCardAnswer } from './teamsQuestionCards.js';
+export {
+  buildClosedCardActivity,
+  createOverdueCardSweep,
+  OVERDUE_SWEEP_INTERVAL_MS,
+  type OverdueCardSweepDeps,
+} from './teamsQuestionCardSweep.js';
 export {
   buildClosedCardContent,
   buildOwnAnswerCardContent,

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.40.2
+
+- **A question card whose close never arrived closes itself** (rollout pass 6,
+  observation O2). A posted card is closed by the engine's `updateCard`. That call can
+  fail to reach this channel at all: the kernel refuses the action first (an operator's
+  kill switch, as on 2026-11-19 at 12:38 UTC; a spent budget), and the engine does not
+  retry a card update. The card then kept its inputs in the chat and its row in
+  `teams_question_cards` stayed `open`.
+  - Every five minutes, and once at start, the channel looks for cards that are still
+    open five minutes or more past their closing time (`closesAt`). Each is replaced in
+    Teams by its closed form ("Geschlossen am …", "Diese Abstimmung ist nicht mehr
+    aktiv.", no inputs, no result) as the bot that posted it, and its row is closed.
+  - The row is closed even when Teams refuses the replacement (message deleted, bot
+    removed); one log line per card says which of the two happened.
+  - A later `updateCard` of the engine still works and puts the result on the card.
+  - A card without a closing time is not touched: the channel has nothing of its own to
+    go by.
+- **Not covered, and not this channel's to cover:** the time between the engine's close
+  and the card's closing time. In that window the channel cannot know the step is over;
+  the card stays open in the chat until the sweep. Closing that gap needs the engine to
+  retry a refused or failed card update.
+- Not verified in a Teams client: how the replaced card looks. Simulated transport only.
+
 ## 0.40.1
 
 - **The answer card's "✨ AI-generated" chip follows the kernel's disclosure.** The chip
