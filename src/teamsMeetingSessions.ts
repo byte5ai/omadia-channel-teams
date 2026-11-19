@@ -156,7 +156,12 @@ export class TeamsMeetingSessions {
         isScheduled:
           isParticipantEvent ||
           (meetingType ? SCHEDULED_MEETING_TYPES.includes(meetingType.toLowerCase()) : base.isScheduled),
-        isLive: kind === 'session_ended' ? false : kind === 'session_started' ? true : base.isLive || isParticipantEvent,
+        // Running: from its start, or from a JOIN when the start was not
+        // seen, until its end. A leave proves nothing (it may be the last
+        // person going, or arrive after the end event), so it never turns a
+        // meeting that is not known to run into a running one.
+        isLive:
+          kind === 'session_ended' ? false : kind === 'session_started' || kind === 'participant_joined' ? true : base.isLive,
         hasSeenParticipantEvent: kind === 'session_started' ? false : base.hasSeenParticipantEvent || isParticipantEvent,
       };
       this.meetings.delete(key);

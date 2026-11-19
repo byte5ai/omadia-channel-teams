@@ -434,9 +434,26 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
    observed live.
 4. **The capability snapshot**, per conversation and bot:
    - **always:** inputs `text`, `message_edits`, `card_answers`; outputs `text`,
-     `mentions`, `cards`, `polls`, `private_messages`. Modality `online` for a meeting
-     chat or while a meeting or call is running, `chat` otherwise. The roster is
-     available through the kernel's roster provider.
+     `mentions`, `cards`, `polls`, `private_messages`. The roster is available through
+     the kernel's roster provider.
+   - **modality `online` only while a meeting or call is known to be running** in the
+     conversation: from its start event, or from a participant join when the start was
+     not seen, until its end event. `chat` otherwise, **also for the chat of a
+     meeting**: before the meeting, after it, between sessions, and whenever the state
+     is unknown (0.38.2; before, every meeting chat was `online` at any time). A leave
+     event never makes a meeting "running".
+   - **The running state cannot be read on demand.** Graph's `onlineMeeting` and the
+     chat's `onlineMeetingInfo` (`teamworkOnlineMeetingInfo`: `calendarEventId`,
+     `joinWebUrl`, `organizer`) carry scheduled times and no state; the meeting details
+     API returns "a meeting's static metadata"; a `call` can be read only by the app
+     that holds it. The participant API tells whether **one** participant is in the
+     meeting (`meeting.inMeeting`), needs that participant's id, and says nothing when
+     the answer is no. (Microsoft Learn, fetched 2026-11-19: `graph/api/resources/onlinemeeting`
+     updated 2026-07-23, `graph/api/resources/teamworkonlinemeetinginfo` updated
+     2024-11-27, `graph/api/resources/call` updated 2026-03-07, `apps-in-teams-meetings/
+     meeting-apps-apis` updated 2026-10-22, the last one read in part.) So the state is
+     what this bot saw. It is kept in memory in 0.38.2: after a restart during a
+     meeting the snapshot says `chat` until the next join or the next start.
    - **`presence`, only while it is proven.** All three must hold, none is assumed:
      a scheduled meeting is running in this chat (its start event said `Scheduled` or
      `Recurring`, or a participant event arrived, which exists for scheduled meetings

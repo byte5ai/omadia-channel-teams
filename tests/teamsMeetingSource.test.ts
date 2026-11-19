@@ -26,7 +26,7 @@ function sourceWith(seen: { conversationId: string; personal?: boolean }[]): Ret
 }
 
 describe('#44 Teams meeting source', () => {
-  it('declares the chat-and-cards baseline for a meeting chat as an online session', async () => {
+  it('declares the chat-and-cards baseline for a meeting chat, as a chat while no meeting is known to run', async () => {
     const source = sourceWith([{ conversationId: MEETING_CHAT_ID }]);
 
     const snapshot = await source.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key, sessionRef: 'meeting-42' });
@@ -35,7 +35,9 @@ describe('#44 Teams meeting source', () => {
       channelType: 'teams',
       conversationId: MEETING_CHAT_ID,
       sessionRef: 'meeting-42',
-      modality: 'online',
+      // The chat of a meeting is a chat. `online` would say "a meeting is
+      // running", and nothing here has seen one start.
+      modality: 'chat',
       inputs: ['text', 'message_edits', 'card_answers'],
       outputs: ['text', 'mentions', 'cards', 'polls', 'private_messages'],
       capturedAt: '2026-11-18T10:00:00.000Z',

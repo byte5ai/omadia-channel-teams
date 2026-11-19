@@ -30,6 +30,7 @@ import {
   GROUP_CHAT_ID,
   JONAS,
   MEETING_CHAT_ID,
+  MEETING_ID,
   meetingLifecycleActivity,
   meetingParticipantActivity,
   membersAddedActivity,
@@ -673,6 +674,78 @@ describe('scenario 6 — two facilitator bots in one chat', () => {
   });
 });
 
+describe('scenario 7a — the snapshot says `online` only while a meeting is known to run', () => {
+  // The engine reads the snapshot at set-up and takes `online` to mean "a
+  // meeting is running". Rollout defect D26: a meeting chat reported
+  // `online` at any time, just for being a meeting chat.
+  const modalityOf = async (i: ReturnType<typeof startInstance>): Promise<string | undefined> =>
+    (await i.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key }))?.modality;
+
+  it('chat before the start, online during the meeting, chat after its end', async () => {
+    const i = startInstance();
+    await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'Thema: Budget', conversationId: MEETING_CHAT_ID }));
+
+    const before = await i.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key });
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
+    const during = await i.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key });
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'end', at: '2026-11-18T11:00:00.000Z' }));
+    const after = await i.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key });
+
+    assert.deepEqual([before?.modality, during?.modality, after?.modality], ['chat', 'online', 'chat']);
+    // What the chat offers does not change with the meeting.
+    assert.deepEqual(before?.inputs, ['text', 'message_edits', 'card_answers']);
+    assert.deepEqual(before?.outputs, ['text', 'mentions', 'cards', 'polls', 'private_messages']);
+    assert.deepEqual(during?.outputs, before?.outputs);
+    assert.equal('sessionRef' in (before ?? {}), false, 'no session while nothing runs');
+    assert.equal(during?.sessionRef, MEETING_ID);
+    assert.equal('sessionRef' in (after ?? {}), false);
+  });
+
+  it('after a restart during a meeting the state is unknown, and unknown is reported as chat', async () => {
+    const before = startInstance();
+    await before.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hi', conversationId: MEETING_CHAT_ID }));
+    await before.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
+    assert.equal(await modalityOf(before), 'online');
+    await settle();
+
+    // The process restarts while the meeting runs. Microsoft documents no way
+    // to ask whether a meeting is running, so nothing is claimed.
+    const after = startInstance({ kernel: before.kernel, graph: before.graph, connector: before.connector, table: before.table });
+    assert.equal(await modalityOf(after), 'chat');
+
+    // The next evidence brings the state back: somebody joins.
+    await after.bot.deliver(meetingParticipantActivity({ bot: MIRA, from: ANNA, phase: 'join', people: [BERT] }));
+    assert.equal(await modalityOf(after), 'online');
+    await after.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'end', at: '2026-11-18T11:00:00.000Z' }));
+    assert.equal(await modalityOf(after), 'chat');
+  });
+
+  it('a leave event never turns a chat into a running meeting', async () => {
+    const i = startInstance();
+    await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hi', conversationId: MEETING_CHAT_ID }));
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'end', at: '2026-11-18T11:00:00.000Z' }));
+
+    // A leave that arrives after the end event (or after a restart).
+    await i.bot.deliver(meetingParticipantActivity({ bot: MIRA, from: ANNA, phase: 'leave', people: [BERT], at: '2026-11-18T11:00:05.000Z' }));
+
+    assert.equal(await modalityOf(i), 'chat');
+  });
+
+  it('an ordinary group chat is a chat, and a call started in it is online until it ends', async () => {
+    const i = startInstance();
+    await i.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hi' }));
+    const modality = async (): Promise<string | undefined> =>
+      (await i.meetings.snapshot(GROUP_CHAT_ID, { asChannelKey: MIRA.key }))?.modality;
+
+    assert.equal(await modality(), 'chat');
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start', meetingType: 'GroupCall', conversationId: GROUP_CHAT_ID }));
+    assert.equal(await modality(), 'online');
+    await i.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'end', meetingType: 'GroupCall', conversationId: GROUP_CHAT_ID, at: '2026-11-18T10:30:00.000Z' }));
+    assert.equal(await modality(), 'chat');
+  });
+});
+
 describe('scenario 7 — scheduled meeting chat', () => {
   it('the facilitator reads the meeting chat without mentions and declares what it perceives', async () => {
     const i = startInstance();
@@ -684,7 +757,7 @@ describe('scenario 7 — scheduled meeting chat', () => {
 
     assert.deepEqual(i.kernel.events.map((e) => [e.conversationId, e.text]), [[MEETING_CHAT_ID, 'Thema: Budget']]);
     assert.equal(posted.outcome, 'delivered');
-    assert.equal(snapshot?.modality, 'online');
+    assert.equal(snapshot?.modality, 'chat', 'no meeting is running: the chat of a meeting is a chat');
     assert.equal(snapshot?.sessionRef, 'session-1');
     assert.equal((snapshot?.inputs as readonly string[]).includes('transcribed_speech'), false, 'it does not hear the call');
     assert.equal((snapshot?.inputs as readonly string[]).includes('presence'), false);

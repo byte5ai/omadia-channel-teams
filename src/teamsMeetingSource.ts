@@ -11,6 +11,9 @@
 //   always            chat (text, edits), cards and polls, mentions, private
 //                     messages. The roster is available too, through the
 //                     kernel's roster provider, not through this snapshot.
+//   modality          `chat`, also for the chat of a meeting. `online` only
+//                     while a meeting is known to be running there: between
+//                     its start (or a join) and its end, as this bot saw it.
 //   scheduled only    `presence`, and only while it is proven: a scheduled
 //                     meeting is running, a join or leave event has arrived
 //                     for it, and the install holds the two meeting RSC
@@ -112,9 +115,17 @@ export function createTeamsMeetingSource(deps: TeamsMeetingSourceDeps): MeetingS
         channelType: 'teams',
         conversationId,
         ...(sessionRef ? { sessionRef } : {}),
+        // `online` is a statement that a meeting is RUNNING, and an engine
+        // acts on it. It is made only on evidence: this bot saw the meeting
+        // start (or a participant join it) and has not seen it end. The chat
+        // of a meeting is an ordinary chat before, after and between
+        // sessions, and also when the state is unknown, as after a restart.
+        // Microsoft documents no way to read "is this meeting running" on
+        // demand (see docs/teams-meeting-apis.md), so there is nothing to
+        // ask; unknown is reported as `chat`, never as a meeting.
         // 'hybrid' is never claimed: Teams does not tell a bot whether people
         // share a room.
-        modality: isTeamsMeetingChat(conversationId) || meeting?.isLive ? 'online' : 'chat',
+        modality: meeting?.isLive ? 'online' : 'chat',
         inputs,
         outputs: isDirect ? DIRECT_OUTPUTS : CHAT_OUTPUTS,
         capturedAt: now().toISOString(),

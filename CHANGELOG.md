@@ -27,6 +27,15 @@ this plugin. What had been read as "the label" on turn answers is the answer car
 - **Live checklist:** six items (A1 to A6) in `docs/facilitator-live-verification.md`.
 - `compat` is unchanged (`core >=1.51.0 <2.0`).
 
+Also in this version (rollout defect D26): **a meeting chat is `chat`, not `online`,
+unless a meeting is running.** The capability snapshot reported `online` for every
+meeting chat at any time; an engine reads `online` as "a meeting is running". Now
+`online` only between a meeting's start (or a participant join) and its end, as this
+bot saw it; `chat` before, after, and when the state is unknown. A leave event no
+longer marks a meeting as running. Microsoft documents no way to read the running
+state on demand; it is kept in memory, so after a restart during a meeting the
+snapshot says `chat` until the next join or start.
+
 While the switch is off, a client that does render the label shows label and sentence
 on the same message. Still without a visible marking of their own in both modes: the
 blocking choice card, the approval card, Conductor reminders, and cards posted without
