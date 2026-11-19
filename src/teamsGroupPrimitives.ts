@@ -4,7 +4,7 @@
 // so this plugin keeps activating unchanged on kernels that predate them.
 
 import { TurnContext } from 'botbuilder';
-import type { ConversationReference } from 'botbuilder';
+import type { Activity, ConversationReference } from 'botbuilder';
 import type {
   ConversationParticipant,
   ConversationRoster,
@@ -36,9 +36,16 @@ import {
 } from './teamsConversationIds.js';
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
+import { aiLabelEntity } from './teamsCard.js';
+import { buildClosedCardContent, buildQuestionCardContent, toCardAttachment } from './teamsQuestionCardRender.js';
+import { questionCardProblem, TEAMS_CARD_CAPABILITY } from './teamsQuestionCardSpec.js';
+import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import type { TeamsRosterProvider, TeamsRosterRead } from './teamsRoster.js';
 import type {
   ChatParticipant,
+  QuestionCard,
+  CardUpdate,
+  CardUpdateOutcome,
   RosterRequestOptions,
   TeamsConversationRoster,
   FacilitatorDeliveryOutcome,
@@ -532,6 +539,16 @@ export function createTeamsRosterAdapter(deps: {
   };
 }
 
+/** The posted message of a question card: the card, and the AI label every
+ *  message under an agent's name carries (one marking per message). */
+function buildQuestionCardActivity(card: QuestionCard): Partial<Activity> {
+  return {
+    type: 'message',
+    attachments: [toCardAttachment(buildQuestionCardContent(card))],
+    entities: [aiLabelEntity()],
+  };
+}
+
 /**
  * The declared capabilities, built by functions and not as object literals at
  * the provider: the plugin is compiled against whatever `@omadia/channel-sdk`
@@ -544,8 +561,15 @@ function targetedCapabilities(hasDirectPath: boolean): SendProviderCapabilities 
   return { asChannelKey: hasDirectPath, aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL };
 }
 
-function conversationCapabilities(hasRoster: boolean): SendProviderCapabilities {
-  return { asChannelKey: true, mentions: hasRoster, poll: true, aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL };
+function conversationCapabilities(hasRoster: boolean, hasCards: boolean): SendProviderCapabilities {
+  return {
+    asChannelKey: true,
+    mentions: hasRoster,
+    poll: true,
+    aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL,
+    // Question cards: the kinds really rendered, and `updateCard`.
+    ...(hasCards ? { card: TEAMS_CARD_CAPABILITY } : {}),
+  };
 }
 
 /** What a DM "as bot X" needs beyond the legacy path (#2043). */
@@ -736,6 +760,10 @@ export function createTeamsConversationSendAdapter(deps: {
   /** #2043 — resolves a mentioned person to their member id in the chat.
    *  Without it mentions stay plain text. */
   roster?: Pick<TeamsRosterProvider, 'list'>;
+  /** #2089 — the cards this plugin posted. With it the provider renders
+   *  question cards and declares `supports.card`; without it a card is
+   *  refused. The bot is given the same instance to answer the clicks. */
+  cards?: TeamsQuestionCards;
   retry?: RetryOptions;
   // The declared return type is a SUPERSET of the SDK interface, for the same
   // reason the send method takes a rest tuple: this plugin ships independently
@@ -746,6 +774,12 @@ export function createTeamsConversationSendAdapter(deps: {
 }): ConversationSendProvider & {
   supports: SendProviderCapabilities;
   sendTyping(conversationId: string, opts?: { asChannelKey?: string }): Promise<void>;
+  updateCard(
+    conversationId: string,
+    cardMessageId: string,
+    update: CardUpdate,
+    opts: { asChannelKey: string },
+  ): Promise<CardUpdateOutcome>;
 } {
   return {
     channelType: 'teams',
@@ -756,7 +790,7 @@ export function createTeamsConversationSendAdapter(deps: {
     //   poll          posted as a card; an invalid poll is refused
     // Text and poll card are built by `buildOutgoingActivity` /
     // `buildPollActivity`, which attach the AI label.
-    supports: conversationCapabilities(deps.roster !== undefined),
+    supports: conversationCapabilities(deps.roster !== undefined, deps.cards !== undefined),
     // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
     // independently of the kernel and is compiled against whatever
     // `@omadia/channel-sdk` is installed. On an SDK that predates
@@ -827,6 +861,24 @@ export function createTeamsConversationSendAdapter(deps: {
       if (pollRequest && 'problem' in pollRequest) {
         return { outcome: 'unreachable', code: 'channel_error', message: `invalid poll: ${pollRequest.problem}` };
       }
+      // #2089 — a question card. `message.card` is read structurally: the
+      // installed SDK may not know the field yet. Refused before anything is
+      // posted when it cannot be rendered, like a poll.
+      const requestedCard = (message as { card?: unknown }).card;
+      let questionCard: QuestionCard | undefined;
+      if (requestedCard !== undefined && requestedCard !== null) {
+        if (!deps.cards) {
+          return { outcome: 'unreachable', code: 'channel_error', message: 'question cards are not wired in this Teams channel' };
+        }
+        if (pollRequest) {
+          return { outcome: 'unreachable', code: 'channel_error', message: 'a message carries a poll or a question card, not both' };
+        }
+        const cardProblem = questionCardProblem(requestedCard);
+        if (cardProblem) {
+          return { outcome: 'unreachable', code: 'channel_error', message: `invalid question card: ${cardProblem}` };
+        }
+        questionCard = requestedCard as QuestionCard;
+      }
       const mentions: readonly TargetedMention[] | undefined = message.mentions;
 
       // Text and card go out as SEPARATE activities and each returns its own
@@ -890,9 +942,18 @@ export function createTeamsConversationSendAdapter(deps: {
               );
               cardMessageId = sent?.id;
             }
+            if (questionCard) {
+              const card = questionCard;
+              const sent = await retryTransient(() => turnContext.sendActivity(buildQuestionCardActivity(card)), deps.retry);
+              cardMessageId = sent?.id;
+            }
           },
           ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
         );
+        if (questionCard && senderAppId) {
+          // Remembered so a click is checked against what was posted where.
+          deps.cards?.register({ card: questionCard, conversationId, botAppId: senderAppId, messageId: cardMessageId });
+        }
         deps.refs.recordPostResult(conversationId, senderAppId, true);
         const messageId = textMessageId ?? cardMessageId;
         return {
@@ -912,6 +973,89 @@ export function createTeamsConversationSendAdapter(deps: {
           ...(isTextPosted && textMessageId ? { messageId: textMessageId } : {}),
         };
       }
+    },
+
+    /**
+     * #2089 — change a posted card: into its closed form (the engine's
+     * result, no inputs) or into a corrected open card with the same id.
+     * `PUT …/activities/{id}` on the stored activity id, as the bot that
+     * posted it. Never as another bot; a failed update is reported and the
+     * engine posts its result as text, which it does anyway.
+     */
+    async updateCard(conversationId, cardMessageId, update, opts): Promise<CardUpdateOutcome> {
+      const cards = deps.cards;
+      if (!cards) return { outcome: 'unreachable', code: 'channel_error', message: 'question cards are not wired in this Teams channel' };
+      const botAppId = parseTeamsBotKey(opts?.asChannelKey ?? '');
+      if (!botAppId) {
+        return {
+          outcome: 'unreachable',
+          code: 'not_permitted',
+          message: `'${String(opts?.asChannelKey)}' is not a Teams bot identity key (expected '${TEAMS_BOT_KEY_PREFIX}<appId>')`,
+        };
+      }
+      if (typeof cardMessageId !== 'string' || cardMessageId.length === 0) {
+        return { outcome: 'unreachable', code: 'channel_error', message: 'the id of the posted card is missing' };
+      }
+      if (isBotKeyPrefixedConversationId(conversationId)) {
+        reportBotKeyPrefixedConversationId(conversationId, 'card update');
+        return { outcome: 'unreachable', code: 'no_binding', message: botKeyPrefixedConversationMessage(conversationId) };
+      }
+      let activity: Partial<Activity>;
+      if (update.state === 'open') {
+        const problem = questionCardProblem(update.card);
+        if (problem) return { outcome: 'unreachable', code: 'channel_error', message: `invalid question card: ${problem}` };
+        activity = buildQuestionCardActivity(update.card);
+      } else {
+        const posted = cards.findByMessage(botAppId, cardMessageId);
+        activity = {
+          type: 'message',
+          attachments: [
+            toCardAttachment(
+              buildClosedCardContent({
+                title: update.title,
+                resultLines: update.resultLines,
+                closedAt: update.closedAt,
+                ...(posted?.card.locale ? { locale: posted.card.locale } : {}),
+              }),
+            ),
+          ],
+          entities: [aiLabelEntity()],
+        };
+      }
+      const cached = await deps.refs.getOrLoad(conversationId, botAppId).catch(() => undefined);
+      const ownerAppId = cached?.ref.bot?.id ? parseTeamsBotKey(cached.ref.bot.id) : undefined;
+      if (!cached || (ownerAppId && ownerAppId !== botAppId)) {
+        return {
+          outcome: 'unreachable',
+          code: 'no_binding',
+          message: `bot '${botAppId}' has no Teams conversation reference for '${conversationId}'`,
+        };
+      }
+      try {
+        await deps.sendProactive(
+          cached.ref,
+          async (turnContext) => {
+            await retryTransient(() => turnContext.updateActivity({ ...activity, id: cardMessageId }), deps.retry);
+          },
+          { botAppId },
+        );
+      } catch (err) {
+        return { outcome: 'unreachable', code: 'channel_error', message: err instanceof Error ? err.message : String(err) };
+      }
+      if (update.state === 'open') {
+        cards.register({ card: update.card, conversationId, botAppId, messageId: cardMessageId });
+      } else {
+        const posted = cards.findByMessage(botAppId, cardMessageId);
+        if (posted) {
+          cards.markClosed(botAppId, posted.card.cardId, {
+            title: update.title,
+            resultLines: update.resultLines,
+            closedAt: update.closedAt,
+            ...(posted.card.locale ? { locale: posted.card.locale } : {}),
+          });
+        }
+      }
+      return { outcome: 'updated' };
     },
 
     // Best-effort by contract, and silent by design: an activity indicator that

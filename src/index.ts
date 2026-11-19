@@ -306,3 +306,23 @@ export {
 // AI marking of deliveries outside a chat turn (routines, approvals).
 export { buildRoutineDeliveryActivity, createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 export { PROACTIVE_POSTS_CARRY_AI_LABEL } from './teamsOutboundMessage.js';
+
+// #2089 — question cards (votes, consent, assignment, free text, questionnaires).
+export { TeamsQuestionCards, type QuestionCardAnswer } from './teamsQuestionCards.js';
+export {
+  buildClosedCardContent,
+  buildOwnAnswerCardContent,
+  buildQuestionCardContent,
+  QUESTION_CARD_ANSWER_VERB,
+  QUESTION_CARD_CHANGE_VERB,
+  QUESTION_CARD_DATA_TYPE,
+  QUESTION_CARD_VIEW_VERB,
+  questionCardActionData,
+} from './teamsQuestionCardRender.js';
+export { inputId, readCardSubmission, VOLUNTEER_PRESET } from './teamsQuestionCardAnswers.js';
+export {
+  MAX_CARD_QUESTIONS,
+  questionCardProblem,
+  RENDERED_CARD_KINDS,
+  TEAMS_CARD_CAPABILITY,
+} from './teamsQuestionCardSpec.js';

@@ -26,6 +26,7 @@ import type {
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
 import type { TeamsConversationMessages } from './teamsConversationMessages.js';
 import type { TeamsMeetingSessions } from './teamsMeetingSessions.js';
+import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { parsePollAnswerValue } from './teamsPollCard.js';
 import { pickChatAgentForTurn } from './agentForTurn.js';
 
@@ -677,6 +678,15 @@ export class TeamsBot extends TeamsActivityHandler {
     context: TurnContext,
     invokeValue: AdaptiveCardInvokeValue,
   ): Promise<AdaptiveCardInvokeResponse> {
+    // A question card (#2089): answered at once from what the adapter
+    // knows; an accepted submission goes to the kernel as a typed event.
+    if (this.questionCards?.isQuestionCardInvoke(invokeValue)) {
+      this.groupPrimitives?.captureConversationReference(context);
+      return this.questionCards.handleInvoke(
+        context.activity,
+        (answer) => this.conversationMessages?.emitQuestionCardAnswer(context.activity, answer) === true,
+      );
+    }
     if (!parsePollAnswerValue(invokeValue)) return super.onAdaptiveCardInvoke(context, invokeValue);
     this.groupPrimitives?.captureConversationReference(context);
     const isRecorded = this.conversationMessages?.emitCardAnswer(context.activity) === true;
@@ -698,6 +708,13 @@ export class TeamsBot extends TeamsActivityHandler {
       context.activity.name = name.trim();
     }
     await super.dispatchEventActivity(context);
+  }
+
+  private questionCards?: TeamsQuestionCards;
+
+  /** #2089 — the cards this plugin posted and what a click on one does. */
+  attachQuestionCards(cards: TeamsQuestionCards): void {
+    this.questionCards = cards;
   }
 
   private meetingSessions?: TeamsMeetingSessions;

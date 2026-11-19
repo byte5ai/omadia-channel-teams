@@ -59,6 +59,7 @@ import type {
 import { createAttachmentsRouter } from './attachmentsRouter.js';
 import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
+import { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 import {
   disabledTeamsCardFeatures,
@@ -750,10 +751,15 @@ export async function activate(
   );
   // Targeted and conversation send, with their declared capabilities
   // (own identity, mentions, polls) — see teamsKernelRegistration.ts.
+  // #2089 — one registry of posted question cards, shared by the provider
+  // that posts and updates them and the bot that answers the clicks.
+  const questionCards = new TeamsQuestionCards();
+  bot.attachQuestionCards(questionCards);
   registerTeamsSendProviders(core, ctx.agentId, {
     refs: conversationRefs,
     sendProactive,
     roster: teamsRosterProvider,
+    cards: questionCards,
     openDirectConversation,
     botLabel: (botAppId) =>
       teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
