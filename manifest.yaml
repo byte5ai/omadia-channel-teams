@@ -3,10 +3,10 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.36.6"
+  version: "0.37.0"
   kind: "channel"
   domain: "channel.teams"
-  description: "Microsoft Teams als First-Class-Channel für Omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
+  description: "Microsoft Teams als Kanal für omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -59,10 +59,11 @@ setup:
          `<your-public-base-url>/api/teams/messages`.
       4. **Channels** → enable **Microsoft Teams**.
 
-      ### Multiple bots (optional)
-      One plugin install can run **several Teams bots** — one Entra app
-      registration / Azure bot per omadia agent. Configure them as a JSON
-      array in **Teams Bots (JSON)**:
+      ### Several channel identities (optional)
+      One plugin install can run **several Teams bots**. Each bot is the
+      **channel identity** of one omadia agent (one Entra app registration /
+      Azure bot per agent). Configure them as a JSON array in
+      **Teams channel identities (bots, JSON)**:
 
       ```json
       [{"botSlug": "default", "appId": "<entra-app-id>",
@@ -162,7 +163,7 @@ setup:
       Teams läuft als Azure-Bot und nutzt die **gleiche Azure-AD-App** wie die
       Microsoft-365-Integration. **Installiere zuerst
       @omadia/integration-microsoft365** — sie besitzt die App-Credentials
-      (Client-ID / Secret / Tenant); dieser Channel ergänzt nur Teams-spezifische
+      (Client-ID / Secret / Tenant); dieser Kanal ergänzt nur Teams-spezifische
       Einstellungen.
 
       ### 1. Azure-Bot registrieren
@@ -173,10 +174,11 @@ setup:
          `<deine-public-base-url>/api/teams/messages`.
       4. **Channels** → **Microsoft Teams** aktivieren.
 
-      ### Mehrere Bots (optional)
-      Eine Plugin-Installation kann **mehrere Teams-Bots** betreiben — eine
-      Entra-App-Registration / ein Azure-Bot pro omadia-Agent. Konfiguration
-      als JSON-Array im Feld **Teams Bots (JSON)**:
+      ### Mehrere Kanalidentitäten (optional)
+      Eine Plugin-Installation kann **mehrere Teams-Bots** betreiben. Jeder
+      Bot ist die **Kanalidentität** eines omadia-Agenten (eine
+      Entra-App-Registration / ein Azure-Bot pro Agent). Konfiguration als
+      JSON-Array im Feld **Teams-Kanalidentitäten (Bots, JSON)**:
 
       ```json
       [{"botSlug": "default", "appId": "<entra-app-id>",
@@ -227,7 +229,7 @@ setup:
 
       ### 5. Agent-Apps automatisch einladen (optionaler Graph-Consent)
       Mit konfiguriertem **Agent Apps (JSON)** (`teams_agent_apps`)
-      installiert der Channel die gelisteten omadia-Agent-Apps automatisch
+      installiert der Kanal die gelisteten omadia-Agent-Apps automatisch
       in ein Team, sobald einer seiner Bots dort hinzugefügt wird. Dafür
       braucht die geteilte App-Registration zwei zusätzliche
       Graph-**Application-Permissions** (Admin-Consent erforderlich —
@@ -262,14 +264,14 @@ setup:
       Teams lädt `/p/channel-teams/hub` und `/tab-config` ohne
       omadia-Session. Damit sie funktionieren:
       1. **Public Path freigeben**: `/p/channel-teams` für dieses Plugin in
-         der Operator-UI (Plugins → Microsoft Teams Channel → Freigaben).
+         der Administrationsoberfläche (Plugins → Microsoft Teams Channel → Freigaben).
          Die Seiten selbst enthalten keine Daten; den Plugin-Katalog
          (`/p/channel-teams/catalog`) gibt es nur gegen ein Teams-SSO-Token,
          das der omadia-Kernel geprüft hat (omadia-Core mit plugin-api
          >= 1.51.0).
       2. **Teams-SSO an der App-Registrierung** (einmalig): **Expose an API**
          → Application ID URI `api://<middleware-host>/<app-id>`, Scope
-         `access_as_user` (Admins und User), und die Teams-Clients
+         `access_as_user` (Admins und Nutzer), und die Teams-Clients
          `1fec8e78-bce4-4aaf-ab1b-5451cc387264` (Desktop/Mobile) und
          `5e3ce6c0-2b1f-4285-8d4b-75ee78787346` (Web) für diesen Scope
          vorab autorisieren. `webApplicationInfo` im App-Paket zeigt bereits
@@ -277,8 +279,8 @@ setup:
   fields:
     - key: "teams_bots"
       type: "string"
-      label: "Teams Bots (JSON)"
-      help: "Optionale Multi-Bot-Konfiguration (#860): JSON-Array von Bot-Identitäten [{botSlug, appId, tenantId, appPasswordSecretRef, appType?, displayName?}]. appPasswordSecretRef referenziert das Vault-Secret mit dem App-Passwort des Bots (niemals das Passwort inline). appType: MultiTenant | SingleTenant | UserAssignedMSI, Default SingleTenant. Eintrag 0 ist der Default-Bot (bedient auch /api/messages + /api/teams/messages); jeder Bot empfängt unter /api/teams/<botSlug>/messages. Leer lassen → Single-Bot-Betrieb über die Credentials der Microsoft-365-Integration (microsoft_app_id / microsoft_tenant_id / microsoft_app_password, App-Typ aus MICROSOFT_APP_TYPE, Default MultiTenant)."
+      label: "Teams-Kanalidentitäten (Bots, JSON)"
+      help: "Optionale Multi-Bot-Konfiguration (#860): JSON-Array von Kanalidentitäten (ein Bot je Agent) [{botSlug, appId, tenantId, appPasswordSecretRef, appType?, displayName?}]. appPasswordSecretRef referenziert das Vault-Secret mit dem App-Passwort des Bots (niemals das Passwort inline). appType: MultiTenant | SingleTenant | UserAssignedMSI, Default SingleTenant. Eintrag 0 ist der Default-Bot (bedient auch /api/messages + /api/teams/messages); jeder Bot empfängt unter /api/teams/<botSlug>/messages. Leer lassen → Single-Bot-Betrieb über die Credentials der Microsoft-365-Integration (microsoft_app_id / microsoft_tenant_id / microsoft_app_password, App-Typ aus MICROSOFT_APP_TYPE, Default MultiTenant)."
       required: false
     - key: "teams_agent_apps"
       type: "string"
@@ -304,13 +306,13 @@ setup:
     - key: "teams_notify_topic_url"
       type: "string"
       label: "Topic-URL für Activity-Notification"
-      help: "Browser-Url die Teams öffnet, wenn der User auf die Bell-Notification klickt. Default: Omadia-Hub. Plugin-spezifische Deep-Links überschreiben das pro Notification."
+      help: "Browser-Url die Teams öffnet, wenn der Nutzer auf die Bell-Notification klickt. Default: Omadia-Hub. Plugin-spezifische Deep-Links überschreiben das pro Notification."
       required: false
       default: "https://odoo-bot-harness.fly.dev/p/channel-teams/hub"
     - key: "teams_directory_label"
       type: "string"
       label: "Dashboard-Label für Channel-Routing"
-      help: "Optionales operator-freundliches Label für /operator/channels (statt 'Teams · <bot-app-id-short>'). Beispiel: 'Teams · Production · Marketing'. Leer lassen → generiertes Default-Label."
+      help: "Optionales, für Administratoren lesbares Label für /operator/channels (statt 'Teams · <bot-app-id-short>'). Beispiel: 'Teams · Production · Marketing'. Leer lassen → generiertes Default-Label."
       required: false
     - key: "teams_card_tool_trace"
       type: "boolean"
@@ -318,8 +320,8 @@ setup:
         en: "Answer card: Tool-Trace button"
         de: "Antwort-Card: Tool-Trace-Button"
       help:
-        en: "Shows the \"🔧 Tool-Trace\" button that expands which tools and sub-agents ran for this answer (visible only to the viewer who expands it). Off: button and section are removed. Default: on."
-        de: "Zeigt den Button „🔧 Tool-Trace“, der aufklappt, welche Tools und Sub-Agenten für diese Antwort gelaufen sind (sichtbar nur für den, der aufklappt). Aus: Button und Abschnitt entfallen. Standard: an."
+        en: "Shows the \"🔧 Tool-Trace\" button that expands which tools and internal helpers ran for this answer (visible only to the viewer who expands it). Off: button and section are removed. Default: on."
+        de: "Zeigt den Button „🔧 Tool-Trace“, der aufklappt, welche Werkzeuge und internen Helfer für diese Antwort gelaufen sind (sichtbar nur für den, der aufklappt). Aus: Button und Abschnitt entfallen. Standard: an."
       required: false
       default: "true"
     - key: "teams_card_memory_disclosure"
@@ -368,8 +370,8 @@ setup:
         en: "Answer card: Direct-line buttons"
         de: "Antwort-Card: Direkt-mit-Buttons"
       help:
-        en: "Shows one \"💬 Direkt mit <Agent>\" button per consulted specialist to re-ask the question directly there. Off: the buttons are removed; the \"🔎 Konsultiert\" transparency chip stays. Default: on."
-        de: "Zeigt pro konsultiertem Spezialisten einen Button „💬 Direkt mit <Agent>“, um die Frage dort direkt erneut zu stellen. Aus: Die Buttons entfallen; der Transparenz-Chip „🔎 Konsultiert“ bleibt. Standard: an."
+        en: "Shows one \"💬 Direkt mit <Agent>\" button per consulted agent to re-ask the question directly there. Off: the buttons are removed; the \"🔎 Konsultiert\" transparency chip stays. Default: on."
+        de: "Zeigt pro befragtem Agenten (Rückfrage) einen Button „💬 Direkt mit <Agent>“, um die Frage dort direkt erneut zu stellen. Aus: Die Buttons entfallen; der Transparenz-Chip „🔎 Konsultiert“ bleibt. Standard: an."
       required: false
       default: "true"
     - key: "teams_card_verbosity_steps"
@@ -385,15 +387,15 @@ setup:
 
 playbook:
   when_to_use: |
-    Der Teams-Channel wird aktiviert, sobald die Microsoft-365-Integration
+    Der Teams-Kanal wird aktiviert, sobald die Microsoft-365-Integration
     (app_id + tenant_id + app_password) konfiguriert ist — oder eine
-    explizite Multi-Bot-Liste in `teams_bots` steht. Endanwender
-    interagieren mit dem Bot über Microsoft Teams; der Channel ownt die
+    explizite Liste von Kanalidentitäten in `teams_bots` steht. Nutzer
+    erreichen Agenten über Microsoft Teams; der Kanal betreibt die
     Bot-Framework-Runtime unter /api/teams/<botSlug>/messages (plus die
     Default-Bot-Aliasse /api/messages und /api/teams/messages) sowie den
     signierten Attachment-Proxy unter /attachments/<key>. Der Bot delegiert
-    jeden User-Turn an den zentralen Orchestrator; Adaptive-Card-Rendering +
-    Roster-Resolution bleiben Channel-intern.
+    jeden Nutzer-Turn an die Agentenlaufzeit des Kerns; Adaptive-Card-Rendering +
+    Roster-Resolution bleiben im Kanal.
 
 permissions:
   # US4 (Conductor Surface) — provisions `ctx.events`; a plugin may only emit an

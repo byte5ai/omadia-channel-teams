@@ -27,11 +27,11 @@ roster + @mention resolution, HMAC-signed attachment persistence, and the
 | Rendering | Adaptive Cards — answer cards, approve/reject cards, Direct-Line buttons, smart follow-up/choice cards. The seven optional answer-card buttons (Tool-Trace, Memory impact, Privacy Guard, Fresh Check, follow-ups, Direct Line, answer-size steps) are individually switchable via the `teams_card_*` setup fields |
 | Roster | Mention + roster resolution (`teamsRoster.ts`, `teamsMentions.ts`) |
 | Attachments | HMAC-signed proxy at `/attachments/<key>`, persisted via `teamsAttachmentStore.ts` |
-| Delegation | Every user turn is delegated to the shared Conductor/orchestrator (`chatAgent@^1` capability) |
+| Delegation | Every user turn is handed to the kernel's agent runtime (`chatAgent@^1` service) |
 | Events | Emits `teams.message.posted` / `teams.mention` on the deny-by-default event catalog |
 | Shared credentials | Reuses the Azure AD app registration owned by [`@omadia/integration-microsoft365`](https://github.com/byte5ai/omadia-m365-connector) — install that first |
 
-This channel is a pure consumer of the orchestrator's `chatAgent` capability
+This channel is a pure consumer of the agent runtime's `chatAgent` service
 and optionally the `microsoft365.graph` service (for attachment downloads and
 roster lookups); it doesn't publish services of its own.
 

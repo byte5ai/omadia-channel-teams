@@ -106,6 +106,63 @@ answers `undefined`; without `asChannelKey` it is the default bot's view, as bef
 cache is keyed by bot and conversation. For a channel thread the members are asked for
 the channel. Each read logs one `[teams-roster] roster …` line with the outcome.
 
+### The member list: status, time and what a member carries
+
+*Simulated* for the status logic. *Docs* and *SDK type* for the fields; which of them a
+real tenant fills was **not** captured.
+
+**Status** (kernel spec B §5.5, byte5ai/omadia#2091). `getRoster(conversationId,
+{ asChannelKey, fresh })` answers with:
+
+| `status` | Meaning | `participants` | `partial` |
+|---|---|---|---|
+| `complete` | every page was read without an error | everybody | `false` |
+| `partial` | some pages were read, then the read failed | what was read | `true` |
+| `unknown` | nothing could be read, or the read came back empty | empty, and **not** an answer | `true` |
+
+- `readAt` is the time the platform answered (ISO 8601 UTC). A cached answer keeps the
+  time of its read, so its age is visible.
+- `statusDetail` gives the reason when the status is not `complete` (HTTP status and the
+  service's text).
+- `fresh: true` bypasses the cache. A failing fresh read answers `unknown`; it never
+  falls back to the older cached list.
+- Cache: a `complete` list is kept five minutes, a `partial` or `unknown` one thirty
+  seconds.
+- `undefined` still means "this bot holds no reference in the conversation". The kernel
+  treats that as unknown.
+- The fields are additive. `partial` is unchanged for a kernel that does not know
+  `status`.
+
+**Where the list comes from.** The Bot Connector's member list
+(`TeamsInfo.getPagedMembers`), read as the asking bot. Graph is not used for it.
+
+| Field of a member | Source | Carried as |
+|---|---|---|
+| `id` (`29:…`, per bot) | Bot Connector | `externalId` |
+| `aadObjectId` | Bot Connector | `userRef.id` (kind `teams-aad`) |
+| `name` | Bot Connector | `userRef.displayName` |
+| `email` | Bot Connector, when sent | `userRef.email` |
+| `userPrincipalName` | Bot Connector, when sent | `userPrincipalName` |
+
+- The SDK type `TeamsChannelAccount` declares `email` and `userPrincipalName` as
+  optional. The Microsoft Learn page for the roster ("Get Teams specific context for
+  your bot", updated 2026-10-13) lists no member fields and no permission, and does not
+  say when the two are present. So: they are passed on whenever the platform sends them,
+  and nothing is derived when it does not.
+- Paging, from the same page: 50 to 500 members per page for teams and channels; "in
+  chats, the full roster is returned by the service".
+- The app package requests `ChatMember.Read.Chat` and `ChannelMember.Read.Group`.
+  Whether the Bot Connector list needs them is not stated on that page.
+- Graph would give an address too: `GET /chats/{id}/members` and
+  `GET /teams/{id}/members` show `email` in their response examples (application
+  permissions `ChatMember.Read.All` or the RSC `ChatMember.Read.Chat`;
+  `TeamMember.Read.Group`, which the app package does **not** request). Neither page
+  says whether `email` can be empty. This plugin does not call them for the roster.
+- **A participant known only from a message has no address.** `activity.from` carries
+  id, Entra object id and name, never a mail address. The first live follow-up stopped
+  with `no_addresses` for that reason: an address has to come from the member list, or
+  from a directory lookup by Entra object id, which this channel does not do.
+
 ## 5. Readiness check
 
 | Finding | Evidence |

@@ -36,10 +36,11 @@ import {
 } from './teamsConversationIds.js';
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
 import type { TeamsConversationRefPersistence } from './teamsConversationRefStore.js';
-import type { TeamsRosterProvider } from './teamsRoster.js';
+import type { TeamsRosterProvider, TeamsRosterRead } from './teamsRoster.js';
 import type {
   ChatParticipant,
   RosterRequestOptions,
+  TeamsConversationRoster,
   FacilitatorDeliveryOutcome,
   SendProviderCapabilities,
   TargetedMention,
@@ -388,7 +389,7 @@ function toParticipant(member: ChatParticipant): ConversationParticipant {
 
 /** The roster provider with the `asChannelKey` option of channel-sdk 0.3.2. */
 export interface TeamsRosterAdapter extends ConversationRosterProvider {
-  getRoster(conversationId: string, opts?: RosterRequestOptions): Promise<ConversationRoster | undefined>;
+  getRoster(conversationId: string, opts?: RosterRequestOptions): Promise<TeamsConversationRoster | undefined>;
 }
 
 /** Conversation ids are long; the log shows enough to tell chats and
@@ -398,13 +399,16 @@ function conversationForLog(conversationId: string): string {
 }
 
 /**
- * SDK roster provider over the existing `TeamsRosterProvider` (5-min cache,
- * RSC-permission soft-fail). Opens a proactive turn on the cached
- * conversation reference; no reference = "roster unknown" (undefined), never
- * an invented roster. An EMPTY member list is reported `partial: true`: every
- * real Teams conversation has at least the requesting bot as a member, so
- * emptiness here is the roster provider's permission/transport soft-fail, not
- * an answer.
+ * SDK roster provider over `TeamsRosterProvider`. Opens a proactive turn on
+ * the cached conversation reference; no reference = `undefined` ("cannot
+ * resolve", which the kernel treats as unknown), never an invented roster.
+ *
+ * HOW COMPLETE (kernel spec B §5.5, #2091). Every answer states `status`
+ * (`complete`, `partial`, `unknown`), `readAt` and, when not complete, why.
+ * A read that failed is `unknown` with no participants, or `partial` with the
+ * ones read before the failure; it is never an empty list presented as the
+ * roster. `opts.fresh` bypasses the cache; a cached answer keeps the time of
+ * its read. `partial` (the older flag) is true unless the status is complete.
  *
  * WHOSE VIEW (#2043). A roster is what ONE bot sees. With
  * `opts.asChannelKey` the reference of exactly that bot is used and the
@@ -419,7 +423,7 @@ function conversationForLog(conversationId: string): string {
  */
 export function createTeamsRosterAdapter(deps: {
   refs: TeamsConversationReferenceCache;
-  roster: Pick<TeamsRosterProvider, 'list'> & Partial<Pick<TeamsRosterProvider, 'listWithOutcome'>>;
+  roster: Pick<TeamsRosterProvider, 'list'> & Partial<Pick<TeamsRosterProvider, 'read'>>;
   sendProactive: TeamsProactiveSend;
 }): TeamsRosterAdapter {
   const log = (conversationId: string, as: string, outcome: string): void => {
@@ -427,7 +431,7 @@ export function createTeamsRosterAdapter(deps: {
   };
   return {
     channelType: 'teams',
-    async getRoster(conversationId: string, opts?: RosterRequestOptions): Promise<ConversationRoster | undefined> {
+    async getRoster(conversationId: string, opts?: RosterRequestOptions): Promise<TeamsConversationRoster | undefined> {
       const asChannelKey = opts?.asChannelKey;
       const botAppId = asChannelKey !== undefined ? parseTeamsBotKey(asChannelKey) : undefined;
       const as = asChannelKey === undefined ? 'default-bot' : (botAppId ? `${TEAMS_BOT_KEY_PREFIX}${botAppId.slice(0, 8)}…` : 'invalid');
@@ -456,34 +460,48 @@ export function createTeamsRosterAdapter(deps: {
           ? cached.ref
           : { ...cached.ref, conversation: { ...cached.ref.conversation, id: bareId } as ConversationReference['conversation'] };
 
-      let members: ChatParticipant[] = [];
-      let problem: string | undefined;
+      let read: Pick<TeamsRosterRead, 'status' | 'participants' | 'readAt' | 'httpStatus' | 'detail' | 'fromCache'> | undefined;
+      let turnFailure: string | undefined;
       try {
         await deps.sendProactive(
           rosterRef,
           async (turnContext) => {
-            if (!deps.roster.listWithOutcome) {
-              members = await deps.roster.list(turnContext);
+            if (deps.roster.read) {
+              read = await deps.roster.read(turnContext, { fresh: opts?.fresh === true });
               return;
             }
-            const read = await deps.roster.listWithOutcome(turnContext);
-            members = read.participants;
-            if (read.outcome === 'refused') {
-              problem = `refused status=${read.status !== undefined ? String(read.status) : 'none'} detail=${read.detail}`;
-            }
+            // A roster source that cannot say how complete its answer is:
+            // a non-empty list is taken as given, an empty one is unknown.
+            const members = await deps.roster.list(turnContext);
+            read = { status: members.length > 0 ? 'complete' : 'unknown', participants: members, readAt: Date.now(), fromCache: false };
           },
           ...(botAppId ? ([{ botAppId }] as const) : ([] as const)),
         );
       } catch (err) {
-        // Asked as one bot, a failed turn is "unknown", not a crash of the
-        // caller. The legacy path keeps throwing, as it always did.
+        // The proactive turn itself failed (credentials, transport). Asked as
+        // one bot that is "unknown", not a crash of the caller. The legacy
+        // path keeps throwing, as it always did.
+        turnFailure = err instanceof Error ? err.message : String(err);
         if (!botAppId) {
-          log(conversationId, as, `refused status=none detail=${err instanceof Error ? err.message : String(err)}`);
+          log(conversationId, as, `status=unknown detail=${turnFailure}`);
           throw err;
         }
-        problem = `refused status=${String((err as { statusCode?: unknown } | null)?.statusCode ?? 'none')} detail=${err instanceof Error ? err.message : String(err)}`;
       }
-      log(conversationId, as, problem ?? `fetched count=${String(members.length)}`);
+      const result = read ?? {
+        status: 'unknown' as const,
+        participants: [],
+        readAt: Date.now(),
+        fromCache: false,
+        detail: turnFailure ?? 'the member list was not read',
+      };
+      log(
+        conversationId,
+        as,
+        `status=${result.status} count=${String(result.participants.length)}` +
+          (result.httpStatus !== undefined ? ` http=${String(result.httpStatus)}` : '') +
+          (result.detail ? ` detail=${result.detail}` : '') +
+          ` readAt=${new Date(result.readAt).toISOString()}${result.fromCache ? ' (cached)' : ''}${opts?.fresh === true ? ' fresh=true' : ''}`,
+      );
 
       const bot = cached.ref.bot;
       const self: ConversationParticipant | undefined = bot
@@ -495,14 +513,39 @@ export function createTeamsRosterAdapter(deps: {
           }
         : undefined;
 
+      const statusDetail =
+        result.status === 'complete'
+          ? undefined
+          : `${result.httpStatus !== undefined ? `HTTP ${String(result.httpStatus)}: ` : ''}${result.detail ?? 'the member list could not be read'}`;
       return {
         conversationType: toSdkConversationType(cached.teamsType) ?? 'direct',
-        participants: members.map(toParticipant),
+        participants: result.participants.map(toParticipant),
         ...(self ? { self } : {}),
-        partial: members.length === 0,
+        // `partial` is the flag kernels before channel-sdk 0.4 read: nothing
+        // may be concluded from an absence unless the read is complete.
+        partial: result.status !== 'complete',
+        status: result.status,
+        readAt: new Date(result.readAt).toISOString(),
+        ...(statusDetail ? { statusDetail } : {}),
       };
     },
   };
+}
+
+/**
+ * The declared capabilities, built by functions and not as object literals at
+ * the provider: the plugin is compiled against whatever `@omadia/channel-sdk`
+ * is installed, and a literal with a key that SDK does not know yet
+ * (`aiLabel` before 0.3.2) is an excess-property error there. 0.36.6 did not
+ * typecheck against the kernel's main branch for exactly that reason. The
+ * values are this plugin's mirror type, which is a superset of every SDK's.
+ */
+function targetedCapabilities(hasDirectPath: boolean): SendProviderCapabilities {
+  return { asChannelKey: hasDirectPath, aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL };
+}
+
+function conversationCapabilities(hasRoster: boolean): SendProviderCapabilities {
+  return { asChannelKey: true, mentions: hasRoster, poll: true, aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL };
 }
 
 /** What a DM "as bot X" needs beyond the legacy path (#2043). */
@@ -639,10 +682,7 @@ export function createTeamsTargetedSendAdapter(deps: {
     // but there would be nothing to deliver with either.
     //   aiLabel       every activity of this provider is built by
     //                 `buildOutgoingActivity`, which attaches the label
-    supports: {
-      asChannelKey: deps.direct !== undefined,
-      aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL,
-    } satisfies SendProviderCapabilities,
+    supports: targetedCapabilities(deps.direct !== undefined),
     // Rest tuple for the same reason as `sendToConversation` below: the third
     // argument exists from channel-sdk 0.3.0 on.
     async sendToUser(
@@ -714,14 +754,9 @@ export function createTeamsConversationSendAdapter(deps: {
     //   asChannelKey  the post goes out as exactly that bot or not at all
     //   mentions      resolved against the chat roster, so only with one
     //   poll          posted as a card; an invalid poll is refused
-    supports: {
-      asChannelKey: true,
-      mentions: deps.roster !== undefined,
-      poll: true,
-      // Text and poll card are built by `buildOutgoingActivity` /
-      // `buildPollActivity`, which attach the label.
-      aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL,
-    } satisfies SendProviderCapabilities,
+    // Text and poll card are built by `buildOutgoingActivity` /
+    // `buildPollActivity`, which attach the AI label.
+    supports: conversationCapabilities(deps.roster !== undefined),
     // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
     // independently of the kernel and is compiled against whatever
     // `@omadia/channel-sdk` is installed. On an SDK that predates
