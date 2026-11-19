@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.38.5
+
+- **The debug log shows both sides of a card click.** With
+  `TEAMS_LOG_OUTGOING_ACTIVITIES=1`, every incoming invoke is logged on the line before
+  its response: `[teams] incoming invoke name=… verb=… id=… replyToId=… conversation=…
+  from=… value=…`. Strings in the value are cut after 200 characters, so free text
+  people wrote is not logged in full. Off by default, as before.
+- **Correction to 0.38.4.** The assumption there (a refresh wiped the error card of a
+  refused submission) is not supported by the captured log of 2026-11-19. Teams web
+  checks `isRequired` itself and shows the input's `errorMessage` ("Bitte eine Option
+  wählen.") without sending the click; the response seen at that time answered the
+  automatic per-person refresh, which follows about a second after a card is shown. A
+  real server-side refusal (consent objection without a reason) kept its error. The
+  0.38.4 change stays: it is harmless and covers a client that does refresh after a
+  refusal.
+
 ## 0.38.4
 
 Two findings of the first live card clicks (0.38.3, 2026-11-19).

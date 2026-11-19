@@ -289,7 +289,9 @@ Each row has a test in `tests/teamsAiMarking.test.ts`.
   which are not model output.
 
 **Capturing an outgoing activity.** With the environment variable
-`TEAMS_LOG_OUTGOING_ACTIVITIES=1` every activity a turn sends or updates is logged as
+`TEAMS_LOG_OUTGOING_ACTIVITIES=1` every incoming invoke (a card click or refresh: name,
+verb, value with strings cut after 200 characters; from 0.38.5) and
+every activity a turn sends or updates is logged as
 `[teams] outgoing path=turn|proactive|direct|update activity={…}`, exactly as the SDK
 hands it to the Bot Connector. The lines contain message text and names, so the flag is
 for a diagnosis, not for normal operation.
