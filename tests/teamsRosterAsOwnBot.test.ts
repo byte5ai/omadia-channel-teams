@@ -117,7 +117,8 @@ describe('#2043 roster asked as the facilitator\'s own bot', () => {
     assert.equal(roster?.self?.userRef.id, MIRA.key, 'self is the asking bot');
     assert.equal(roster?.self?.isBot, true);
     assert.deepEqual(net.asked, [{ as: MIRA.key, conversationId: GROUP_CHAT_ID }]);
-    assert.ok(lines.some((line) => /\[teams-roster\] roster conv=.* as=28:[0-9a-f]{8}… fetched count=3/.test(line)), lines.join('\n'));
+    assert.equal(roster?.status, 'complete');
+    assert.ok(lines.some((line) => /\[teams-roster\] roster conv=.* as=28:[0-9a-f]{8}… status=complete count=3 readAt=/.test(line)), lines.join('\n'));
   });
 
   it('answers undefined when the asked bot holds no reference there, never another bot\'s view', async () => {
@@ -152,10 +153,12 @@ describe('#2043 roster asked as the facilitator\'s own bot', () => {
     const asMira = await h.adapter.getRoster(GROUP_CHAT_ID, { asChannelKey: MIRA.key });
 
     assert.deepEqual(names(asDefault), [], 'the default bot sees nobody');
-    assert.equal(asDefault?.partial, true, 'and says that this is not an answer');
+    assert.equal(asDefault?.status, 'unknown', 'and says that this is not an answer');
+    assert.equal(asDefault?.partial, true);
+    assert.match(asDefault?.statusDetail ?? '', /^HTTP 403: The bot is not part of the conversation roster\.$/);
     assert.deepEqual(names(asMira), [ANNA.name, BERT.name, MIRA.name], 'the cached empty read of the other bot is not reused');
     assert.deepEqual(net.asked.map((call) => call.as), [JONAS.key, MIRA.key]);
-    assert.ok(lines.some((line) => /as=default-bot refused status=403 detail=The bot is not part of the conversation roster\./.test(line)), lines.join('\n'));
+    assert.ok(lines.some((line) => /as=default-bot status=unknown count=0 http=403 detail=The bot is not part of the conversation roster\./.test(line)), lines.join('\n'));
   });
 
   it('without asChannelKey behaves as before: the default bot\'s reference and view', async () => {

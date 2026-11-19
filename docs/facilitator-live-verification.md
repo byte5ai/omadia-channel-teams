@@ -43,7 +43,13 @@ tenant:
 - **Settles:** delivery in channels under `ChannelMessage.Read.Group`, which is
   documented but was never observed.
 
-### M2: edit, delete and reaction under RSC
+### M2: edit, delete and reaction under RSC (done 2026-11-18, settled)
+
+Result (meeting chat and channel thread, see "Recorded run" below): edit and delete
+arrive for messages the bot only saw through RSC, with the id of the original message. A
+reaction arrives only for a message **the bot** posted; a reaction to another person's
+message produces no activity at all. `reactions` therefore stays out of the capability
+snapshot.
 
 - **Do:** in a test group chat with an agent app, post a message without a mention,
   edit it, react to it with a thumbs-up, delete it. Then react to a message **the bot**
@@ -59,7 +65,11 @@ tenant:
   messages are delivered. If they are, `reactions` can be declared in the capability
   snapshot.
 
-### M3: returned message id
+### M3: returned message id (done 2026-11-18, confirmed)
+
+Result: every proactive post returned an id, and each id equals the id the Teams client
+carries for that message (15 posts in the meeting chat, the posts of the channel thread).
+"Copy link" itself was not read from the clipboard.
 
 - **Do:** after one facilitator post, take the stored message id of that post and
   compare it with the id in "Copy link" of the same message in Teams.
@@ -316,13 +326,88 @@ verified only when every "Expected" line was observed.
 4. The same in a Meet-now call, or without the portal subscription.
    - Expected: Mira does not notice until the person writes. This is the stated limit.
 
+## Recorded run: 2026-11-18, byte5 tenant
+
+The record issue #43 asks for. Source: the rollout log of that day and the evaluation
+note; evidence files (handshake texts, database rows, outbox, screenshots) were kept by
+the rollout session under `/tmp/rollout/ev` and `/tmp/rollout/shots` on the operator's
+machine and are **not** in this repository.
+
+| | |
+|---|---|
+| Date | 2026-11-18, 17:30 to 19:20 UTC |
+| Instance | Fly `odoo-bot-middleware` / `odoo-bot-harness`, kernel `sha-4e490e2f` for the runs that passed |
+| Plugins | `@omadia/channel-teams` 0.36.4 (0.36.1 to 0.36.3 for the earlier attempts), `@omadia/agent-facilitator` 1.0.1, `@omadia/integration-microsoft365` 0.9.1 |
+| Teams client | Teams web in Chrome |
+| Who | Marcel Wege's session, driven by the rollout agent session; the only human participant was Marcel |
+| Facilitator | "Mona (Test)" with its own Teams identity, Claude Sonnet 5.5 |
+| Where | a test team's General channel and the chat of a scheduled test meeting |
+
+**Limits of this run.** One human only, so nothing about several participants was
+exercised (completeness with more than one person, two people editing, a late joiner).
+One facilitator bot was active per conversation; "two facilitator bots in one chat" was
+not run. No call was joined (the browser's microphone prompt was not granted), so no
+meeting event was seen.
+
+### Owner steps
+
+| Step | Result | Evidence |
+|---|---|---|
+| M1 channel delivery | **Confirmed** | a message without a mention reached the bot in the channel (`drop non-mention … type=channel`) |
+| M2 edit | **Confirmed** | `messageUpdate eventType=editMessage`, kernel event `edited` revision 1 with the same message id; the edited ballot counted (meeting chat and channel thread) |
+| M2 delete | **Confirmed** | `messageDelete eventType=softDeleteMessage` with the same id, kernel event `deleted` revision 1 |
+| M2 reaction to the bot's message | **Confirmed** | `messageReaction`, kernel event `reaction {"name":"like"}` |
+| M2 reaction to a person's message | **Not delivered** | no log line, no event. This is the answer to the open question |
+| M3 returned message id | **Confirmed** | see M3 above |
+| M4 first-contact errors | **Confirmed** | product path: the report to the initiator failed with `app_not_installed` (no personal install) and the facilitator said so in the group |
+| M5 delivery in the meeting chat | **Confirmed** | every message without a mention was recorded (`recorded for the engine, no turn`) |
+| M5 meeting events, portal subscription | **Not run** | needs a person in the call |
+| M5 consent upgrade (`repairConsent`) | **Not run** | no install from an earlier package was left to upgrade |
+| M6 tenant RSC switch | Read on 2026-11-18 | unchanged |
+
+### Scenarios
+
+| # | Scenario | Result |
+|---|---|---|
+| 1 | Message without mention | **Passed.** "weiter", "einverstanden", "Status" and the ballot, all without a mention, were stored as kernel events with the author Teams states and answered within about a second |
+| 2 | Missing consent | **Not run** as a scenario. Seen instead: a team install was refused by Graph until 0.36.2 removed one RSC permission (see "RSC permissions: install proof") |
+| 3 | First-contact direct message | **Passed for the refusal**: `app_not_installed`, said in the group. A successful first-contact DM was **not run** |
+| 4 | Blocked direct message | **Not run** |
+| 5 | Restart | **Partly.** A running facilitation survived a re-activation of the engine plugin and closed at its deadline. A middleware restart during a facilitation was not run |
+| 6 | Two facilitator bots in one chat | **Not run.** A second agent bot in the same chat got the same messages and dropped them at its mention gate, as it should |
+| 7 | Scheduled meeting chat | **Passed for the chat**: start by mention, handshake as the facilitator's own bot after 8 s, result and close in the chat, subscription released. Meeting start / end and participant events: not run |
+| 8 | Poll answers | **Not run** (the runs voted by chat message) |
+| 9 | A participant joining late | **Not run** |
+| 10 | Channel thread | **Passed.** The handshake landed as the first reply under the root post; a reply in the thread arrived under the thread id and was recorded; a new root post in the same channel was not taken; the subscription key was the thread id |
+
+### What the run found
+
+- A facilitator could not be started at all until 0.36.3 (the turn origin lacked
+  `conversationType`) and 0.36.4 (the kernel derived the conversation id from the
+  session scope). Both are fixed and were verified live.
+- **The participant list of the handshake was empty**, and with it a reminder reminded
+  nobody. Cause on this side: the roster was read as the instance's default bot (fixed
+  in 0.36.5) and a failed read came back as an empty list (fixed in 0.37.0: the status
+  is then `unknown`). Not verified live since.
+- Engine posts carried no AI label (fixed in 0.36.5 and 0.36.6). Not looked at in a
+  Teams client since.
+- The follow-up meeting ended with `no_addresses`: the participant had no mail address,
+  because participants came from message events, which carry none. Addresses can only
+  come from the member list (see `teams-meeting-apis.md`, "The member list").
+- The log lines for edit, delete and reaction cut the conversation id at 24 characters,
+  so the thread part could not be read (fixed in 0.36.6).
+
 ## After the run
 
 - Every "Expected" that did not hold becomes an issue in
   `byte5ai/omadia-channel-teams` with the log lines.
-- Still open after 2026-11-18: M2 (edit, delete, reaction), M3 (returned id), the
-  product path of M4, and the second half of M5 (consent upgrade, meeting events,
-  portal subscription). They need the 0.36.1 build on the instance.
+- Still open after the run of 2026-11-18: the second half of M5 (consent upgrade,
+  meeting events, portal subscription), and the scenarios marked "Not run" above:
+  missing consent, a successful first-contact DM, a blocked DM, a middleware restart
+  during a facilitation, two facilitator bots in one chat, poll answers, a late joiner.
+  Everything with more than one human participant is unverified.
+- Not verified live since they were fixed: the participant list of the handshake
+  (0.36.5, 0.37.0), the AI label on engine posts (0.36.5, 0.36.6).
 - In `teams-meeting-apis.md`, change the label of each settled row from "Open" or
   "Simulated" to "Live" with the date.
 - Acceptance criterion 13 of the kernel spec and the criteria of #43 and #44 that need

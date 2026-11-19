@@ -293,7 +293,28 @@ export interface ChatTurnInput {
  */
 export interface RosterRequestOptions {
   asChannelKey?: string;
+  /** Bypass any cache and ask the platform now (kernel spec B §5.5, #2091). */
+  fresh?: boolean;
 }
+
+/** How complete a roster answer is (kernel spec B §5.5, #2091). */
+export type RosterStatus = 'complete' | 'partial' | 'unknown';
+
+/**
+ * `ConversationRoster` with the roster status of #2091, in the shape agreed
+ * with the kernel for `@omadia/channel-sdk` (additive there):
+ *   status        how complete `participants` is
+ *   readAt        ISO 8601 UTC, when the platform answered this list; a
+ *                 cached answer keeps the time of its read
+ *   statusDetail  operator-readable reason when the status is not `complete`
+ * `partial` stays and is true unless the status is `complete`, so a kernel
+ * that does not know `status` keeps working.
+ */
+export type TeamsConversationRoster = import('@omadia/channel-sdk').ConversationRoster & {
+  status?: RosterStatus;
+  readAt?: string;
+  statusDetail?: string;
+};
 
 /**
  * `TurnOrigin` with the field `@omadia/channel-sdk` 0.4.0 adds (#2043):

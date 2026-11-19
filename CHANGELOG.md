@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.37.0
+
+Roster status as the kernel spec defines it (spec B §5.5, byte5ai/omadia#2091, issue
+#43). Independent of the kernel: every new field is additive, and the plugin compiles
+against the channel-sdk of the kernel's main branch (0.3.1) as well as the newer one.
+
+- **Roster status.** `getRoster` answers with `status` (`complete`, `partial`,
+  `unknown`), `readAt` (when the platform answered) and, when not complete,
+  `statusDetail`. `partial` stays and is true unless the status is `complete`.
+- **An unreadable roster is `unknown`, never an empty list.** A failed read used to
+  come back as "no members" (and the pages already read were discarded). Now nothing
+  read is `unknown`, a read that failed part way is `partial` with what was read, and a
+  read that comes back empty is `unknown` too.
+- **`fresh: true`** bypasses the cache and reads now. A failing fresh read answers
+  `unknown`; it does not fall back to the cached list.
+- **Cache**: a `complete` list is kept five minutes as before; a `partial` or `unknown`
+  read only thirty seconds. A cached answer keeps the time of its read.
+- **Address fields**: `email` and `userPrincipalName` of a member are passed on whenever
+  the member list sends them (they already were; now covered by a test and documented).
+  Nothing is derived when the platform sends none.
+- **Compiles against the older SDK again.** 0.36.6 did not typecheck against the
+  kernel's main branch (`supports.aiLabel` was unknown there). The capability
+  declarations no longer depend on the installed SDK's type, and
+  `scripts/typecheck-against-sdk.mjs` checks the plugin against any SDK checkout.
+- **Live run recorded**: `docs/facilitator-live-verification.md` holds the results of
+  the run of 2026-11-18 per owner step and scenario, with what was not run.
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
+Terminology (`docs/terminology.md` of the kernel), user-visible texts only:
+
+| Where | Before | Now |
+|---|---|---|
+| manifest description | "First-Class-Channel für Omadia" | "Kanal für omadia" |
+| setup guide, en | "Multiple bots"; "several Teams bots — one … per omadia agent" | "Several channel identities"; each bot is the **channel identity** of one agent |
+| setup guide, de | "Mehrere Bots" | "Mehrere Kanalidentitäten"; jeder Bot ist die **Kanalidentität** eines Agenten |
+| field label `teams_bots` | "Teams Bots (JSON)" | "Teams-Kanalidentitäten (Bots, JSON)" (en guide: "Teams channel identities (bots, JSON)") |
+| field help `teams_bots` | "Bot-Identitäten" | "Kanalidentitäten (ein Bot je Agent)" |
+| Tool-Trace help | "sub-agents" / "Sub-Agenten", "Tools" | "internal helpers" / "interne Helfer", "Werkzeuge" |
+| Direct-line help | "consulted specialist" / "konsultiertem Spezialisten" | "consulted agent" / "befragtem Agenten (Rückfrage)" |
+| de texts | "User", "operator-freundlich", "Operator-UI", "Endanwender" | "Nutzer", "für Administratoren lesbar", "Administrationsoberfläche", "Nutzer" |
+| de texts | "dieser Channel", "der Channel", "Teams-Channel" | "dieser Kanal", "der Kanal", "Teams-Kanal" |
+| playbook, de | "delegiert … an den zentralen Orchestrator" | "… an die Agentenlaufzeit des Kerns" |
+| README | "delegated to the shared Conductor/orchestrator"; "the orchestrator's `chatAgent` capability" | "handed to the kernel's agent runtime"; "the agent runtime's `chatAgent` service" |
+
+Not renamed: the config key `teams_bots` and the route `/api/teams/<botSlug>/messages`
+(identifiers of existing installs), product names ("Azure Bot", "Bot Framework"), and
+the button labels on answer cards ("Memory-Auswirkung", "Konsultiert", "Tool-Trace"),
+which are card texts in code and belong to a separate change.
+
 ## 0.36.6
 
 One AI marking per message (kernel byte5ai/omadia#2098, `@omadia/channel-sdk` 0.3.2). In
