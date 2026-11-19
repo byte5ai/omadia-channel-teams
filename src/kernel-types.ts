@@ -336,6 +336,15 @@ export type TeamsTurnOrigin = TurnOrigin & {
    * is NOT set by this channel: it has knowledge-graph meaning.)
    */
   readonly speaker?: { readonly kind: string; readonly id: string; readonly displayName?: string };
+  /**
+   * Kernel K4.8 — the id of the message this turn answers, the SAME id the
+   * message event of that activity carries as `messageId`
+   * (`emitConversationMessage`), so the kernel can find the stored event of
+   * a turn. For a message: the activity id. For an `Action.Submit` card
+   * click: the id of the card message (`replyToId`), as on its `card_answer`
+   * event.
+   */
+  readonly messageId?: string;
 };
 
 /**

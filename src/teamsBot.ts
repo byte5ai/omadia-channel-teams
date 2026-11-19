@@ -24,7 +24,7 @@ import type {
   TurnOrigin,
 } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
-import { isBotMentioned, type TeamsConversationMessages } from './teamsConversationMessages.js';
+import { inboundMessageId, isBotMentioned, type TeamsConversationMessages } from './teamsConversationMessages.js';
 import type { TeamsMeetingSessions } from './teamsMeetingSessions.js';
 import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { parsePollAnswerValue } from './teamsPollCard.js';
@@ -317,6 +317,9 @@ export function teamsTurnOrigin(
       | undefined;
     readonly channelData?: unknown;
     readonly from?: { readonly aadObjectId?: string | undefined; readonly name?: string | undefined } | undefined;
+    readonly id?: string | undefined;
+    readonly replyToId?: string | undefined;
+    readonly value?: unknown;
   },
   sessionScope: string,
   userId: string | undefined,
@@ -364,11 +367,17 @@ export function teamsTurnOrigin(
       : undefined;
   const channelConversationId =
     typeof rawConversationId === 'string' && rawConversationId.trim().length > 0 ? rawConversationId : undefined;
+  // Kernel K4.8 — `messageId`: the message this turn answers, by the id its
+  // message event carries (`inboundMessageId`, the one function both use).
+  // Both callers pass the ORIGINAL inbound activity; a detached turn captures
+  // the origin before it continues proactively, where the activity has no id.
+  const messageId = inboundMessageId(activity);
   return {
     channelType: 'teams',
     scope,
     ...(conversationType ? { conversationType } : {}),
     ...(channelConversationId ? { channelConversationId } : {}),
+    ...(messageId ? { messageId } : {}),
     ...(speaker ? { speaker } : {}),
     ...(teamId ? { container: { kind: 'team' as const, id: teamId } } : {}),
     ...(principal ? { principal } : {}),

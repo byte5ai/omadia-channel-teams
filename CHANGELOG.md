@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.40.0
+
+- **The turn origin names the message** (kernel K4.8, `TurnOrigin.messageId`,
+  additive). Every turn this channel starts (group chat, channel thread, meeting chat,
+  1:1) states the id of the message it answers: the same id the message event of that
+  activity carries as `messageId`, computed by one function for both, so the kernel can
+  find the stored event of a turn.
+  - A message: its activity id. In a channel thread that is the reply's own id, never
+    the thread root; `channelConversationId` of the origin equals `conversationId` of
+    the event (the per-thread id).
+  - An `Action.Submit` card click that starts a turn: the id of the card message, as on
+    its `card_answer` event. That id is shared by every click on that card.
+  - A detached turn (card clicks that continue proactively) keeps the id of the original
+    activity: the origin is captured before the continuation.
+- A kernel that does not know the field ignores it. `compat.core` unchanged.
+
 ## 0.39.0
 
 T2 of the spec alignment (byte5ai/omadia#2043, #2089, #2091): what the kernel's K4

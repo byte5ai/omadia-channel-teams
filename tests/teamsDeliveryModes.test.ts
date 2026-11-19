@@ -408,3 +408,75 @@ describe('#2043 criterion 60: readiness of a linked meeting chat is its own chec
     assert.deepEqual(report.missing.map((issue) => issue.code), ['app_not_installed', 'cannot_post']);
   });
 });
+
+describe('K4.8 the turn origin names the message, by the id its message event carries', () => {
+  /** One activity, delivered twice: once where the kernel takes the event
+   *  and a turn runs too (`addressed`), so both ids can be compared. */
+  async function eventAndOrigin(activity: Parameters<ReturnType<typeof simulatedBot>['deliver']>[0], conversationId: string) {
+    const kernel = new SimulatedKernel();
+    kernel.subscribe(conversationId, MIRA, 'addressed');
+    const sim = simulatedBot(kernel);
+    await sim.deliver(activity);
+    assert.equal(kernel.events.length, 1, 'one event');
+    assert.equal(sim.origins.length, 1, 'one turn');
+    return { event: kernel.events[0], origin: sim.origins[0] as { messageId?: string; channelConversationId?: string } };
+  }
+
+  it('group chat: the activity id', async () => {
+    const mention = messageActivity({ bot: MIRA, from: ANNA, text: 'Stand?', mention: true });
+    const { event, origin } = await eventAndOrigin(mention, GROUP_CHAT_ID);
+    assert.equal(origin.messageId, mention.id);
+    assert.equal(origin.messageId, event?.messageId);
+  });
+
+  it('channel thread reply: the reply\'s own id, never the thread root; conversation ids match too', async () => {
+    const ROOT = '1731930001000';
+    const THREAD = channelThreadId(ROOT);
+    const reply = {
+      ...messageActivity({ bot: MIRA, from: ANNA, text: 'Stand?', mention: true, conversationId: THREAD, conversationType: 'channel' }),
+      replyToId: ROOT,
+    };
+    const { event, origin } = await eventAndOrigin(reply, THREAD);
+    assert.equal(origin.messageId, reply.id);
+    assert.notEqual(origin.messageId, ROOT);
+    assert.equal(origin.messageId, event?.messageId);
+    assert.equal(origin.channelConversationId, event?.conversationId);
+  });
+
+  it('meeting chat and 1:1: the activity id', async () => {
+    const inMeeting = messageActivity({ bot: MIRA, from: ANNA, text: 'Stand?', mention: true, conversationId: MEETING_CHAT_ID });
+    const meeting = await eventAndOrigin(inMeeting, MEETING_CHAT_ID);
+    assert.deepEqual([meeting.origin.messageId, meeting.event?.messageId], [inMeeting.id, inMeeting.id]);
+
+    const DM = directConversationId(`${MIRA.appId}|${ANNA.aadObjectId}`);
+    const privately = messageActivity({ bot: MIRA, from: ANNA, text: 'Stand?', conversationId: DM, conversationType: 'personal' });
+    const direct = await eventAndOrigin(privately, DM);
+    assert.deepEqual([direct.origin.messageId, direct.event?.messageId], [privately.id, privately.id]);
+  });
+
+  it('a turn is named also where the kernel takes no event (no facilitation)', async () => {
+    const kernel = new SimulatedKernel();
+    const sim = simulatedBot(kernel);
+    const mention = messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true });
+
+    await sim.deliver(mention);
+
+    assert.deepEqual(kernel.events, []);
+    assert.equal((sim.origins[0] as { messageId?: string }).messageId, mention.id);
+  });
+
+  it('an Action.Submit click that starts a turn: the card message, as on its card_answer event', async () => {
+    const CARD = '1731930009500';
+    const click = cardSubmitActivity({ bot: MIRA, from: ANNA, cardMessageId: CARD, value: { type: 'followup', text: 'Mehr Details' } });
+    const kernel = new SimulatedKernel();
+    kernel.subscribe(GROUP_CHAT_ID, MIRA, 'addressed');
+    const sim = simulatedBot(kernel);
+
+    await sim.deliver(click);
+
+    assert.deepEqual(kernel.events.map((e) => [e.kind, e.messageId]), [['card_answer', CARD]]);
+    // Whether this click starts a turn is the card's business; if it does,
+    // the origin names the same message as the event.
+    for (const origin of sim.origins as { messageId?: string }[]) assert.equal(origin.messageId, CARD);
+  });
+});
