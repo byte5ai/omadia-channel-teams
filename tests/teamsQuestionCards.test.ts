@@ -1113,3 +1113,24 @@ describe('#2089 question cards: findings of the first live clicks (0.38.4)', () 
     assert.deepEqual(h.kernel.events, []);
   });
 });
+
+describe('#2089 question cards under addressed delivery (a facilitation in follow-up)', () => {
+  it('a click is handed to the kernel in addressed mode, and gets "nicht mehr aktiv" once the kernel asks for nothing', async () => {
+    const h = harness({ subscribed: false });
+    h.kernel.subscribe(GROUP_CHAT_ID, MIRA, 'addressed');
+    const { content, messageId } = await h.post(SINGLE);
+
+    const own = await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'b' });
+
+    assert.ok(isCard(own) && textOf(own).includes('Deine Antwort'));
+    assert.deepEqual(h.kernel.events.map((e) => [e.kind, e.messageId, e.cardAnswer?.cardId, e.author.id]), [
+      ['card_answer', messageId, 'c-single', ANNA.aadObjectId],
+    ]);
+
+    h.kernel.unsubscribe(GROUP_CHAT_ID, MIRA);
+    const late = await h.click(BERT, messageId, { ...h.actionData(content), q0: 'a' });
+
+    assert.equal(late.value, 'Diese Abstimmung ist nicht mehr aktiv.');
+    assert.equal(h.kernel.events.length, 1);
+  });
+});

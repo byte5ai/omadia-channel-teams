@@ -24,7 +24,7 @@ import type {
   TurnOrigin,
 } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
-import type { TeamsConversationMessages } from './teamsConversationMessages.js';
+import { isBotMentioned, type TeamsConversationMessages } from './teamsConversationMessages.js';
 import type { TeamsMeetingSessions } from './teamsMeetingSessions.js';
 import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { parsePollAnswerValue } from './teamsPollCard.js';
@@ -1062,15 +1062,7 @@ export class TeamsBot extends TeamsActivityHandler {
    * was addressed at us).
    */
   private isMentioned(activity: TurnContext['activity']): boolean {
-    const recipientId = activity.recipient?.id;
-    if (!recipientId) return false;
-    const entities = activity.entities ?? [];
-    for (const entity of entities) {
-      if (entity.type !== 'mention') continue;
-      const mentioned = (entity as { mentioned?: { id?: string } }).mentioned;
-      if (mentioned?.id === recipientId) return true;
-    }
-    return false;
+    return isBotMentioned(activity);
   }
 
   private async handleMessage(context: TurnContext): Promise<void> {
@@ -1105,8 +1097,8 @@ export class TeamsBot extends TeamsActivityHandler {
     // no chat turn starts, not for a mention and not for a card click
     // either. The subscription is per bot AND conversation: another bot in
     // the same chat is not subscribed and keeps the gate below.
-    const isSubscribed = this.conversationMessages?.isSubscribed(context.activity) === true;
-    if (isSubscribed) {
+    const delivery = this.conversationMessages?.delivery(context.activity) ?? 'none';
+    if (delivery === 'all') {
       if (isCardAction) {
         this.conversationMessages?.emitCardAnswer(context.activity);
       } else {
@@ -1116,6 +1108,27 @@ export class TeamsBot extends TeamsActivityHandler {
         `[teams] recorded for the engine, no turn conv=${context.activity.conversation?.id ?? '-'} type=${conversationType}`,
       );
       return;
+    }
+    // #2089 — `addressed` (a facilitation in follow-up): the mention gate
+    // stays and the ordinary turn runs as without a facilitation. What
+    // addresses the bot is ALSO handed to the kernel as an event: a mention,
+    // a reply (also without a mention: it then is an event and no turn), a
+    // card click, and every message of the bot's own 1:1 chat. The adapter
+    // posts nothing for an event; whatever is posted for this message is the
+    // turn's one answer below, or the engine's own post.
+    if (delivery === 'addressed') {
+      const reason = isCardAction ? 'card' : this.conversationMessages?.addressedReason(context.activity);
+      const isRecorded =
+        reason === undefined
+          ? false
+          : isCardAction
+            ? this.conversationMessages?.emitCardAnswer(context.activity) === true
+            : this.conversationMessages?.emitCreated(context.activity) === true;
+      if (isRecorded) {
+        console.error(
+          `[teams] recorded for the engine (addressed: ${reason ?? '-'}) conv=${context.activity.conversation?.id ?? '-'} type=${conversationType}`,
+        );
+      }
     }
     // A poll click is an answer for the engine, never a question for the
     // agent: it ends here also when nobody is subscribed any more.

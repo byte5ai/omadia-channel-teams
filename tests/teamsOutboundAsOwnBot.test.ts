@@ -293,7 +293,13 @@ describe('#43 sendToUser as the own bot', () => {
 
     assert.deepEqual(connector.opened, [{ asBot: MIRA.key, userId: ANNA.aadObjectId }]);
     assert.equal(connector.sent.length, 1);
-    assert.deepEqual(outcome, { outcome: 'delivered', messageId: connector.sent[0]?.id });
+    // The 1:1 conversation the message went into is stated (0.39.0): with the
+    // message id it is what a later private reply (a quote) refers to.
+    assert.deepEqual(outcome, {
+      outcome: 'delivered',
+      messageId: connector.sent[0]?.id,
+      conversationId: directConversationId(`${MIRA.appId}|${ANNA.aadObjectId}`),
+    });
     assert.equal(connector.sent[0]?.asBot, MIRA.key);
   });
 
