@@ -979,7 +979,8 @@ export function createTeamsConversationSendAdapter(deps: {
      * #2089 — change a posted card: into its closed form (the engine's
      * result, no inputs) or into a corrected open card with the same id.
      * `PUT …/activities/{id}` on the stored activity id, as the bot that
-     * posted it. Never as another bot; a failed update is reported and the
+     * posted it, and only for a message that bot posted as a question card
+     * in that conversation. A failed or refused update is reported and the
      * engine posts its result as text, which it does anyway.
      */
     async updateCard(conversationId, cardMessageId, update, opts): Promise<CardUpdateOutcome> {
@@ -1000,13 +1001,41 @@ export function createTeamsConversationSendAdapter(deps: {
         reportBotKeyPrefixedConversationId(conversationId, 'card update');
         return { outcome: 'unreachable', code: 'no_binding', message: botKeyPrefixedConversationMessage(conversationId) };
       }
+      // ONLY a question card that THIS bot posted, in THIS conversation. The
+      // kernel keeps no record of posted cards and checks identity and
+      // subscription only, so this is the one place that knows: an id that
+      // is another bot's card, a text message, or anything this process did
+      // not post as a card is refused. (Teams would refuse another bot's
+      // message itself, but would happily turn this bot's own text message
+      // into a card.)
+      const posted = cards.findByMessage(botAppId, cardMessageId);
+      if (!posted) {
+        return {
+          outcome: 'unreachable',
+          code: 'not_permitted',
+          message: `'${cardMessageId}' is not a question card that bot '${botAppId}' posted (cards are remembered per bot until the Teams channel restarts)`,
+        };
+      }
+      if (bareConversationId(posted.conversationId) !== bareConversationId(conversationId)) {
+        return {
+          outcome: 'unreachable',
+          code: 'not_permitted',
+          message: `the question card '${posted.card.cardId}' was posted into another conversation than '${conversationId}'`,
+        };
+      }
       let activity: Partial<Activity>;
       if (update.state === 'open') {
         const problem = questionCardProblem(update.card);
         if (problem) return { outcome: 'unreachable', code: 'channel_error', message: `invalid question card: ${problem}` };
+        if (update.card.cardId !== posted.card.cardId) {
+          return {
+            outcome: 'unreachable',
+            code: 'channel_error',
+            message: `a corrected card keeps its id: the posted card is '${posted.card.cardId}', the update names '${update.card.cardId}'`,
+          };
+        }
         activity = buildQuestionCardActivity(update.card);
       } else {
-        const posted = cards.findByMessage(botAppId, cardMessageId);
         activity = {
           type: 'message',
           attachments: [
@@ -1015,7 +1044,7 @@ export function createTeamsConversationSendAdapter(deps: {
                 title: update.title,
                 resultLines: update.resultLines,
                 closedAt: update.closedAt,
-                ...(posted?.card.locale ? { locale: posted.card.locale } : {}),
+                ...(posted.card.locale ? { locale: posted.card.locale } : {}),
               }),
             ),
           ],
@@ -1045,15 +1074,12 @@ export function createTeamsConversationSendAdapter(deps: {
       if (update.state === 'open') {
         cards.register({ card: update.card, conversationId, botAppId, messageId: cardMessageId });
       } else {
-        const posted = cards.findByMessage(botAppId, cardMessageId);
-        if (posted) {
-          cards.markClosed(botAppId, posted.card.cardId, {
-            title: update.title,
-            resultLines: update.resultLines,
-            closedAt: update.closedAt,
-            ...(posted.card.locale ? { locale: posted.card.locale } : {}),
-          });
-        }
+        cards.markClosed(botAppId, posted.card.cardId, {
+          title: update.title,
+          resultLines: update.resultLines,
+          closedAt: update.closedAt,
+          ...(posted.card.locale ? { locale: posted.card.locale } : {}),
+        });
       }
       return { outcome: 'updated' };
     },

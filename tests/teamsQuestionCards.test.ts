@@ -13,7 +13,12 @@ import {
   TeamsQuestionCards,
 } from '@omadia/channel-teams';
 
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { QuestionCard } from '../src/kernel-types.js';
+import { readCardAnswerFields } from './support/kernelCardAnswers.js';
 
 import {
   ANNA,
@@ -654,8 +659,70 @@ describe('#2089 question cards: updateCard', () => {
 
     assert.deepEqual([notABot.outcome, elsewhere.outcome, failed.outcome], ['unreachable', 'unreachable', 'unreachable']);
     assert.equal(notABot.outcome === 'unreachable' ? notABot.code : '', 'not_permitted');
-    assert.equal(elsewhere.outcome === 'unreachable' ? elsewhere.code : '', 'no_binding');
+    assert.equal(elsewhere.outcome === 'unreachable' ? elsewhere.code : '', 'not_permitted', 'the card was posted into another conversation');
     assert.match(failed.outcome === 'unreachable' ? failed.message : '', /The message was deleted\./);
+    assert.deepEqual(h.connector.updated, []);
+  });
+
+  it('updates only a question card that the same bot posted: not another bot\'s card, not a text message', async () => {
+    // The kernel keeps no record of posted cards; it checks identity and
+    // subscription. Which message is a card of which bot is known only here.
+    const h = harness();
+    const closed = { state: 'closed' as const, title: 't', resultLines: ['r'], closedAt: '2026-11-19T10:05:00.000Z' };
+    const open = { state: 'open' as const, card: { ...SINGLE, proposalVersion: 3 } };
+
+    // Mira posts a text and a card; Jonas posts a card of his own.
+    await h.post(SINGLE, 'Bitte stimmt ab.');
+    const miraText = h.connector.sent[0]?.id ?? '';
+    const miraCard = h.connector.sent[1]?.id ?? '';
+    const jonas = await h.provider.sendToConversation(GROUP_CHAT_ID, { text: '', card: { ...SINGLE, cardId: 'c-jonas' } } as never, { asChannelKey: JONAS.key });
+    const jonasCard = jonas.outcome === 'delivered' ? (jonas.cardMessageId ?? '') : '';
+    assert.ok(miraText.length > 0 && miraCard.length > 0 && jonasCard.length > 0);
+
+    const refused = [
+      await h.provider.updateCard(GROUP_CHAT_ID, jonasCard, closed, { asChannelKey: MIRA.key }),
+      await h.provider.updateCard(GROUP_CHAT_ID, jonasCard, open, { asChannelKey: MIRA.key }),
+      await h.provider.updateCard(GROUP_CHAT_ID, miraCard, closed, { asChannelKey: JONAS.key }),
+      await h.provider.updateCard(GROUP_CHAT_ID, miraText, closed, { asChannelKey: MIRA.key }),
+      await h.provider.updateCard(GROUP_CHAT_ID, miraText, open, { asChannelKey: MIRA.key }),
+      await h.provider.updateCard(GROUP_CHAT_ID, '1700000000000', closed, { asChannelKey: MIRA.key }),
+    ];
+
+    for (const outcome of refused) {
+      assert.equal(outcome.outcome, 'unreachable');
+      assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'not_permitted');
+      assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /is not a question card that bot/);
+    }
+    assert.deepEqual(h.connector.updated, [], 'no message was touched');
+
+    // Each bot can still update its own card.
+    assert.deepEqual(await h.provider.updateCard(GROUP_CHAT_ID, miraCard, closed, { asChannelKey: MIRA.key }), { outcome: 'updated' });
+    assert.deepEqual(await h.provider.updateCard(GROUP_CHAT_ID, jonasCard, closed, { asChannelKey: JONAS.key }), { outcome: 'updated' });
+    assert.deepEqual(h.connector.updated.map((update) => [update.asBot, update.id]), [[MIRA.key, miraCard], [JONAS.key, jonasCard]]);
+  });
+
+  it('a corrected card keeps its id', async () => {
+    const h = harness();
+    const { messageId } = await h.post(SINGLE);
+    const outcome = await h.provider.updateCard(GROUP_CHAT_ID, messageId, { state: 'open', card: { ...SINGLE, cardId: 'c-other' } }, { asChannelKey: MIRA.key });
+    assert.equal(outcome.outcome, 'unreachable');
+    assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /a corrected card keeps its id/);
+    assert.deepEqual(h.connector.updated, []);
+  });
+
+  it('after a restart the registry is empty: an update is refused and the engine posts its result as text', async () => {
+    const h = harness();
+    const { messageId } = await h.post(SINGLE);
+    const restarted = createTeamsConversationSendAdapter({ refs: h.refs, sendProactive: h.connector.sendProactive, cards: new TeamsQuestionCards() });
+
+    const outcome = await restarted.updateCard(
+      GROUP_CHAT_ID,
+      messageId,
+      { state: 'closed', title: 't', resultLines: ['r'], closedAt: '2026-11-19T10:05:00.000Z' },
+      { asChannelKey: MIRA.key },
+    );
+
+    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'not_permitted');
     assert.deepEqual(h.connector.updated, []);
   });
 
@@ -665,5 +732,130 @@ describe('#2089 question cards: updateCard', () => {
     const outcome = await h.provider.updateCard(GROUP_CHAT_ID, messageId, { state: 'open', card: { ...SINGLE, questions: [] } }, { asChannelKey: MIRA.key });
     assert.equal(outcome.outcome, 'unreachable');
     assert.deepEqual(h.connector.updated, []);
+  });
+});
+
+describe('#2089 question cards: what is emitted passes the kernel\'s check', () => {
+  // The kernel refuses the WHOLE event when `answers` is not in the
+  // contract's form. `readCardAnswerFields` is the kernel's function, copied
+  // (tests/support/kernelCardAnswers.ts).
+  const forms: { name: string; card: QuestionCard; data: Json; from?: SimUser; action?: string }[] = [
+    { name: 'single choice', card: SINGLE, data: { q0: 'b' } },
+    {
+      name: 'multiple choice',
+      card: { cardId: 'k-multi', title: 't', questions: [{ id: 'q', label: 'l', kind: 'multiple_choice', options: OPTIONS }] },
+      data: { q0: 'a,c' },
+    },
+    {
+      name: 'ranking',
+      card: { cardId: 'k-rank', title: 't', questions: [{ id: 'q', label: 'l', kind: 'ranking', options: OPTIONS }] },
+      data: { 'q0.r1': 'c', 'q0.r2': 'a', 'q0.r3': 'b' },
+    },
+    {
+      name: 'ranking of the top two',
+      card: { cardId: 'k-rank2', title: 't', questions: [{ id: 'q', label: 'l', kind: 'ranking', options: OPTIONS, ranks: 2 }] },
+      data: { 'q0.r1': 'c', 'q0.r2': 'a' },
+    },
+    { name: 'consent, agree', card: { cardId: 'k-agree', title: 't', questions: [{ id: 'q', label: 'l', kind: 'consent' }] }, data: { q0: 'agree' } },
+    {
+      name: 'consent, objection with a reason',
+      card: { cardId: 'k-object', proposalId: 'p-1', proposalVersion: 0, title: 't', questions: [{ id: 'q', label: 'l', kind: 'consent' }] },
+      data: { q0: 'object', 'q0.reason': 'Zu früh.' },
+    },
+    {
+      name: 'assignment, volunteer',
+      card: { cardId: 'k-self', title: 't', questions: [{ id: 'q', label: 'l', kind: 'assignment', candidates: 'conversation_members' }] },
+      data: {},
+      action: 'Ich übernehme das',
+    },
+    {
+      name: 'assignment, people picker',
+      card: { cardId: 'k-pick', title: 't', questions: [{ id: 'q', label: 'l', kind: 'assignment', candidates: 'conversation_members' }] },
+      data: { q0: BERT.aadObjectId },
+    },
+    {
+      name: 'assignment, fixed list',
+      card: { cardId: 'k-list', title: 't', questions: [{ id: 'q', label: 'l', kind: 'assignment', candidates: [{ id: 'u1', label: 'Anna' }, { id: BERT.aadObjectId, label: 'Bert' }] }] },
+      data: { q0: 'u1' },
+    },
+    {
+      name: 'free text, the longest the adapter accepts',
+      card: { cardId: 'k-text', title: 't', questions: [{ id: 'q', label: 'l', kind: 'text', maxLength: 4000 }] },
+      data: { q0: 'ä'.repeat(4000) },
+    },
+    {
+      name: 'questionnaire with five questions',
+      card: {
+        cardId: 'k-five',
+        proposalId: 'p-5',
+        proposalVersion: 7,
+        title: 't',
+        questions: [
+          { id: 'q1', label: 'l', kind: 'single_choice', options: OPTIONS },
+          { id: 'q2', label: 'l', kind: 'multiple_choice', options: OPTIONS },
+          { id: 'q3', label: 'l', kind: 'ranking', options: OPTIONS },
+          { id: 'q4', label: 'l', kind: 'consent' },
+          { id: 'q5', label: 'l', kind: 'text' },
+        ],
+      },
+      data: { q0: 'a', q1: 'a,b,c', 'q2.r1': 'a', 'q2.r2': 'b', 'q2.r3': 'c', q3: 'object', 'q3.reason': 'x', q4: 'Text' },
+    },
+  ];
+
+  for (const form of forms) {
+    it(`${form.name}`, async () => {
+      const h = harness();
+      const { content, messageId } = await h.post(form.card);
+
+      await h.click(form.from ?? ANNA, messageId, { ...h.actionData(content, form.action), ...form.data });
+
+      assert.equal(h.kernel.events.length, 1, 'the submission was accepted and emitted');
+      const emitted = h.kernel.events[0]?.cardAnswer;
+      assert.ok(emitted);
+      const read = readCardAnswerFields(emitted);
+      assert.ok('value' in read, `the kernel refuses the event: ${'error' in read ? read.error : ''}`);
+      // Nothing is lost or reshaped on the way through the kernel's reader.
+      assert.deepEqual(read.value.answers, emitted.answers);
+      assert.equal(read.value.proposalId, form.card.proposalId);
+      assert.equal(read.value.proposalVersion, form.card.proposalVersion);
+      // One answer per question, in question order.
+      const ids = (emitted.answers ?? []).map((answer) => answer.questionId);
+      assert.equal(new Set(ids).size, ids.length);
+      assert.equal(typeof emitted.cardId === 'string' && emitted.cardId.length > 0, true);
+    });
+  }
+
+  it('the copied check refuses what the contract forbids', () => {
+    const bad: unknown[][] = [
+      [{ questionId: 'q', kind: 'rating', value: 5 }],
+      [{ questionId: 'q', kind: 'single_choice' }],
+      [{ questionId: 'q', kind: 'single_choice', optionId: 'a' }, { questionId: 'q', kind: 'single_choice', optionId: 'b' }],
+      [{ questionId: 'q.1', kind: 'single_choice', optionId: 'a' }],
+      [{ questionId: 'q', kind: 'ranking', ranking: ['a', 'a'] }],
+      [{ questionId: 'q', kind: 'consent', decision: 'maybe' }],
+    ];
+    for (const answers of bad) {
+      assert.deepEqual(readCardAnswerFields({ answers }), { error: 'cardAnswer.answers' }, JSON.stringify(answers));
+    }
+  });
+
+  it('the copy is the kernel\'s code, where a kernel checkout with the contract is present', () => {
+    // CI has no kernel checkout; then the copy stands as written.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const kernelFile = join(here, '..', '..', 'odoo-bot', 'middleware', 'src', 'channels', 'questionCard.ts');
+    const copyFile = join(here, '..', 'tests', 'support', 'kernelCardAnswers.ts');
+    if (!existsSync(kernelFile) || !existsSync(copyFile)) return;
+    const kernel = readFileSync(kernelFile, 'utf8');
+    const copy = readFileSync(copyFile, 'utf8');
+    const source = (text: string, name: string): string | undefined => {
+      const start = text.search(new RegExp(`^(export )?function ${name}\\(`, 'm'));
+      if (start === -1) return undefined;
+      return text.slice(start, text.indexOf('\n}\n', start) + 3).replace(/^export /, '');
+    };
+    for (const name of ['readAnswer', 'readCardAnswerFields']) {
+      const theirs = source(kernel, name);
+      if (theirs === undefined) return; // a kernel checkout from before #2105
+      assert.equal(source(copy, name), theirs, `${name} differs from the kernel: copy it again and re-check the emitted shapes`);
+    }
   });
 });
