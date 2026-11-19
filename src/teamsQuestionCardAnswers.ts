@@ -9,7 +9,7 @@
 // sent; this module is the first line and the person's feedback.
 
 import type { CardAnswerValue, CardOption, CardQuestion, QuestionCard } from './kernel-types.js';
-import { DEFAULT_TEXT_MAX_LENGTH, isRequired as isQuestionRequired, rankCount, textLimit } from './teamsQuestionCardSpec.js';
+import { DEFAULT_TEXT_MAX_LENGTH, isRequired as isQuestionRequired, offersVolunteer, rankCount, textLimit } from './teamsQuestionCardSpec.js';
 import type { QuestionCardTexts } from './teamsQuestionCardTexts.js';
 
 /** Value of the "I will take this" button for an assignment question. */
@@ -44,6 +44,7 @@ type Read = { answer?: CardAnswerValue; error?: string };
 function readQuestion(
   question: CardQuestion,
   index: number,
+  questionCount: number,
   values: Record<string, string>,
   presets: Readonly<Record<string, unknown>>,
   texts: QuestionCardTexts,
@@ -94,7 +95,8 @@ function readQuestion(
     case 'assignment': {
       // The volunteer button: the assignee is whoever Teams says clicked.
       if (presets[inputId(index)] === VOLUNTEER_PRESET) {
-        return question.allowVolunteer === false
+        // Only a button the card showed counts.
+        return !offersVolunteer(question, questionCount)
           ? { error: texts.unknownOption }
           : { answer: { questionId, kind: 'assignment', assignee: 'self' } };
       }
@@ -154,7 +156,7 @@ export function readCardSubmission(card: QuestionCard, data: unknown, texts: Que
   const answers: CardAnswerValue[] = [];
   const errors: Record<number, string> = {};
   for (const [index, question] of card.questions.entries()) {
-    const read = readQuestion(question, index, values, presets, texts);
+    const read = readQuestion(question, index, card.questions.length, values, presets, texts);
     if (read.error) errors[index] = read.error;
     else if (read.answer) answers.push(read.answer);
   }

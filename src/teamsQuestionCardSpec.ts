@@ -31,6 +31,8 @@ export const HARD_TEXT_MAX_LENGTH = 4000;
 const CARD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const ID_RULE = '1 to 64 characters of A-Z a-z 0-9 _ -';
 const MAX_LABEL_LENGTH = 300;
+/** A choice needs something to choose between. */
+const MIN_CHOICE_OPTIONS = 2;
 
 /** Is the question required? The contract's default is yes. */
 export function isRequired(question: Pick<CardQuestion, 'required'>): boolean {
@@ -52,9 +54,22 @@ function isLabel(raw: unknown): raw is string {
   return typeof raw === 'string' && raw.trim().length > 0 && raw.length <= MAX_LABEL_LENGTH;
 }
 
-function optionsProblem(options: unknown, where: string, max: number): string | undefined {
+/** Does the card show "Ich übernehme das" for this assignment question?
+ *  Only when the question allows it (the default) AND it is the card's only
+ *  question: the button sends no inputs, so on a card with more questions it
+ *  would drop the other answers and is not rendered. */
+export function offersVolunteer(
+  question: Extract<CardQuestion, { kind: 'assignment' }>,
+  questionCount: number,
+): boolean {
+  return question.allowVolunteer !== false && questionCount === 1;
+}
+
+function optionsProblem(options: unknown, where: string, max: number, min = MIN_CHOICE_OPTIONS): string | undefined {
   if (!Array.isArray(options)) return `${where}: options are missing`;
-  if (options.length < 2) return `${where}: at least two options are needed`;
+  if (options.length < min) {
+    return min === 1 ? `${where}: at least one option is needed` : `${where}: at least two options are needed`;
+  }
   if (options.length > max) return `${where}: at most ${String(max)} options`;
   const seen = new Set<string>();
   for (const option of options as CardOption[]) {
@@ -66,7 +81,7 @@ function optionsProblem(options: unknown, where: string, max: number): string | 
   return undefined;
 }
 
-function questionProblem(question: CardQuestion, index: number): string | undefined {
+function questionProblem(question: CardQuestion, index: number, questionCount: number): string | undefined {
   const where = `question ${String(index + 1)}`;
   if (!question || typeof question !== 'object') return `${where} is not an object`;
   if (!isId(question.id)) return `${where}: the id must be ${ID_RULE}`;
@@ -94,9 +109,17 @@ function questionProblem(question: CardQuestion, index: number): string | undefi
       return undefined;
     }
     case 'assignment':
+      // The volunteer button is a choice of its own: one fixed candidate plus
+      // "Ich übernehme das" is a real question. Without the button a fixed
+      // list needs two candidates like every other choice.
       return question.candidates === 'conversation_members'
         ? undefined
-        : optionsProblem(question.candidates, where, MAX_CHOICE_OPTIONS);
+        : optionsProblem(
+            question.candidates,
+            where,
+            MAX_CHOICE_OPTIONS,
+            offersVolunteer(question, questionCount) ? 1 : MIN_CHOICE_OPTIONS,
+          );
     case 'text': {
       const { maxLength } = question;
       if (maxLength !== undefined && (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > HARD_TEXT_MAX_LENGTH)) {
@@ -128,7 +151,7 @@ export function questionCardProblem(card: unknown): string | undefined {
   if (c.questions.length > MAX_CARD_QUESTIONS) return `a card carries at most ${String(MAX_CARD_QUESTIONS)} questions`;
   const ids = new Set<string>();
   for (const [index, question] of c.questions.entries()) {
-    const problem = questionProblem(question, index);
+    const problem = questionProblem(question, index, c.questions.length);
     if (problem) return problem;
     if (ids.has(question.id)) return `question id '${question.id}' occurs twice`;
     ids.add(question.id);

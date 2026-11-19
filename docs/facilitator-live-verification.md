@@ -378,6 +378,13 @@ Android) and read the `[teams]` log lines and the kernel events.
 | Q13 | Click the poll card of 0.36.0 (two to six buttons). | That an `Action.Execute` click arrives at all and shows the acknowledgement; never done live |
 | Q14 | Post a card, deploy (or restart the middleware), then click it and let the engine close it. Read the log at activation. | That the table `teams_question_cards` is created on the instance's database through the pooler (no "kept in memory only" line), that the click is accepted and the close update goes through after the restart |
 | Q15 | Start a scheduled meeting, deploy during it, then read the stored capability snapshot; end the meeting and read it again. | That `teams_meeting_states` is created, that the snapshot says `online` after the restart and `chat` after the end. Meeting start and end events themselves were seen live on 2026-11-19; a restart between them was not |
+| Q16 | Post an assignment card with one named candidate; click "Ich übernehme das" as one person and "Vorschlag senden" with the candidate chosen as another. | That the one-candidate card (0.38.4) is posted as a card and both buttons arrive; "Ich übernehme das" was never clicked live |
+| Q17 | On a single-choice card click "Antwort senden" without a selection, in the web and the desktop client. Capture the invokes with `TEAMS_LOG_OUTGOING_ACTIVITIES=1`. | That the card with "Bitte eine Option wählen." stays. On 0.38.3 one such click showed the plain card afterwards; whether a `facilitation.card.view` invoke followed the refused click (the assumed cause, answered since 0.38.4 with the same error card) is not proven |
+
+Reported by the rollout session for 0.38.3 on 2026-11-19 (real clicks, not re-checked here):
+ranking, single choice with "Ändern", a consent objection refused without a reason, an
+idea, a questionnaire and the result card update passed. Teams' own "AI Generated"
+header showed on no message.
 
 Record the results in a new "Recorded run" section. An item that fails becomes an issue;
 the fallback for every form is the chat ballot, which stays valid.

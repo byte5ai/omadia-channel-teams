@@ -993,3 +993,123 @@ describe('#2089 question cards: what is emitted passes the kernel\'s check', () 
     }
   });
 });
+
+describe('#2089 question cards: findings of the first live clicks (0.38.4)', () => {
+  const candidate = { id: BERT.aadObjectId, label: 'Bert Maier' };
+  const oneCandidate = (extra: Json = {}): QuestionCard =>
+    ({
+      cardId: 'c-assign-one',
+      title: 'Wer liest das Protokoll gegen?',
+      questions: [{ id: 'wer', label: 'Person', kind: 'assignment', candidates: [candidate], ...extra }],
+    }) as QuestionCard;
+
+  it('assignment with ONE fixed candidate is a card when "Ich übernehme das" is offered', async () => {
+    const h = harness();
+    const { content, messageId } = await h.post(oneCandidate({ allowVolunteer: true }));
+    assert.deepEqual((content['actions'] as Json[]).map((action) => action['title']), ['Ich übernehme das', 'Vorschlag senden']);
+
+    const nobody = await h.click(ANNA, messageId, { ...h.actionData(content, 'Vorschlag senden') });
+    await h.click(ANNA, messageId, { ...h.actionData(content, 'Vorschlag senden'), q0: BERT.aadObjectId });
+    await h.click(CARLA, messageId, h.actionData(content, 'Ich übernehme das'));
+
+    assert.ok(textOf(nobody).includes('Bitte eine Person wählen oder selbst übernehmen.'));
+    assert.deepEqual(answersOf(h.kernel), [
+      [{ questionId: 'wer', kind: 'assignment', assignee: { kind: 'teams-aad', id: BERT.aadObjectId, displayName: 'Bert Maier' } }],
+      [{ questionId: 'wer', kind: 'assignment', assignee: 'self' }],
+    ]);
+  });
+
+  it('the volunteer button is on by default, so one candidate without the flag is a card too', async () => {
+    const h = harness();
+    const { content } = await h.post(oneCandidate());
+    assert.equal((content['actions'] as Json[]).length, 2);
+  });
+
+  it('one candidate WITHOUT the volunteer button is no choice and is refused; so is an empty list', async () => {
+    const h = harness();
+    const send = (card: unknown) =>
+      h.provider.sendToConversation(GROUP_CHAT_ID, { text: 'x', card } as never, { asChannelKey: MIRA.key });
+    const refused: [string, unknown, RegExp][] = [
+      ['allowVolunteer false', oneCandidate({ allowVolunteer: false }), /at least two options/],
+      // The button is only rendered on a card whose single question is the
+      // assignment, so on a questionnaire it does not count.
+      [
+        'a second question on the card',
+        { ...oneCandidate({ allowVolunteer: true }), questions: [...oneCandidate({ allowVolunteer: true }).questions, { id: 'warum', label: 'Warum?', kind: 'text' }] },
+        /question 1: at least two options/,
+      ],
+      ['no candidate at all', { ...oneCandidate(), questions: [{ id: 'wer', label: 'Person', kind: 'assignment', candidates: [] }] }, /at least one option/],
+    ];
+    for (const [name, card, message] of refused) {
+      const outcome = await send(card);
+      assert.equal(outcome.outcome, 'unreachable', name);
+      assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', message, name);
+    }
+    assert.deepEqual(h.connector.sent, []);
+  });
+
+  it('a volunteer click on a questionnaire, where the button is not shown, is refused', async () => {
+    const h = harness();
+    const card = {
+      cardId: 'c-assign-multi',
+      title: 'Aufgabe',
+      questions: [
+        { id: 'wer', label: 'Person', kind: 'assignment', candidates: [candidate, { id: 'u2', label: 'Anna Köhler' }] },
+        { id: 'warum', label: 'Warum?', kind: 'text', required: false },
+      ],
+    } as QuestionCard;
+    const { content, messageId } = await h.post(card);
+    assert.equal((content['actions'] as Json[]).length, 1);
+
+    const forged = await h.click(ANNA, messageId, { ...h.actionData(content), preset: { q0: 'self' } });
+
+    assert.ok(isCard(forged));
+    assert.deepEqual(h.kernel.events, []);
+  });
+
+  it('single choice, "Antwort senden" without a selection: the error line comes from the server and survives the refresh', async () => {
+    const h = harness();
+    const { content, messageId } = await h.post(SINGLE);
+    const data = h.actionData(content);
+    const view = (from: SimUser) => h.click(from, messageId, data, { verb: QUESTION_CARD_VIEW_VERB });
+
+    const refused = await h.click(ANNA, messageId, { ...data });
+    assert.ok(isCard(refused));
+    assert.ok(textOf(refused).includes('"text":"Bitte eine Option wählen.","color":"Attention"'));
+    assert.deepEqual(h.kernel.events, []);
+
+    // A client asks for the person's view after it got a card back. That
+    // must not replace the card with the error by the plain one.
+    assert.ok(textOf(await view(ANNA)).includes('"text":"Bitte eine Option wählen.","color":"Attention"'));
+    // Only for the person whose submission was refused.
+    assert.ok(!textOf(await view(BERT)).includes('Bitte eine Option wählen.","color":"Attention"'));
+
+    // A valid answer ends it: the view is the own answer.
+    await h.click(ANNA, messageId, { ...data, q0: 'b' });
+    const afterAnswer = await view(ANNA);
+    assert.ok(textOf(afterAnswer).includes('Deine Antwort') && !textOf(afterAnswer).includes('"color":"Attention"'));
+  });
+
+  it('a refused submission is shown again for ten minutes, not for ever', async () => {
+    const h = harness();
+    const { content, messageId } = await h.post(SINGLE);
+    const data = h.actionData(content);
+    await h.click(ANNA, messageId, { ...data });
+
+    h.clock.now = NOW + 10 * 60 * 1000 + 1;
+    const later = await h.click(ANNA, messageId, data, { verb: QUESTION_CARD_VIEW_VERB });
+
+    assert.ok(isCard(later) && !textOf(later).includes('"color":"Attention"'));
+  });
+
+  it('an optional single choice sent empty is refused as well: an empty click is never an answer', async () => {
+    const h = harness();
+    const card = { ...SINGLE, cardId: 'c-optional', questions: [{ ...SINGLE.questions[0], required: false }] } as QuestionCard;
+    const { content, messageId } = await h.post(card);
+
+    const refused = await h.click(ANNA, messageId, { ...h.actionData(content) });
+
+    assert.ok(textOf(refused).includes('"color":"Attention"'));
+    assert.deepEqual(h.kernel.events, []);
+  });
+});

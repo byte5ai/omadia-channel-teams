@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.38.4
+
+Two findings of the first live card clicks (0.38.3, 2026-11-19).
+
+- **An assignment card with one candidate is a card** (rollout defect D27). It was refused
+  with "question 1: at least two options are needed", although "Ich übernehme das" next to
+  one named person is a real choice. The rule now: a fixed candidate list needs **one**
+  candidate when the card shows the volunteer button, and **two** otherwise. The button
+  is shown when `allowVolunteer` is not `false` (it is on by default) **and** the
+  assignment is the card's only question; on a questionnaire it is not rendered, so it
+  does not count there. An empty list is refused in every case
+  (`candidates: 'conversation_members'` is unchanged). Single choice, multiple choice
+  and ranking keep their minimum of two options.
+- A volunteer click is accepted exactly where the button is shown; a crafted one on a
+  questionnaire is refused (before, only `allowVolunteer: false` refused it).
+- **The error line of a refused submission survives the refresh.** One live click on
+  "Antwort senden" without a selection came back as the plain question card. The server
+  did answer that click with the card and "Bitte eine Option wählen." (and always has);
+  what replaced it is not proven. The likely cause: the client asks for the person's
+  view (`refresh`) after it received a card, and that answer was the plain card. The
+  adapter now remembers a person's refused submission for ten minutes and answers the
+  refresh with the same card, values and error line; a valid answer or "Ändern" ends
+  it. Kept in memory only.
+- No contract change; `compat.core` unchanged.
+
 ## 0.38.3
 
 Posted question cards and the meeting state survive a restart. The instance restarts on every deploy; a vote
