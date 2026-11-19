@@ -335,3 +335,25 @@ export {
   NATIVE_AI_LABEL_CONFIG_KEY,
   resolveNativeAiLabel,
 } from './teamsAiMarkingMode.js';
+// #2089 — posted question cards kept across restarts.
+export {
+  expiresAt as questionCardExpiresAt,
+  KEEP_AFTER_CLOSE_MS,
+  KEEP_WITHOUT_CLOSE_MS,
+  PgTeamsQuestionCardStore,
+  QUESTION_CARDS_DDL,
+  QUESTION_CARDS_TABLE,
+  type StoredQuestionCard,
+  type TeamsQuestionCardPersistence,
+} from './teamsQuestionCardStore.js';
+
+// D26 — what a bot saw of a meeting, kept across restarts.
+export {
+  believableMeetingState,
+  MEETING_STATES_DDL,
+  MEETING_STATES_TABLE,
+  PgTeamsMeetingStateStore,
+  RUNNING_EVIDENCE_MAX_AGE_MS,
+  type StoredMeetingState,
+  type TeamsMeetingStatePersistence,
+} from './teamsMeetingStateStore.js';

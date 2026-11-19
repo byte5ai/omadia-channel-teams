@@ -16,7 +16,7 @@ import {
   TeamsMeetingSessions,
 } from '@omadia/channel-teams';
 import type { TeamsSessionEvent } from '@omadia/channel-teams';
-import type { TeamsConversationRefPersistence } from '@omadia/channel-teams';
+import type { StoredMeetingState, TeamsConversationRefPersistence, TeamsMeetingStatePersistence } from '@omadia/channel-teams';
 
 import {
   ANNA,
@@ -106,11 +106,30 @@ const ROSTER = [ANNA, BERT, CARLA].map((user) => ({
   userPrincipalName: null,
 }));
 
+/** The table of meeting states, in memory: what survives a restart. */
+class MeetingStateTable implements TeamsMeetingStatePersistence {
+  readonly rows = new Map<string, StoredMeetingState>();
+
+  async save(botKey: string, conversationId: string, stored: StoredMeetingState): Promise<void> {
+    this.rows.set(`${botKey}|${conversationId}`, JSON.parse(JSON.stringify(stored)) as StoredMeetingState);
+  }
+
+  async load(botKey: string, conversationId: string): Promise<StoredMeetingState | undefined> {
+    return this.rows.get(`${botKey}|${conversationId}`);
+  }
+}
+
 /** One running middleware. Pass the previous instance's `kernel`, `graph`,
  *  `connector` and `table` to model a restart: Teams and the database stay,
  *  every in-process cache is new. */
 function startInstance(
-  carry: Partial<Pick<Instance, 'kernel' | 'graph' | 'connector'>> & { table?: SimulatedRefTable; ownIdentity?: boolean } = {},
+  carry: Partial<Pick<Instance, 'kernel' | 'graph' | 'connector'>> & {
+    table?: SimulatedRefTable;
+    ownIdentity?: boolean;
+    /** The table of meeting states, and the clock the sessions read. */
+    meetingTable?: MeetingStateTable;
+    clock?: { now: number };
+  } = {},
 ): Instance & { table: SimulatedRefTable } {
   const kernel = carry.kernel ?? new SimulatedKernel();
   const graph = carry.graph ?? new SimulatedGraph();
@@ -120,11 +139,17 @@ function startInstance(
   refs.attachPersistence(table);
   const membership: Record<string, unknown>[] = [];
   const sessionEvents: TeamsSessionEvent[] = [];
-  const meetingSessions = new TeamsMeetingSessions({
-    emit: (event) => {
-      sessionEvents.push(event);
+  const meetingSessions = new TeamsMeetingSessions(
+    {
+      emit: (event) => {
+        sessionEvents.push(event);
+      },
     },
-  });
+    {
+      ...(carry.meetingTable ? { persistence: carry.meetingTable } : {}),
+      ...(carry.clock ? { now: () => carry.clock?.now ?? 0 } : {}),
+    },
+  );
   const bot = simulatedBot(kernel, {
     captureConversationReference: (context) => refs.capture(context),
     emitMembershipEvent: (event) => {
@@ -701,7 +726,7 @@ describe('scenario 7a — the snapshot says `online` only while a meeting is kno
     assert.equal('sessionRef' in (after ?? {}), false);
   });
 
-  it('after a restart during a meeting the state is unknown, and unknown is reported as chat', async () => {
+  it('without a table, after a restart during a meeting the state is unknown, and unknown is reported as chat', async () => {
     const before = startInstance();
     await before.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hi', conversationId: MEETING_CHAT_ID }));
     await before.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
@@ -718,6 +743,67 @@ describe('scenario 7a — the snapshot says `online` only while a meeting is kno
     assert.equal(await modalityOf(after), 'online');
     await after.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'end', at: '2026-11-18T11:00:00.000Z' }));
     assert.equal(await modalityOf(after), 'chat');
+  });
+
+  it('with the state stored, a restart during a meeting keeps it online, and the end is still seen', async () => {
+    const meetingTable = new MeetingStateTable();
+    const clock = { now: Date.parse('2026-11-18T10:00:00.000Z') };
+    const before = startInstance({ meetingTable, clock });
+    await before.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hi', conversationId: MEETING_CHAT_ID }));
+    await before.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
+    await settle();
+    assert.equal(meetingTable.rows.size, 1, 'the start was written down');
+
+    // A deploy twenty minutes into the meeting.
+    clock.now += 20 * 60 * 1000;
+    const carry = { kernel: before.kernel, graph: before.graph, connector: before.connector, table: before.table, meetingTable, clock };
+    const after = startInstance(carry);
+    const snapshot = await after.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key });
+    assert.equal(snapshot?.modality, 'online', 'read from the stored state');
+    assert.equal(snapshot?.sessionRef, MEETING_ID);
+
+    // Another deploy; the first event afterwards is a LEAVE. It continues the
+    // stored meeting and does not turn it into a plain chat.
+    const later = startInstance(carry);
+    await later.bot.deliver(meetingParticipantActivity({ bot: MIRA, from: ANNA, phase: 'leave', people: [BERT] }));
+    assert.equal(await modalityOf(later), 'online');
+
+    await later.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'end', at: '2026-11-18T11:00:00.000Z' }));
+    await settle();
+    assert.equal(await modalityOf(later), 'chat');
+    assert.equal(await modalityOf(startInstance(carry)), 'chat', 'and the end is what the next process reads');
+  });
+
+  it('a stored "running" whose end was missed is not believed for ever', async () => {
+    const meetingTable = new MeetingStateTable();
+    const clock = { now: Date.parse('2026-11-18T10:00:00.000Z') };
+    const before = startInstance({ meetingTable, clock });
+    await before.bot.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hi', conversationId: MEETING_CHAT_ID }));
+    await before.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
+    await settle();
+    const carry = { kernel: before.kernel, graph: before.graph, connector: before.connector, table: before.table, meetingTable, clock };
+
+    // The end event arrived while the process was down. Eleven hours later
+    // the stored state is still believed; after twelve it is not.
+    clock.now += 11 * 60 * 60 * 1000;
+    assert.equal(await modalityOf(startInstance(carry)), 'online');
+    clock.now += 2 * 60 * 60 * 1000;
+    assert.equal(await modalityOf(startInstance(carry)), 'chat', 'unknown is reported as a chat');
+  });
+
+  it('another bot in the same chat does not inherit the stored state', async () => {
+    const meetingTable = new MeetingStateTable();
+    const before = startInstance({ meetingTable });
+    for (const bot of [MIRA, JONAS]) {
+      await before.bot.deliver(messageActivity({ bot, from: ANNA, text: 'hi', conversationId: MEETING_CHAT_ID }));
+    }
+    await before.bot.deliver(meetingLifecycleActivity({ bot: MIRA, from: ANNA, phase: 'start' }));
+    await settle();
+
+    const after = startInstance({ kernel: before.kernel, graph: before.graph, connector: before.connector, table: before.table, meetingTable });
+
+    assert.equal((await after.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: MIRA.key }))?.modality, 'online');
+    assert.equal((await after.meetings.snapshot(MEETING_CHAT_ID, { asChannelKey: JONAS.key }))?.modality, 'chat', 'Jonas saw no start');
   });
 
   it('a leave event never turns a chat into a running meeting', async () => {

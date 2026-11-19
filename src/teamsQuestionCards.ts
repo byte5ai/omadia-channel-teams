@@ -7,17 +7,17 @@
 // submission, emits the `card_answer` event and returns the person's own
 // view. Whether the answer counts is the engine's decision.
 //
-// WHAT A CLICK IS CHECKED AGAINST. A click carries the card back from the
-// client, and a client can send anything. While this process remembers the
-// card it posted (the registry below), the click is checked against THAT:
-// the conversation it was posted into, its proposal version, whether it was
-// closed. After a restart the registry is empty; the click is then read
-// against the card it carries, and the engine, which holds the card it sent,
-// drops what does not match (unknown card id, wrong version, unknown option).
+// WHAT A CLICK IS CHECKED AGAINST: the card this plugin POSTED, never
+// anything the click carries. A click names a card id; the card itself comes
+// from the registry below, which is a cache in front of a table
+// (`teamsQuestionCardStore.ts`) and therefore still knows the card after a
+// restart: the conversation it was posted into, its questions and options,
+// its proposal version, whether it was closed. A card id nobody posted, or
+// one whose record is gone, gets "no longer active" and emits nothing.
 
 import type { Activity, AdaptiveCardInvokeResponse } from 'botbuilder';
 
-import type { CardAnswerValue, QuestionCard } from './kernel-types.js';
+import type { CardAnswerValue } from './kernel-types.js';
 import { parseTeamsBotKey } from './teamsBotIdentity.js';
 import { bareConversationId } from './teamsConversationIds.js';
 import { readCardSubmission, type CardInputValues } from './teamsQuestionCardAnswers.js';
@@ -31,7 +31,8 @@ import {
   QUESTION_CARD_VIEW_VERB,
   type ClosedCardView,
 } from './teamsQuestionCardRender.js';
-import { isPastClose, questionCardProblem } from './teamsQuestionCardSpec.js';
+import { isPastClose } from './teamsQuestionCardSpec.js';
+import type { StoredQuestionCard, TeamsQuestionCardPersistence } from './teamsQuestionCardStore.js';
 import { questionCardTexts } from './teamsQuestionCardTexts.js';
 
 const MAX_REGISTERED_CARDS = 2_000;
@@ -41,13 +42,7 @@ const MAX_OWN_ANSWERS = 10_000;
 const CARD_RESPONSE_TYPE = 'application/vnd.microsoft.card.adaptive';
 const MESSAGE_RESPONSE_TYPE = 'application/vnd.microsoft.activity.message';
 
-interface RegisteredCard {
-  card: QuestionCard;
-  conversationId: string;
-  botAppId: string;
-  messageId: string | undefined;
-  closed?: ClosedCardView;
-}
+type RegisteredCard = StoredQuestionCard;
 
 interface OwnAnswer {
   answers: readonly CardAnswerValue[];
@@ -107,40 +102,80 @@ export class TeamsQuestionCards {
    *  for the person's own view; the engine holds what counts. */
   private readonly ownAnswers = new Map<string, OwnAnswer>();
   private readonly now: () => number;
+  private readonly persistence: TeamsQuestionCardPersistence | undefined;
 
-  constructor(options: { now?: () => number } = {}) {
+  /**
+   * `persistence`: the table behind the registry. Without it the registry is
+   * memory only and a restart forgets every posted card.
+   */
+  constructor(options: { now?: () => number; persistence?: TeamsQuestionCardPersistence } = {}) {
     this.now = options.now ?? Date.now;
+    this.persistence = options.persistence;
+  }
+
+  /** Write a record through to the table. A failed write is logged and the
+   *  card still works from memory until the next restart. */
+  private async persist(record: RegisteredCard): Promise<void> {
+    if (!this.persistence) return;
+    try {
+      await this.persistence.save(record);
+    } catch (err) {
+      console.error(
+        `[teams] question card '${record.card.cardId}' could not be stored and is known until the next restart only:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /** The posted card: from memory, else from the table (after a restart). */
+  private async lookup(botAppId: string, cardId: string): Promise<RegisteredCard | undefined> {
+    const key = TeamsQuestionCards.cardKey(botAppId, cardId);
+    const cached = this.cards.get(key);
+    if (cached || !this.persistence) return cached;
+    const stored = await this.persistence.loadByCard(botAppId, cardId).catch(() => undefined);
+    if (stored) boundedSet(this.cards, key, stored, MAX_REGISTERED_CARDS);
+    return stored;
   }
 
   private static cardKey(botAppId: string, cardId: string): string {
     return `${botAppId.toLowerCase()}|${cardId}`;
   }
 
-  /** Remember a card this bot posted (or re-posted corrected). */
-  register(entry: { card: QuestionCard; conversationId: string; botAppId: string; messageId: string | undefined }): void {
-    const key = TeamsQuestionCards.cardKey(entry.botAppId, entry.card.cardId);
+  /** Remember a card this bot posted (or re-posted corrected), in memory and
+   *  in the table. */
+  async register(entry: Omit<RegisteredCard, 'closed'>): Promise<void> {
+    const record: RegisteredCard = { ...entry, botAppId: entry.botAppId.toLowerCase() };
+    const key = TeamsQuestionCards.cardKey(record.botAppId, record.card.cardId);
     const previous = this.cards.get(key);
     // A corrected card is another version of the question: what people saw
     // as "your answer" belonged to the earlier one.
-    if (previous && previous.card.proposalVersion !== entry.card.proposalVersion) this.forgetOwnAnswers(key);
-    boundedSet(this.cards, key, { ...entry }, MAX_REGISTERED_CARDS);
+    if (previous && previous.card.proposalVersion !== record.card.proposalVersion) this.forgetOwnAnswers(key);
+    boundedSet(this.cards, key, record, MAX_REGISTERED_CARDS);
+    await this.persist(record);
   }
 
-  /** The card a posted message carries, for `updateCard`. */
-  findByMessage(botAppId: string, messageId: string): { card: QuestionCard; conversationId: string } | undefined {
+  /** The card a posted message carries, for `updateCard`: only a message
+   *  this bot posted as a question card is found. */
+  async findByMessage(botAppId: string, messageId: string): Promise<RegisteredCard | undefined> {
     const prefix = `${botAppId.toLowerCase()}|`;
     for (const [key, entry] of this.cards) {
-      if (key.startsWith(prefix) && entry.messageId === messageId) return { card: entry.card, conversationId: entry.conversationId };
+      if (key.startsWith(prefix) && entry.messageId === messageId) return entry;
     }
-    return undefined;
+    if (!this.persistence) return undefined;
+    const stored = await this.persistence.loadByMessage(botAppId, messageId).catch(() => undefined);
+    if (stored) boundedSet(this.cards, TeamsQuestionCards.cardKey(stored.botAppId, stored.card.cardId), stored, MAX_REGISTERED_CARDS);
+    return stored;
   }
 
   /** The step closed: later clicks get the closed card. */
-  markClosed(botAppId: string, cardId: string, closed: ClosedCardView): void {
+  async markClosed(botAppId: string, cardId: string, closed: ClosedCardView): Promise<void> {
     const key = TeamsQuestionCards.cardKey(botAppId, cardId);
-    const entry = this.cards.get(key);
-    if (entry) this.cards.set(key, { ...entry, closed });
+    const entry = await this.lookup(botAppId, cardId);
     this.forgetOwnAnswers(key);
+    if (!entry) return;
+    const record: RegisteredCard = { ...entry, closed };
+    this.cards.set(key, record);
+    await this.persist(record);
   }
 
   private forgetOwnAnswers(cardKey: string): void {
@@ -164,7 +199,10 @@ export class TeamsQuestionCards {
    * says whether anybody is listening (a facilitation holds the
    * conversation); it is called at most once.
    */
-  handleInvoke(activity: InvokeActivity, emit: (answer: QuestionCardAnswer) => boolean): AdaptiveCardInvokeResponse {
+  async handleInvoke(
+    activity: InvokeActivity,
+    emit: (answer: QuestionCardAnswer) => boolean,
+  ): Promise<AdaptiveCardInvokeResponse> {
     const action = actionOf(activity.value);
     const fallbackTexts = questionCardTexts(undefined);
     if (!action) return messageResponse(fallbackTexts.couldNotRead);
@@ -173,27 +211,24 @@ export class TeamsQuestionCards {
     if (typeof cardId !== 'string' || cardId.length === 0 || !botAppId) return messageResponse(fallbackTexts.couldNotRead);
 
     const cardKey = TeamsQuestionCards.cardKey(botAppId, cardId);
-    const registered = this.cards.get(cardKey);
-    const carried = action.data['card'];
-    // The card this process posted wins over the one the click carries.
-    const card: QuestionCard | undefined =
-      registered?.card ??
-      (questionCardProblem(carried) === undefined && (carried as QuestionCard).cardId === cardId
-        ? (carried as QuestionCard)
-        : undefined);
-    if (!card) return messageResponse(fallbackTexts.couldNotRead);
+    // The card THIS BOT POSTED: from memory, or from the table after a
+    // restart. Whatever card a click may carry is never read.
+    const registered = await this.lookup(botAppId, cardId);
+    if (!registered) {
+      console.error(`[teams] click on question card '${cardId}', which this bot has no record of posting; ignored`);
+      return messageResponse(fallbackTexts.noLongerActive);
+    }
+    const card = registered.card;
     const texts = questionCardTexts(card.locale);
 
-    if (registered) {
-      // A card answers only in the conversation it was posted into (for a
-      // channel: the channel of that thread).
-      const here = bareConversationId(activity.conversation?.id ?? '');
-      if (here !== bareConversationId(registered.conversationId)) {
-        console.error(`[teams] question card '${cardId}' clicked in another conversation than it was posted into; ignored`);
-        return messageResponse(texts.notForThisConversation);
-      }
-      if (registered.closed) return cardResponse(buildClosedCardContent(registered.closed));
+    // A card answers only in the conversation it was posted into (for a
+    // channel: the channel of that thread).
+    const here = bareConversationId(activity.conversation?.id ?? '');
+    if (here !== bareConversationId(registered.conversationId)) {
+      console.error(`[teams] question card '${cardId}' clicked in another conversation than it was posted into; ignored`);
+      return messageResponse(texts.notForThisConversation);
     }
+    if (registered.closed) return cardResponse(buildClosedCardContent(registered.closed));
     if (isPastClose(card, this.now())) return messageResponse(texts.noLongerActive);
 
     const from = activity.from;
@@ -204,10 +239,7 @@ export class TeamsQuestionCards {
     // A click on an earlier version of the question: show the current one.
     const clickedVersion = action.data['proposalVersion'];
     const clickedProposal = action.data['proposalId'];
-    if (
-      registered &&
-      (clickedVersion !== card.proposalVersion || clickedProposal !== card.proposalId)
-    ) {
+    if (clickedVersion !== card.proposalVersion || clickedProposal !== card.proposalId) {
       return cardResponse(buildQuestionCardContent(card, { notice: texts.proposalChanged }));
     }
 

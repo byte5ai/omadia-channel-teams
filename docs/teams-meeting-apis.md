@@ -320,15 +320,13 @@ provider declares `supports.card` with exactly these kinds, five questions and `
 
 - The question card is what everybody sees. No names, no running tally.
 - The own-answer card is returned to the person who clicked and shown to them only, with
-  "Ändern" while the card is changeable. It is kept in memory per person; after a
-  middleware restart a refresh shows the question card again (the engine still holds the
-  answer).
+  "Ändern" while the card is changeable. It is kept in memory per person and is not
+  stored; after a restart a refresh shows the question card again (the engine still
+  holds the answer).
 - The closed card replaces the posted message when the engine asks for it
   (`updateCard`): the engine's result lines, no inputs. Only a message that the same
   bot posted as a question card in that conversation is updated; another bot's card, a
-  text message or an unknown id is refused. The cards are remembered in memory, so
-  after a restart of the Teams channel an update of an earlier card is refused and the
-  engine's result text in the chat stands.
+  text message or an unknown id is refused.
 
 **Per-person refresh.** The card carries `refresh` without `userIds`. Teams then refreshes
 automatically for conversations of up to 60 members and offers "Refresh Card" above that.
@@ -352,9 +350,18 @@ values kept and the reason shown, to that person only.
 | an author named in the click's data | ignored; the author is `activity.from` |
 | a click Teams does not attribute to a person | emitted with `answererVerified: false`, and the person is told |
 
-The card a click carries comes from the client. While this process remembers the card it
-posted, that one counts. After a restart the click is read against the card it carries,
-and the engine, which knows what it sent, drops what does not match.
+A click names a card id and the proposal version the person saw; it never brings the
+card. Questions, options, conversation and state come from the record of what this bot
+posted. A card id without such a record gets "nicht mehr aktiv" and emits nothing.
+
+**Posted cards are stored** in the table `teams_question_cards` on the graph pool, which
+the plugin creates itself on first use. The registry in memory is a cache in front of
+it, so a card posted before a deploy can be answered and closed after it. A card is
+kept 14 days after its closing time (or after it was closed) and 60 days when it has
+none. Every statement is a single autocommit query (the pool is a transaction-mode
+pooler). Without a pool, or when the table cannot be created, cards live in memory and
+are forgotten at the next restart; one log line says so. *Verified against a local
+PostgreSQL 14; not against the pooler.*
 
 **The event.** One `card_answer` per accepted submission: `cardId`, `proposalId`,
 `proposalVersion`, `answers[]` (one typed value per answered question),
@@ -365,7 +372,7 @@ and the engine, which knows what it sent, drops what does not match.
 the newest answer of a person win. The 0.36.0 poll (`message.poll`) is unchanged.
 
 **Not built:** a card in a direct message (the targeted send takes text only), the
-step-by-step questionnaire, a personal view that survives a restart.
+step-by-step questionnaire, an own-answer view that survives a restart.
 
 ## 6. Mentions and returned ids in proactive posts
 
@@ -389,7 +396,7 @@ carries `messageId` (the text, or the card when there is no text) and `cardMessa
 | Card answer with a verified answerer | yes, with condition | `Action.Execute` arrives as an `adaptiveCard/action` invoke; `from.id` and `from.aadObjectId` are set by Teams. Anonymous users have no `aadObjectId` but may interact with cards. Docs [D18][D19] |
 | Native Teams poll (Polls / Forms) | not possible | No bot API. Docs |
 | Roster and meeting details on demand | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat`; participant lookup only below 350 participants; details also for Meet now, 1:1 and group calls. Docs [D19] |
-| Meeting start and end events | yes, with condition | RSC `OnlineMeeting.ReadBasic.Chat`; "supported for scheduled and channel meetings". Docs [D19] |
+| Meeting start and end events | yes, with condition | RSC `OnlineMeeting.ReadBasic.Chat`; "supported for scheduled and channel meetings". Docs [D19]; **Live** for a scheduled meeting: `meetingStart` and `meetingEnd` arrived on 2026-11-19 (05:36:01Z, 06:02:17Z) |
 | Participant join and leave events | yes, with condition | RSC `OnlineMeetingParticipant.Read.Chat` **and** the event subscription in the Developer Portal (no manifest field or API documented); scheduled meetings only; the bot must be in the meeting before people join. Docs [D19] |
 | In-meeting and targeted notification | possible, **not built** | Needs a web page of the app in `validDomains`; targeted needs RSC `OnlineMeetingNotification.Send.Chat`, at most 50 recipients, `29:` ids only. Docs [D20] |
 | Side panel, stage | yes, with condition | A tab with meeting context; stage needs delegated RSC. Docs [D21] |
@@ -430,8 +437,10 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
    `participants` are `value.members[].user` with the Entra object id. `occurredAt` is
    `value.StartTime` / `value.EndTime` for start and end, else the activity timestamp.
    The documentation prints the start and end names with a leading space; names are
-   trimmed before dispatch. Docs [D19] for names and fields; *Simulated*, nothing
-   observed live.
+   trimmed before dispatch. Docs [D19] for names and fields. *Live* for start and end
+   of a scheduled meeting (2026-11-19: `meetingStart` 05:36:01Z, `meetingEnd`
+   06:02:17Z, each recorded); participant join and leave are *Simulated* only (no
+   Developer Portal subscription was set).
 4. **The capability snapshot**, per conversation and bot:
    - **always:** inputs `text`, `message_edits`, `card_answers`; outputs `text`,
      `mentions`, `cards`, `polls`, `private_messages`. The roster is available through
@@ -452,8 +461,14 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
      updated 2026-07-23, `graph/api/resources/teamworkonlinemeetinginfo` updated
      2024-11-27, `graph/api/resources/call` updated 2026-03-07, `apps-in-teams-meetings/
      meeting-apps-apis` updated 2026-10-22, the last one read in part.) So the state is
-     what this bot saw. It is kept in memory in 0.38.2: after a restart during a
-     meeting the snapshot says `chat` until the next join or the next start.
+     what this bot saw.
+   - **The state is stored** (0.38.3, table `teams_meeting_states` on the graph pool,
+     created by the plugin, single autocommit statements): a restart during a meeting
+     keeps `online`, and the first event after a restart continues the stored meeting.
+     A stored "running" is believed for twelve hours after its last start or join; an
+     end event that was missed therefore wears off, and from then on the chat is a
+     `chat`. Without a pool or without the table the state is memory only, and after a
+     restart the snapshot says `chat` until the next join or start.
    - **`presence`, only while it is proven.** All three must hold, none is assumed:
      a scheduled meeting is running in this chat (its start event said `Scheduled` or
      `Recurring`, or a participant event arrived, which exists for scheduled meetings

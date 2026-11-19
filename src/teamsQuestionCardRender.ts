@@ -41,18 +41,16 @@ const CONVERSATION_MEMBERS_DATASET = 'graph.microsoft.com/users?scope=currentCon
 type Element = Record<string, unknown>;
 
 /**
- * What every action of a card carries back. The card itself rides along, so
- * a click can be read and the card shown again after a middleware restart,
- * when the in-memory registry is empty. It comes back from the client and
- * may be forged: it shapes the answer and the person's view, and the engine
- * checks the answer against the card it really sent.
+ * What every action of a card carries back: which card, and which version of
+ * the proposal the person was looking at. NOT the card itself: a click comes
+ * from a client and may be forged, so the questions and options are always
+ * taken from the record of what was posted.
  */
 export interface QuestionCardActionData {
   type: typeof QUESTION_CARD_DATA_TYPE;
   cardId: string;
   proposalId?: string;
   proposalVersion?: number;
-  card: QuestionCard;
 }
 
 export function questionCardActionData(card: QuestionCard): QuestionCardActionData {
@@ -61,7 +59,6 @@ export function questionCardActionData(card: QuestionCard): QuestionCardActionDa
     cardId: card.cardId,
     ...(card.proposalId !== undefined ? { proposalId: card.proposalId } : {}),
     ...(card.proposalVersion !== undefined ? { proposalVersion: card.proposalVersion } : {}),
-    card,
   };
 }
 

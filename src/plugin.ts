@@ -61,6 +61,8 @@ import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
 import { isOutgoingLogEnabled, LOG_OUTGOING_ENV, resolveNativeAiLabel } from './teamsAiMarkingMode.js';
 import { TeamsQuestionCards } from './teamsQuestionCards.js';
+import { PgTeamsMeetingStateStore } from './teamsMeetingStateStore.js';
+import { PgTeamsQuestionCardStore } from './teamsQuestionCardStore.js';
 import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 import {
   disabledTeamsCardFeatures,
@@ -767,7 +769,14 @@ export async function activate(
   if (isOutgoingLogEnabled()) {
     core.log('warn', `teams: ${LOG_OUTGOING_ENV} is set: every outgoing activity is logged with its text`);
   }
-  const questionCards = new TeamsQuestionCards();
+  // Kept in a table on the graph pool, so a card posted before a deploy can
+  // still be answered and closed after it. Without a pool: memory only.
+  const questionCards = new TeamsQuestionCards(
+    graphPool ? { persistence: new PgTeamsQuestionCardStore(graphPool, (m) => core.log('warn', m)) } : {},
+  );
+  if (!graphPool) {
+    core.log('warn', 'teams: no database pool: question cards are kept in memory only and are forgotten when the Teams channel restarts');
+  }
   bot.attachQuestionCards(questionCards);
   bot.setNativeAiLabel(nativeAiLabel);
   registerTeamsSendProviders(core, ctx.agentId, {
@@ -838,7 +847,10 @@ export async function activate(
         }
       : {}),
     onLifecycleChange: (conversationId, botKey) => announceCapabilities?.(conversationId, botKey),
-  });
+  },
+  // Whether a meeting runs is what the bot saw; written down so that a
+  // deploy during a meeting does not turn it into a plain chat (D26).
+  graphPool ? { persistence: new PgTeamsMeetingStateStore(graphPool, (m) => core.log('warn', m)) } : {});
   bot.attachMeetingSessions(meetingSessions);
   const meetingSource = createTeamsMeetingSource({
     refs: conversationRefs,

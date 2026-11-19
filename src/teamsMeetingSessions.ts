@@ -21,6 +21,7 @@
 import type { Activity } from 'botbuilder';
 
 import type { SessionEvent, SessionEventKind, TeamsUserRef } from './kernel-types.js';
+import { believableMeetingState, type TeamsMeetingStatePersistence } from './teamsMeetingStateStore.js';
 import { receivingBotKey } from './teamsConversationMessages.js';
 
 export const MEETING_START_EVENT = 'application/vnd.microsoft.meetingStart';
@@ -115,12 +116,54 @@ export interface TeamsMeetingSessionSink {
 /** One instance serves every bot of the plugin; state is keyed by the bot. */
 export class TeamsMeetingSessions {
   private readonly meetings = new Map<string, TeamsMeetingState>();
+  /** Conversations whose stored state was already read (or has none). */
+  private readonly loaded = new Set<string>();
+  private readonly persistence: TeamsMeetingStatePersistence | undefined;
+  private readonly now: () => number;
 
-  constructor(private readonly sink: TeamsMeetingSessionSink = {}) {}
+  /**
+   * `persistence`: the table behind the state. Without it the state is
+   * memory only and a restart during a meeting forgets that it runs.
+   */
+  constructor(
+    private readonly sink: TeamsMeetingSessionSink = {},
+    options: { persistence?: TeamsMeetingStatePersistence; now?: () => number } = {},
+  ) {
+    this.persistence = options.persistence;
+    this.now = options.now ?? Date.now;
+  }
 
-  /** What this bot has seen of the meeting in this conversation. */
+  /** What this bot has seen of the meeting in this conversation, from memory. */
   stateFor(conversationId: string, botKey: string): TeamsMeetingState | undefined {
     return this.meetings.get(`${botKey}|${conversationId}`);
+  }
+
+  /**
+   * The same, reading the stored state once per conversation when memory has
+   * none (after a restart). A stored "running" whose last evidence is too old
+   * is not believed. Never throws.
+   */
+  async stateOrLoad(conversationId: string, botKey: string): Promise<TeamsMeetingState | undefined> {
+    const key = `${botKey}|${conversationId}`;
+    const known = this.meetings.get(key);
+    if (known || !this.persistence || this.loaded.has(key)) return known;
+    this.loaded.add(key);
+    const stored = await this.persistence.load(botKey, conversationId).catch(() => undefined);
+    // An event may have arrived while the read was under way; it is newer.
+    const arrived = this.meetings.get(key);
+    if (arrived || !stored) return arrived;
+    const state = believableMeetingState(stored, this.now());
+    this.meetings.set(key, state);
+    return state;
+  }
+
+  /** Read the stored state of the conversation an activity belongs to, once,
+   *  before its event is recorded. Never throws. */
+  async restore(activity: InboundActivity): Promise<void> {
+    const conversationId = activity.conversation?.id;
+    const botKey = receivingBotKey(activity);
+    if (!conversationId || !botKey) return;
+    await this.stateOrLoad(conversationId, botKey).catch(() => undefined);
   }
 
   /** Record one meeting event activity and pass it to the kernel. Returns the
@@ -166,6 +209,12 @@ export class TeamsMeetingSessions {
       };
       this.meetings.delete(key);
       this.meetings.set(key, next);
+      this.loaded.add(key);
+      // Written down so the state survives a restart; never awaited by the
+      // activity that carried the event, and a failed write only costs that.
+      void this.persistence?.save(botKey, conversationId, { state: next, seenAt: this.now() }).catch((err: unknown) => {
+        console.error('[teams] meeting state could not be stored:', err instanceof Error ? err.message : err);
+      });
       if (this.meetings.size > MAX_TRACKED_MEETINGS) {
         const oldest = this.meetings.keys().next().value;
         if (oldest !== undefined) this.meetings.delete(oldest);

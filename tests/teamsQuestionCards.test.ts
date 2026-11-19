@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { QuestionCard } from '../src/kernel-types.js';
+import type { StoredQuestionCard, TeamsQuestionCardPersistence } from '../src/teamsQuestionCardStore.js';
 import { readCardAnswerFields } from './support/kernelCardAnswers.js';
 
 import {
@@ -59,7 +60,25 @@ type Json = Record<string, unknown>;
 
 const NOW = Date.parse('2026-11-19T10:00:00.000Z');
 
-function harness(opts: { subscribed?: boolean } = {}) {
+/** The table of posted cards, in memory: what survives a restart. Records
+ *  go through JSON, as the database column stores them. */
+class CardTable implements TeamsQuestionCardPersistence {
+  readonly rows = new Map<string, StoredQuestionCard>();
+
+  async save(record: StoredQuestionCard): Promise<void> {
+    this.rows.set(`${record.botAppId}|${record.card.cardId}`, JSON.parse(JSON.stringify(record)) as StoredQuestionCard);
+  }
+
+  async loadByCard(botAppId: string, cardId: string): Promise<StoredQuestionCard | undefined> {
+    return this.rows.get(`${botAppId.toLowerCase()}|${cardId}`);
+  }
+
+  async loadByMessage(botAppId: string, messageId: string): Promise<StoredQuestionCard | undefined> {
+    return [...this.rows.values()].find((row) => row.botAppId === botAppId.toLowerCase() && row.messageId === messageId);
+  }
+}
+
+function harness(opts: { subscribed?: boolean; table?: CardTable } = {}) {
   const clock = { now: NOW };
   const kernel = new SimulatedKernel();
   if (opts.subscribed !== false) kernel.subscribe(GROUP_CHAT_ID, MIRA);
@@ -68,13 +87,25 @@ function harness(opts: { subscribed?: boolean } = {}) {
     captureConversationReference: (context) => refs.capture(context),
     emitMembershipEvent: () => {},
   });
-  const cards = new TeamsQuestionCards({ now: () => clock.now });
+  const newRegistry = (): TeamsQuestionCards =>
+    new TeamsQuestionCards({ now: () => clock.now, ...(opts.table ? { persistence: opts.table } : {}) });
+  const cards = newRegistry();
   sim.bot.attachQuestionCards(cards);
   const connector = new SimulatedConnector();
   for (const bot of [MIRA, JONAS]) {
     refs.capture({ activity: messageActivity({ bot, from: ANNA, text: 'hi' }) } as unknown as TurnContext);
   }
-  const provider = createTeamsConversationSendAdapter({ refs, sendProactive: connector.sendProactive, cards });
+  const state = { provider: createTeamsConversationSendAdapter({ refs, sendProactive: connector.sendProactive, cards }) };
+  const provider = state.provider;
+
+  /** The Teams channel restarts: every in-memory map is new; Teams, the
+   *  kernel's subscriptions and the tables stay. Returns the new provider. */
+  function restart(): ReturnType<typeof createTeamsConversationSendAdapter> {
+    const registry = newRegistry();
+    sim.bot.attachQuestionCards(registry);
+    state.provider = createTeamsConversationSendAdapter({ refs, sendProactive: connector.sendProactive, cards: registry });
+    return state.provider;
+  }
 
   /** Post a card as Mira; returns the posted Adaptive Card and its message id. */
   async function post(card: QuestionCard, text = ''): Promise<{ content: Json; messageId: string }> {
@@ -118,7 +149,7 @@ function harness(opts: { subscribed?: boolean } = {}) {
     return (response['value'] as { body: { type: string; value: unknown } }).body;
   }
 
-  return { clock, kernel, sim, cards, connector, provider, refs, post, actionData, click };
+  return { clock, kernel, sim, cards, connector, provider, refs, post, actionData, click, restart };
 }
 
 const answersOf = (kernel: SimulatedKernel): unknown[] => kernel.events.map((event) => event.cardAnswer?.answers);
@@ -599,24 +630,143 @@ describe('#2089 question cards: clicks a client could forge', () => {
   it('data that is not a question card, or unreadable', async () => {
     const h = harness();
     const { messageId } = await h.post(SINGLE);
-    const broken = await h.click(ANNA, messageId, { type: 'facilitation.card', cardId: 'nope' });
-    assert.match(String(broken.value), /konnte nicht gelesen werden/);
+    // A card id this bot never posted: there is nothing to answer.
+    const unknown = await h.click(ANNA, messageId, { type: 'facilitation.card', cardId: 'nope', q0: 'a' });
+    assert.equal(unknown.value, 'Diese Abstimmung ist nicht mehr aktiv.');
+    const noId = await h.click(ANNA, messageId, { type: 'facilitation.card', q0: 'a' });
+    assert.match(String(noId.value), /konnte nicht gelesen werden/);
     assert.deepEqual(h.kernel.events, []);
   });
 
-  it('after a restart the click is read against the card it carries; the engine checks it against what it sent', async () => {
+  it('a click never brings its own card: an option list in the click data is ignored', async () => {
     const h = harness();
     const { content, messageId } = await h.post(SINGLE);
-    // A new process: the registry is empty, the subscription is still there.
-    const fresh = new TeamsQuestionCards({ now: () => h.clock.now });
-    h.sim.bot.attachQuestionCards(fresh);
+    assert.equal(JSON.stringify(content).includes('"card":'), false, 'the posted card does not carry its own spec in the buttons');
+    const forged = { ...SINGLE, questions: [{ ...SINGLE.questions[0], options: [{ id: 'z', label: 'Erfunden' }, OPTIONS[0]] }] };
 
+    const body = await h.click(ANNA, messageId, { ...h.actionData(content), card: forged, questions: forged.questions, q0: 'z' });
+
+    assert.ok(textOf(body).includes('Diese Option gibt es auf dieser Karte nicht.'));
+    assert.deepEqual(h.kernel.events, []);
+  });
+});
+
+describe('#2089 question cards: a restart of the Teams channel', () => {
+  it('between post and click: the stored card is used, also against a forged click', async () => {
+    const table = new CardTable();
+    const h = harness({ table });
+    const { content, messageId } = await h.post(SINGLE);
+    assert.equal(table.rows.size, 1, 'the posted card was stored');
+
+    h.restart();
+    const forged = { ...SINGLE, questions: [{ ...SINGLE.questions[0], options: [{ id: 'z', label: 'Erfunden' }, OPTIONS[0]] }] };
+    const unknown = await h.click(ANNA, messageId, { ...h.actionData(content), card: forged, q0: 'z' });
+    const elsewhere = await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'b' }, { conversationId: OTHER_GROUP_CHAT_ID });
+    const stale = await h.click(ANNA, messageId, { ...h.actionData(content), proposalVersion: 1, q0: 'b' });
     const ok = await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'b' });
-    const unknown = await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'z' });
 
+    assert.ok(textOf(unknown).includes('Diese Option gibt es auf dieser Karte nicht.'), 'checked against the stored options');
+    assert.match(String(elsewhere.value), /gehört nicht in diese Unterhaltung/, 'the stored conversation');
+    assert.ok(textOf(stale).includes('Der Vorschlag wurde inzwischen geändert'), 'the stored proposal version');
     assert.ok(isCard(ok) && textOf(ok).includes('Mittwoch'));
-    assert.ok(textOf(unknown).includes('Diese Option gibt es auf dieser Karte nicht.'));
-    assert.deepEqual(h.kernel.events.map((e) => [e.cardAnswer?.cardId, e.cardAnswer?.proposalVersion]), [['c-single', 2]]);
+    assert.deepEqual(
+      h.kernel.events.map((e) => [e.cardAnswer?.cardId, e.cardAnswer?.proposalId, e.cardAnswer?.proposalVersion, e.cardAnswer?.answers]),
+      [['c-single', 'p-4', 2, [{ questionId: 'termin', kind: 'single_choice', optionId: 'b' }]]],
+    );
+  });
+
+  it('between post and update: the card is closed on its stored message, and stays closed after the next restart', async () => {
+    const table = new CardTable();
+    const h = harness({ table });
+    const { content, messageId } = await h.post(SINGLE);
+    const closed = { state: 'closed' as const, title: SINGLE.title, resultLines: ['Ergebnis: Mittwoch'], closedAt: '2026-11-19T10:05:00.000Z' };
+
+    const afterDeploy = h.restart();
+    const outcome = await afterDeploy.updateCard(GROUP_CHAT_ID, messageId, closed, { asChannelKey: MIRA.key });
+
+    assert.deepEqual(outcome, { outcome: 'updated' });
+    assert.deepEqual(h.connector.updated.map((update) => [update.asBot, update.id]), [[MIRA.key, messageId]]);
+    assert.ok(JSON.stringify(h.connector.updated[0]?.activity).includes('Ergebnis: Mittwoch'));
+
+    // Another restart: a click on the old card gets the closed card.
+    h.restart();
+    const late = await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'a' });
+    assert.ok(isCard(late) && textOf(late).includes('Ergebnis: Mittwoch') && !textOf(late).includes('Action.Execute'));
+    assert.deepEqual(h.kernel.events, []);
+  });
+
+  it('between post and a correction: the corrected card is stored and is what later clicks are read against', async () => {
+    const table = new CardTable();
+    const h = harness({ table });
+    const { content, messageId } = await h.post(SINGLE);
+    const corrected: QuestionCard = {
+      ...SINGLE,
+      proposalVersion: 3,
+      questions: [{ ...SINGLE.questions[0], options: [{ id: 'a', label: 'Dienstag' }, { id: 'd', label: 'Donnerstag' }] }] as QuestionCard['questions'],
+    };
+
+    assert.deepEqual(await h.restart().updateCard(GROUP_CHAT_ID, messageId, { state: 'open', card: corrected }, { asChannelKey: MIRA.key }), { outcome: 'updated' });
+    h.restart();
+    const current = (h.connector.updated.at(-1)?.activity['attachments'] as { content: Json }[])[0]?.content as Json;
+    const removedOption = await h.click(ANNA, messageId, { ...h.actionData(current), q0: 'b' });
+    const oldVersion = await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'a' });
+    await h.click(ANNA, messageId, { ...h.actionData(current), q0: 'd' });
+
+    assert.ok(textOf(removedOption).includes('Diese Option gibt es auf dieser Karte nicht.'));
+    assert.ok(textOf(oldVersion).includes('Der Vorschlag wurde inzwischen geändert'));
+    assert.deepEqual(h.kernel.events.map((e) => [e.cardAnswer?.proposalVersion, e.cardAnswer?.answers]), [[3, [{ questionId: 'termin', kind: 'single_choice', optionId: 'd' }]]]);
+  });
+
+  it('another bot cannot use the stored card of the first: not for a click, not for an update', async () => {
+    const table = new CardTable();
+    const h = harness({ table });
+    h.kernel.subscribe(GROUP_CHAT_ID, JONAS);
+    const { content, messageId } = await h.post(SINGLE);
+
+    const afterDeploy = h.restart();
+    const click = await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'a' }, { bot: JONAS });
+    const update = await afterDeploy.updateCard(
+      GROUP_CHAT_ID,
+      messageId,
+      { state: 'closed', title: 't', resultLines: ['r'], closedAt: '2026-11-19T10:05:00.000Z' },
+      { asChannelKey: JONAS.key },
+    );
+
+    assert.equal(click.value, 'Diese Abstimmung ist nicht mehr aktiv.');
+    assert.equal(update.outcome === 'unreachable' ? update.code : '', 'not_permitted');
+    assert.deepEqual(h.kernel.events, []);
+    assert.deepEqual(h.connector.updated, []);
+  });
+
+  it('without a table a restart forgets the card: clicks and updates are refused, nothing is taken from the click', async () => {
+    const h = harness();
+    const { content, messageId } = await h.post(SINGLE);
+
+    const afterDeploy = h.restart();
+    const click = await h.click(ANNA, messageId, { ...h.actionData(content), card: SINGLE, q0: 'b' });
+    const update = await afterDeploy.updateCard(
+      GROUP_CHAT_ID,
+      messageId,
+      { state: 'closed', title: 't', resultLines: ['r'], closedAt: '2026-11-19T10:05:00.000Z' },
+      { asChannelKey: MIRA.key },
+    );
+
+    assert.equal(click.value, 'Diese Abstimmung ist nicht mehr aktiv.');
+    assert.equal(update.outcome === 'unreachable' ? update.code : '', 'not_permitted');
+    assert.deepEqual(h.kernel.events, []);
+  });
+
+  it('a card that could not be stored still works until the restart', async () => {
+    const table = new CardTable();
+    table.save = async () => {
+      throw new Error('connection terminated');
+    };
+    const h = harness({ table });
+    const { content, messageId } = await h.post(SINGLE);
+
+    await h.click(ANNA, messageId, { ...h.actionData(content), q0: 'b' });
+
+    assert.equal(h.kernel.events.length, 1);
   });
 });
 
@@ -707,22 +857,6 @@ describe('#2089 question cards: updateCard', () => {
     const outcome = await h.provider.updateCard(GROUP_CHAT_ID, messageId, { state: 'open', card: { ...SINGLE, cardId: 'c-other' } }, { asChannelKey: MIRA.key });
     assert.equal(outcome.outcome, 'unreachable');
     assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /a corrected card keeps its id/);
-    assert.deepEqual(h.connector.updated, []);
-  });
-
-  it('after a restart the registry is empty: an update is refused and the engine posts its result as text', async () => {
-    const h = harness();
-    const { messageId } = await h.post(SINGLE);
-    const restarted = createTeamsConversationSendAdapter({ refs: h.refs, sendProactive: h.connector.sendProactive, cards: new TeamsQuestionCards() });
-
-    const outcome = await restarted.updateCard(
-      GROUP_CHAT_ID,
-      messageId,
-      { state: 'closed', title: 't', resultLines: ['r'], closedAt: '2026-11-19T10:05:00.000Z' },
-      { asChannelKey: MIRA.key },
-    );
-
-    assert.equal(outcome.outcome === 'unreachable' ? outcome.code : '', 'not_permitted');
     assert.deepEqual(h.connector.updated, []);
   });
 
