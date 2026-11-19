@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.38.1
+
+Two checks against the kernel's final question card contract (byte5ai/omadia#2105).
+
+- **`updateCard` touches only a question card the same bot posted.** The kernel keeps no
+  record of posted cards and checks identity and subscription only. The adapter looked
+  the message up only to pick the card's language, and would have sent the update for
+  any message id: Teams refuses another bot's message, but this bot's own text message
+  would have been replaced by a card. Now the id must be a card that this bot posted in
+  this conversation; anything else is `unreachable` (`not_permitted`) and no request is
+  made. A corrected card must keep its `cardId`.
+- **Consequence:** the cards are remembered in memory. After a restart of the Teams
+  channel an update of an earlier card is refused, and the engine's result text in the
+  chat is what people see.
+- **Emitted answers checked against the kernel's reader.** No change was needed: every
+  form's `card_answer` passes the kernel's `readCardAnswerFields` unchanged. A test now
+  feeds each form through a copy of that function, and compares the copy with the
+  kernel source where a kernel checkout with the contract is present.
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
 ## 0.38.0
 
 Question cards: votes and structured input in Teams as Adaptive Cards (kernel spec B

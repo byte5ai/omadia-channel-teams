@@ -288,7 +288,11 @@ provider declares `supports.card` with exactly these kinds, five questions and `
   middleware restart a refresh shows the question card again (the engine still holds the
   answer).
 - The closed card replaces the posted message when the engine asks for it
-  (`updateCard`): the engine's result lines, no inputs.
+  (`updateCard`): the engine's result lines, no inputs. Only a message that the same
+  bot posted as a question card in that conversation is updated; another bot's card, a
+  text message or an unknown id is refused. The cards are remembered in memory, so
+  after a restart of the Teams channel an update of an earlier card is refused and the
+  engine's result text in the chat stands.
 
 **Per-person refresh.** The card carries `refresh` without `userIds`. Teams then refreshes
 automatically for conversations of up to 60 members and offers "Refresh Card" above that.
