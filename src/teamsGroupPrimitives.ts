@@ -962,7 +962,7 @@ export function createTeamsConversationSendAdapter(deps: {
         );
         if (questionCard && senderAppId) {
           // Remembered so a click is checked against what was posted where.
-          deps.cards?.register({ card: questionCard, conversationId, botAppId: senderAppId, messageId: cardMessageId });
+          await deps.cards?.register({ card: questionCard, conversationId, botAppId: senderAppId, messageId: cardMessageId });
         }
         deps.refs.recordPostResult(conversationId, senderAppId, true);
         const messageId = textMessageId ?? cardMessageId;
@@ -1018,12 +1018,12 @@ export function createTeamsConversationSendAdapter(deps: {
       // not post as a card is refused. (Teams would refuse another bot's
       // message itself, but would happily turn this bot's own text message
       // into a card.)
-      const posted = cards.findByMessage(botAppId, cardMessageId);
+      const posted = await cards.findByMessage(botAppId, cardMessageId);
       if (!posted) {
         return {
           outcome: 'unreachable',
           code: 'not_permitted',
-          message: `'${cardMessageId}' is not a question card that bot '${botAppId}' posted (cards are remembered per bot until the Teams channel restarts)`,
+          message: `'${cardMessageId}' is not a question card that bot '${botAppId}' posted, or its record has expired`,
         };
       }
       if (bareConversationId(posted.conversationId) !== bareConversationId(conversationId)) {
@@ -1082,9 +1082,9 @@ export function createTeamsConversationSendAdapter(deps: {
         return { outcome: 'unreachable', code: 'channel_error', message: err instanceof Error ? err.message : String(err) };
       }
       if (update.state === 'open') {
-        cards.register({ card: update.card, conversationId, botAppId, messageId: cardMessageId });
+        await cards.register({ card: update.card, conversationId, botAppId, messageId: cardMessageId });
       } else {
-        cards.markClosed(botAppId, posted.card.cardId, {
+        await cards.markClosed(botAppId, posted.card.cardId, {
           title: update.title,
           resultLines: update.resultLines,
           closedAt: update.closedAt,
