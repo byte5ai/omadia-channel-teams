@@ -459,8 +459,14 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
      updated 2026-07-23, `graph/api/resources/teamworkonlinemeetinginfo` updated
      2024-11-27, `graph/api/resources/call` updated 2026-03-07, `apps-in-teams-meetings/
      meeting-apps-apis` updated 2026-10-22, the last one read in part.) So the state is
-     what this bot saw. It is kept in memory in 0.38.2: after a restart during a
-     meeting the snapshot says `chat` until the next join or the next start.
+     what this bot saw.
+   - **The state is stored** (0.38.3, table `teams_meeting_states` on the graph pool,
+     created by the plugin, single autocommit statements): a restart during a meeting
+     keeps `online`, and the first event after a restart continues the stored meeting.
+     A stored "running" is believed for twelve hours after its last start or join; an
+     end event that was missed therefore wears off, and from then on the chat is a
+     `chat`. Without a pool or without the table the state is memory only, and after a
+     restart the snapshot says `chat` until the next join or start.
    - **`presence`, only while it is proven.** All three must hold, none is assumed:
      a scheduled meeting is running in this chat (its start event said `Scheduled` or
      `Recurring`, or a participant event arrived, which exists for scheduled meetings

@@ -649,6 +649,10 @@ export class TeamsBot extends TeamsActivityHandler {
     // session events. One handler each; all four end in the same record.
     const onMeetingEvent = async (context: TurnContext, next: () => Promise<void>): Promise<void> => {
       this.groupPrimitives?.captureConversationReference(context);
+      // After a restart the first event for a conversation continues the
+      // STORED state of its meeting, not an empty one: a leave must not make
+      // a meeting that is known to run look like a plain chat.
+      await this.meetingSessions?.restore(context.activity);
       const event = this.meetingSessions?.handle(context.activity);
       console.error(
         `[teams] meeting event name=${(context.activity.name ?? '-').trim()} conv=${context.activity.conversation?.id ?? '-'} recorded=${String(event !== undefined)}`,

@@ -2,7 +2,7 @@
 
 ## 0.38.3
 
-Posted question cards survive a restart. The instance restarts on every deploy; a vote
+Posted question cards and the meeting state survive a restart. The instance restarts on every deploy; a vote
 that spanned one left a card with live inputs that could neither be closed nor checked.
 
 - **Stored**: every posted question card is written to the table `teams_question_cards`
@@ -26,6 +26,13 @@ that spanned one left a card with live inputs that could neither be closed nor c
   "nicht mehr aktiv" and cannot be closed by `updateCard`.
 - Still in memory only: a person's own-answer view. After a restart a refresh shows the
   question card again; the engine holds the answer.
+- **Meeting state stored too** (table `teams_meeting_states`, same rules): whether a
+  meeting runs in a chat is what the bot saw (start, join, end), and since 0.38.2 the
+  snapshot says `online` only then. With the state stored, a deploy during a meeting
+  no longer turns it into a plain chat, and the first event after a restart continues
+  the stored meeting. A stored "running" is believed for twelve hours after its last
+  start or join; older than that (an end event that was missed) it is unknown, and
+  unknown is reported as `chat`.
 - `compat` is unchanged (`core >=1.51.0 <2.0`).
 
 ## 0.38.2

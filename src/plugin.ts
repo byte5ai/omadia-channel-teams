@@ -61,6 +61,7 @@ import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
 import { isOutgoingLogEnabled, LOG_OUTGOING_ENV, resolveNativeAiLabel } from './teamsAiMarkingMode.js';
 import { TeamsQuestionCards } from './teamsQuestionCards.js';
+import { PgTeamsMeetingStateStore } from './teamsMeetingStateStore.js';
 import { PgTeamsQuestionCardStore } from './teamsQuestionCardStore.js';
 import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 import {
@@ -846,7 +847,10 @@ export async function activate(
         }
       : {}),
     onLifecycleChange: (conversationId, botKey) => announceCapabilities?.(conversationId, botKey),
-  });
+  },
+  // Whether a meeting runs is what the bot saw; written down so that a
+  // deploy during a meeting does not turn it into a plain chat (D26).
+  graphPool ? { persistence: new PgTeamsMeetingStateStore(graphPool, (m) => core.log('warn', m)) } : {});
   bot.attachMeetingSessions(meetingSessions);
   const meetingSource = createTeamsMeetingSource({
     refs: conversationRefs,

@@ -2,6 +2,10 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import {
+  believableMeetingState,
+  MEETING_STATES_DDL,
+  PgTeamsMeetingStateStore,
+  RUNNING_EVIDENCE_MAX_AGE_MS,
   KEEP_AFTER_CLOSE_MS,
   KEEP_WITHOUT_CLOSE_MS,
   PgTeamsQuestionCardStore,
@@ -178,5 +182,54 @@ describe('#2089 question card store', () => {
 
     assert.equal(await store.loadByCard(BOT, 'c-1'), undefined);
     assert.match(logged[0] ?? '', /question card lookup failed/);
+  });
+});
+
+describe('D26 meeting state store', () => {
+  const STATE = { sessionRef: 'meeting-1', meetingType: 'Scheduled', isScheduled: true, isLive: true, hasSeenParticipantEvent: true };
+  const BOT_KEY = `28:${BOT}`;
+
+  it('creates its table once and stores a state with one upsert, nothing that needs a session', async () => {
+    const db = fakePool({ rows: [{ state: STATE, seen_at: '2026-11-19T10:00:00.000Z' }] });
+    const store = new PgTeamsMeetingStateStore(db.pool, undefined, () => NOW);
+
+    await store.save(BOT_KEY, '19:meeting_x@thread.v2', { state: STATE, seenAt: NOW });
+    await store.save(BOT_KEY, '19:meeting_x@thread.v2', { state: { ...STATE, isLive: false }, seenAt: NOW + 1000 });
+    const read = await store.load(BOT_KEY, '19:meeting_x@thread.v2');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(db.statements.filter((s) => s.sql.startsWith('CREATE')).length, MEETING_STATES_DDL.length);
+    const insert = db.statements.find((s) => s.sql.startsWith('INSERT'));
+    assert.match(insert?.sql ?? '', /ON CONFLICT \(bot_key, conversation_id\) DO UPDATE/);
+    assert.deepEqual(insert?.params.slice(0, 4), [BOT_KEY.toLowerCase(), '19:meeting_x@thread.v2', JSON.stringify(STATE), '2026-11-19T10:00:00.000Z']);
+    assert.deepEqual(read, { state: STATE, seenAt: NOW });
+    for (const { sql } of db.statements) {
+      assert.doesNotMatch(sql, /\b(BEGIN|COMMIT|ROLLBACK|LISTEN|NOTIFY|PREPARE|DEALLOCATE|SET\s+(SESSION|search_path)|pg_advisory|TEMP|DECLARE)\b/i, sql);
+      assert.equal(sql.split(';').filter((part) => part.trim().length > 0).length, 1);
+    }
+  });
+
+  it('believes a stored running meeting for twelve hours after the last evidence, not longer', () => {
+    const stored = { state: STATE, seenAt: NOW };
+    assert.equal(believableMeetingState(stored, NOW + RUNNING_EVIDENCE_MAX_AGE_MS).isLive, true);
+    const stale = believableMeetingState(stored, NOW + RUNNING_EVIDENCE_MAX_AGE_MS + 1);
+    assert.equal(stale.isLive, false);
+    assert.equal(stale.hasSeenParticipantEvent, false, 'presence has to be proven again too');
+    assert.equal(stale.sessionRef, 'meeting-1');
+    // An ended meeting stays ended, whatever its age.
+    assert.equal(believableMeetingState({ state: { ...STATE, isLive: false }, seenAt: NOW }, NOW + 1).isLive, false);
+  });
+
+  it('without the right to create the table: memory only, said once, and never a throw', async () => {
+    const db = fakePool({ failOn: /CREATE TABLE/ });
+    const logged: string[] = [];
+    const store = new PgTeamsMeetingStateStore(db.pool, (message) => logged.push(message), () => NOW);
+
+    await store.save(BOT_KEY, 'c', { state: STATE, seenAt: NOW });
+    assert.equal(await store.load(BOT_KEY, 'c'), undefined);
+
+    assert.equal(logged.length, 1);
+    assert.match(logged[0] ?? '', /meeting state is kept in memory only: the table 'teams_meeting_states' could not be created/);
+    assert.equal(db.statements.length, 1);
   });
 });

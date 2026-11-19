@@ -61,7 +61,7 @@ export const MEETING_PARTICIPANT_RSC_PERMISSION = 'OnlineMeetingParticipant.Read
 export interface TeamsMeetingSourceDeps {
   refs: Pick<TeamsConversationReferenceCache, 'getOrLoad'>;
   /** What has been seen of the meeting in a conversation, per bot. */
-  sessions?: Pick<TeamsMeetingSessions, 'stateFor'>;
+  sessions?: Pick<TeamsMeetingSessions, 'stateFor'> & Partial<Pick<TeamsMeetingSessions, 'stateOrLoad'>>;
   /** The RSC permissions granted to the bot's app in the chat, read from
    *  Graph; `undefined` when they cannot be read. */
   grantedPermissions?(conversationId: string, asChannelKey: string): Promise<readonly string[] | undefined>;
@@ -70,6 +70,13 @@ export interface TeamsMeetingSourceDeps {
 
 export function createTeamsMeetingSource(deps: TeamsMeetingSourceDeps): MeetingSourceProvider {
   const now = deps.now ?? ((): Date => new Date());
+
+  /** What the bot saw of the meeting: from memory, else from the stored
+   *  state (after a restart), where the sessions offer it. */
+  const meetingState = async (conversationId: string, botKey: string) =>
+    deps.sessions?.stateOrLoad
+      ? deps.sessions.stateOrLoad(conversationId, botKey)
+      : deps.sessions?.stateFor(conversationId, botKey);
 
   /**
    * `presence` is declared only when ALL of this holds, none of it assumed:
@@ -86,7 +93,7 @@ export function createTeamsMeetingSource(deps: TeamsMeetingSourceDeps): MeetingS
    */
   const hasPresence = async (conversationId: string, asChannelKey: string | undefined): Promise<boolean> => {
     if (!asChannelKey || !deps.sessions || !deps.grantedPermissions) return false;
-    const state = deps.sessions.stateFor(conversationId, asChannelKey);
+    const state = await meetingState(conversationId, asChannelKey);
     if (!state?.isLive || !state.isScheduled || !state.hasSeenParticipantEvent) return false;
     const granted = await deps.grantedPermissions(conversationId, asChannelKey).catch(() => undefined);
     return (
@@ -106,7 +113,7 @@ export function createTeamsMeetingSource(deps: TeamsMeetingSourceDeps): MeetingS
       if (!known) return undefined;
       const isDirect = known.teamsType === 'personal';
       const botKey = botAppId ? teamsBotKey(botAppId) : undefined;
-      const meeting = botKey ? deps.sessions?.stateFor(conversationId, botKey) : undefined;
+      const meeting = botKey ? await meetingState(conversationId, botKey) : undefined;
       const sessionRef = opts.sessionRef ?? (meeting?.isLive ? meeting.sessionRef : undefined);
       const inputs = (await hasPresence(conversationId, botKey))
         ? [...CHAT_INPUTS, 'presence' as const]

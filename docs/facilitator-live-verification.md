@@ -371,6 +371,7 @@ Android) and read the `[teams]` log lines and the kernel events.
 | Q12 | Post a card with five questions and open it on a phone and in the meeting side panel. | Size and scrolling on the narrowest surfaces; whether five questions are too many |
 | Q13 | Click the poll card of 0.36.0 (two to six buttons). | That an `Action.Execute` click arrives at all and shows the acknowledgement; never done live |
 | Q14 | Post a card, deploy (or restart the middleware), then click it and let the engine close it. Read the log at activation. | That the table `teams_question_cards` is created on the instance's database through the pooler (no "kept in memory only" line), that the click is accepted and the close update goes through after the restart |
+| Q15 | Start a scheduled meeting, deploy during it, then read the stored capability snapshot; end the meeting and read it again. | That `teams_meeting_states` is created, that the snapshot says `online` after the restart and `chat` after the end. Also: that meeting start and end events arrive at all (never seen live) |
 
 Record the results in a new "Recorded run" section. An item that fails becomes an issue;
 the fallback for every form is the chat ballot, which stays valid.
