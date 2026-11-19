@@ -46,6 +46,11 @@ const REFUSED_VIEW_MS = 10 * 60 * 1000;
  *  is the one of the Bot Framework SDK and of the Universal Action Model. */
 const CARD_RESPONSE_TYPE = 'application/vnd.microsoft.card.adaptive';
 const MESSAGE_RESPONSE_TYPE = 'application/vnd.microsoft.activity.message';
+/** A card nobody closed is closed by the channel this long after its closing
+ *  time: the engine's own update, with the result, normally comes first. */
+export const OVERDUE_GRACE_MS = 5 * 60 * 1000;
+/** At most this many overdue cards are closed in one sweep. */
+const MAX_OVERDUE_PER_SWEEP = 50;
 
 type RegisteredCard = StoredQuestionCard;
 
@@ -193,6 +198,56 @@ export class TeamsQuestionCards {
     const record: RegisteredCard = { ...entry, closed };
     this.cards.set(key, record);
     await this.persist(record);
+  }
+
+  /** Open cards whose closing time passed more than `graceMs` ago: what the
+   *  registry holds in memory, and what the table still lists as open. */
+  private async overdueOpen(graceMs: number): Promise<readonly RegisteredCard[]> {
+    const before = this.now() - graceMs;
+    const isOverdue = (entry: RegisteredCard): boolean => !entry.closed && isPastClose(entry.card, before);
+    const stored = (await this.persistence?.listOverdueOpen?.(new Date(before), MAX_OVERDUE_PER_SWEEP)) ?? [];
+    const found = new Map<string, RegisteredCard>();
+    for (const entry of [...this.cards.values(), ...stored]) {
+      const key = TeamsQuestionCards.cardKey(entry.botAppId, entry.card.cardId);
+      // Memory is the newer truth: a card it knows as closed or corrected
+      // is not taken from an older row.
+      const current = this.cards.get(key) ?? entry;
+      if (isOverdue(current) && found.size < MAX_OVERDUE_PER_SWEEP) found.set(key, current);
+    }
+    return [...found.values()];
+  }
+
+  /**
+   * Close every card that is past its closing time and that nobody closed
+   * (the engine's `updateCard` never arrived). `replace` puts the closed form
+   * in place of the posted message; the card is closed here whether or not
+   * that worked, because nothing can be answered on it any more. Returns how
+   * many cards were closed.
+   */
+  async closeOverdue(
+    replace: (posted: RegisteredCard, closed: ClosedCardView) => Promise<void>,
+    log: (message: string) => void = (message) => console.error(message),
+    graceMs: number = OVERDUE_GRACE_MS,
+  ): Promise<number> {
+    const overdue = await this.overdueOpen(graceMs);
+    for (const posted of overdue) {
+      const card = posted.card;
+      const closed: ClosedCardView = {
+        title: card.title,
+        resultLines: [questionCardTexts(card.locale).noLongerActive],
+        closedAt: card.closesAt ?? new Date(this.now()).toISOString(),
+        ...(card.locale ? { locale: card.locale } : {}),
+      };
+      let replaced = 'the posted card was replaced by its closed form';
+      try {
+        await replace(posted, closed);
+      } catch (err) {
+        replaced = `the posted card could not be replaced (${err instanceof Error ? err.message : String(err)})`;
+      }
+      await this.markClosed(posted.botAppId, card.cardId, closed);
+      log(`[teams] question card '${card.cardId}' was still open past its closing time (${String(card.closesAt)}) and is closed now; ${replaced}`);
+    }
+    return overdue.length;
   }
 
   private forgetOwnAnswers(cardKey: string): void {

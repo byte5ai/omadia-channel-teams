@@ -117,6 +117,27 @@ describe('#2089 question card store', () => {
     assert.deepEqual(selects.map((s) => s.params), [[BOT.toLowerCase(), 'c-1'], [BOT.toLowerCase(), '1795027571374']]);
   });
 
+  it('lists the cards that are still open past their closing time, oldest first, in one plain statement (0.40.2)', async () => {
+    const row = { bot_app_id: BOT.toLowerCase(), card: CARD, conversation_id: '19:chat@thread.v2', message_id: '1795027571374', state: 'open', closed: null };
+    const db = fakePool({ rows: [row] });
+    const store = new PgTeamsQuestionCardStore(db.pool, undefined, () => NOW);
+
+    const overdue = await store.listOverdueOpen(new Date('2026-11-20T16:05:00.000Z'), 50);
+
+    assert.deepEqual(overdue, [{ botAppId: BOT.toLowerCase(), card: CARD, conversationId: '19:chat@thread.v2', messageId: '1795027571374' }]);
+    const select = db.statements.find((s) => s.sql.startsWith('SELECT'));
+    assert.match(select?.sql ?? '', /WHERE state = 'open' AND closes_at <= \$1 AND expires_at > now\(\) ORDER BY closes_at LIMIT \$2/);
+    assert.deepEqual(select?.params, ['2026-11-20T16:05:00.000Z', 50]);
+  });
+
+  it('a failed listing of overdue cards is an empty list, never a crash of the sweep', async () => {
+    const logged: string[] = [];
+    const store = new PgTeamsQuestionCardStore(fakePool({ failOn: /SELECT/ }).pool, (message) => logged.push(message), () => NOW);
+
+    assert.deepEqual(await store.listOverdueOpen(new Date(NOW), 50), []);
+    assert.equal(logged.length, 1);
+  });
+
   it('stores and returns the closed state', async () => {
     const closed = { title: 't', resultLines: ['Ergebnis: A'], closedAt: '2026-11-19T10:05:00.000Z' };
     const db = fakePool({

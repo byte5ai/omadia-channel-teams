@@ -63,6 +63,7 @@ import { isOutgoingLogEnabled, LOG_OUTGOING_ENV, resolveNativeAiLabel } from './
 import { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { PgTeamsMeetingStateStore } from './teamsMeetingStateStore.js';
 import { PgTeamsQuestionCardStore } from './teamsQuestionCardStore.js';
+import { createOverdueCardSweep, OVERDUE_SWEEP_INTERVAL_MS } from './teamsQuestionCardSweep.js';
 import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 import {
   disabledTeamsCardFeatures,
@@ -788,6 +789,17 @@ export async function activate(
     core.log('warn', 'teams: no database pool: question cards are kept in memory only and are forgotten when the Teams channel restarts');
   }
   bot.attachQuestionCards(questionCards);
+  // A card whose close never arrived (the kernel refused the engine's card
+  // update, the engine is gone) closes itself past its closing time.
+  const sweepOverdueCards = createOverdueCardSweep({
+    cards: questionCards,
+    refs: conversationRefs,
+    sendProactive,
+    log: (m) => core.log('warn', m),
+  });
+  void sweepOverdueCards();
+  const overdueCardTimer = setInterval(() => void sweepOverdueCards(), OVERDUE_SWEEP_INTERVAL_MS);
+  overdueCardTimer.unref();
   bot.setNativeAiLabel(nativeAiLabel);
   registerTeamsSendProviders(core, ctx.agentId, {
     refs: conversationRefs,
@@ -1094,6 +1106,7 @@ export async function activate(
       // incoming requests return 503. The TeamsBot holds no timers or
       // sockets we need to close explicitly; attachment store / graph
       // client rely on HTTP pools that shut down with the process.
+      clearInterval(overdueCardTimer);
       disposeTeamsCatalog();
       disposeTeamsUi();
       disposeTeamsNotify();
