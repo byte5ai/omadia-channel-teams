@@ -8,6 +8,7 @@ import {
   createTeamsRoutineDelivery,
   createTeamsTargetedSendAdapter,
   isOutgoingLogEnabled,
+  incomingInvokeLogLine,
   logOutgoingActivity,
   PROACTIVE_POSTS_CARRY_AI_LABEL,
   resolveNativeAiLabel,
@@ -404,5 +405,40 @@ describe('D24 the outgoing activity log', () => {
     assert.equal(resolveNativeAiLabel(() => 'false'), false);
     assert.equal(resolveNativeAiLabel(() => 'true'), true);
     assert.equal(resolveNativeAiLabel(() => true), true);
+  });
+});
+
+describe('the incoming invoke next to its response (0.38.5)', () => {
+  const click = (data: unknown, verb = 'facilitation.card.answer') => ({
+    type: 'invoke',
+    name: 'adaptiveCard/action',
+    id: 'f:1',
+    replyToId: '1700000000001',
+    conversation: { id: '19:abc@thread.v2' },
+    from: { id: '29:x', aadObjectId: 'aad-1' },
+    value: { action: { type: 'Action.Execute', verb, data } },
+  });
+
+  it('one line with name, verb, ids and the value', () => {
+    assert.equal(
+      incomingInvokeLogLine(click({ type: 'facilitation.card', cardId: 'c1', q0: 'b' }) as never),
+      '[teams] incoming invoke name=adaptiveCard/action verb=facilitation.card.answer id=f:1 replyToId=1700000000001' +
+        ' conversation=19:abc@thread.v2 from=aad-1' +
+        ' value={"action":{"type":"Action.Execute","verb":"facilitation.card.answer","data":{"type":"facilitation.card","cardId":"c1","q0":"b"}}}',
+    );
+  });
+
+  it('cuts free text after 200 characters, also inside data delivered as a JSON string', () => {
+    const long = 'x'.repeat(250);
+    for (const data of [{ q0: long }, JSON.stringify({ q0: long })]) {
+      const line = incomingInvokeLogLine(click(data) as never) ?? '';
+      assert.ok(line.includes(`"q0":"${'x'.repeat(200)}…(+50 chars)"`), line);
+      assert.ok(!line.includes('x'.repeat(201)));
+    }
+  });
+
+  it('is only for invokes', () => {
+    assert.equal(incomingInvokeLogLine({ type: 'message', text: 'hi' } as never), undefined);
+    assert.equal(incomingInvokeLogLine(undefined), undefined);
   });
 });

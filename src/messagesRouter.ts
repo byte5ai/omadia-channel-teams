@@ -10,6 +10,7 @@ import type {
 } from 'botbuilder';
 import { Router } from 'express';
 import { isOutgoingLogEnabled, logOutgoingActivity } from './teamsAiMarkingMode.js';
+import { incomingInvokeLogLine } from './teamsInvokeLog.js';
 import type { Request, Response } from 'express';
 import type { TeamsBot } from './teamsBot.js';
 import type { TeamsBotAppType, TeamsBotIdentity } from './teamsBotIdentity.js';
@@ -164,6 +165,10 @@ function withOutgoingLog<T>(
 ): (context: TurnContext) => Promise<T> {
   if (!isOutgoingLogEnabled()) return logic;
   return (context) => {
+    // An incoming invoke (a card click, a card refresh) on the line before
+    // the `invokeResponse` it gets, so a live check sees both sides.
+    const incoming = path === 'turn' ? incomingInvokeLogLine(context.activity) : undefined;
+    if (incoming) console.error(incoming);
     context.onSendActivities(async (_context, activities, next) => {
       for (const activity of activities) logOutgoingActivity(path, activity);
       return next();

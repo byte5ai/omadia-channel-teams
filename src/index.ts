@@ -357,3 +357,5 @@ export {
   type StoredMeetingState,
   type TeamsMeetingStatePersistence,
 } from './teamsMeetingStateStore.js';
+
+export { incomingInvokeLogLine, invokeValueForLog, INVOKE_LOG_MAX_TEXT } from './teamsInvokeLog.js';
