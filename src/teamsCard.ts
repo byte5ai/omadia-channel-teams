@@ -40,13 +40,25 @@ const AI_LABEL_ENTITY = {
   type: 'https://schema.org/Message',
   '@type': 'Message',
   '@context': 'https://schema.org',
+  // Empty on purpose. Microsoft's Teams SDK types this key as required with
+  // the comment "Must be left blank. This is for Bot Framework schema", and
+  // its `addAiGenerated()` always sends it. Until 0.38.2 this plugin sent the
+  // entity WITHOUT it, and the platform label was never seen on a message of
+  // this plugin (D24).
+  '@id': '',
   additionalType: ['AIGeneratedContent'],
 } as const;
 
 /**
- * AI-Generated-Content marker attached to a Teams message activity. Teams
- * renders this as a "✨ AI generated" label under the bot's reply.
- * Returns the exact shape Teams expects in `activity.entities`.
+ * AI-Generated-Content marker attached to a Teams message activity: the
+ * entity Microsoft's Teams SDK produces for `addAiGenerated()` (microsoft/
+ * teams.ts, `packages/api/src/activities/activity.ts` and
+ * `models/entity/message-entity.ts`, read 2026-11-19). Teams shows it as
+ * "AI Generated" next to the agent's name in the message header.
+ *
+ * NOT TO BE CONFUSED with the "✨ AI-generated" chip that the answer card
+ * draws itself (`statusChips` below): that chip is this plugin's own text
+ * inside the card and is visible whether or not Teams renders its label.
  */
 export function aiLabelEntity(): Readonly<typeof AI_LABEL_ENTITY> {
   return AI_LABEL_ENTITY;

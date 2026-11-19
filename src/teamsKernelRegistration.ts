@@ -38,6 +38,10 @@ export interface TeamsSendProviderDeps {
   botLabel(botAppId: string): string | undefined;
   /** #2089 — the question cards registry the bot answers clicks from. */
   cards?: TeamsQuestionCards;
+  /** D24 — the platform AI label was confirmed in a Teams client (operator
+   *  switch `teams_native_ai_label`). Only then do the providers declare
+   *  `supports.aiLabel`. */
+  nativeAiLabel?: boolean;
 }
 
 /**
@@ -62,12 +66,14 @@ export function registerTeamsSendProviders(
       openDirectConversation: deps.openDirectConversation,
       botLabel: deps.botLabel,
     },
+    nativeAiLabel: deps.nativeAiLabel === true,
   });
   const conversation = createTeamsConversationSendAdapter({
     refs: deps.refs,
     sendProactive: deps.sendProactive,
     roster: deps.roster,
     ...(deps.cards ? { cards: deps.cards } : {}),
+    nativeAiLabel: deps.nativeAiLabel === true,
   });
   core.registerTargetedSendProvider?.(channelId, targeted);
   core.registerConversationSendProvider?.(channelId, conversation);

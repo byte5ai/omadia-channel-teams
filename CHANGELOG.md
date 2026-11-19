@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.38.2
+
+Rollout defect D24: the facilitator's proactive posts (handshake, reminder, notice)
+showed **no AI marking at all** in Teams. Since 0.36.6 the send providers declared that
+Teams labels natively, so the kernel added no disclosure sentence, and the adapter
+stripped the sentence elsewhere; but the platform label was never seen on any message of
+this plugin. What had been read as "the label" on turn answers is the answer card's own
+"✨ AI-generated" chip.
+
+- **Every agent post is visibly marked again.** New setup switch
+  `teams_native_ai_label` ("AI marking: rely on the Teams label"), **off by default**.
+  Off: the providers do not declare `supports.aiLabel`, so the kernel adds the
+  instance's disclosure sentence to an agent's own posts; routine deliveries and long
+  plain-text answers keep the sentence. On (only after the label was seen in a client):
+  the 0.36.6 behaviour, label only.
+- **The label entity now has Microsoft's shape.** It is sent with `"@id": ""`, as
+  Microsoft's Teams SDK does for `addAiGenerated()`; this plugin sent it without. That
+  is the one difference found; whether it is why the label did not show is not proven.
+- **Unchanged:** answer cards keep their own chip and drop the sentence. The entity is
+  attached to every message in both modes.
+- **Debug capture:** with `TEAMS_LOG_OUTGOING_ACTIVITIES=1` every outgoing activity is
+  logged as JSON with the path it took (`turn`, `proactive`, `direct`, `update`).
+- **Tests** pin the proactive activity against the reply in a turn, field by field, and
+  the entity against Microsoft's SDK shape; one test per send path and mode.
+- **Live checklist:** six items (A1 to A6) in `docs/facilitator-live-verification.md`.
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
+Also in this version (rollout defect D26): **a meeting chat is `chat`, not `online`,
+unless a meeting is running.** The capability snapshot reported `online` for every
+meeting chat at any time; an engine reads `online` as "a meeting is running". Now
+`online` only between a meeting's start (or a participant join) and its end, as this
+bot saw it; `chat` before, after, and when the state is unknown. A leave event no
+longer marks a meeting as running. Microsoft documents no way to read the running
+state on demand; it is kept in memory, so after a restart during a meeting the
+snapshot says `chat` until the next join or start.
+
+While the switch is off, a client that does render the label shows label and sentence
+on the same message. Still without a visible marking of their own in both modes: the
+blocking choice card, the approval card, Conductor reminders, and cards posted without
+any text.
+
 ## 0.38.1
 
 Two checks against the kernel's final question card contract (byte5ai/omadia#2105).

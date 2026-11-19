@@ -153,11 +153,14 @@ export function readPollRequest(
  * channel's marking; no disclosure sentence is added to the text.
  */
 /**
- * `supports.aiLabel` of both send providers (channel-sdk 0.3.2). True because
- * the two builders below, which build EVERY activity of `sendToConversation`
- * and `sendToUser`, attach the label. A test holds the two together: whoever
- * stops attaching the label has to stop declaring it, or the kernel leaves
- * out the disclosure sentence for messages that carry no label either.
+ * The two builders below build EVERY activity of `sendToConversation` and
+ * `sendToUser` and attach the AI label entity to each.
+ *
+ * Attaching the entity is not the same as Teams SHOWING a label. Whether a
+ * provider DECLARES `supports.aiLabel` (and the kernel then leaves the
+ * disclosure sentence out) is decided by the operator switch
+ * `teams_native_ai_label`, off until the label was seen in a Teams client;
+ * see `teamsAiMarkingMode.ts`.
  */
 export const PROACTIVE_POSTS_CARRY_AI_LABEL = true;
 

@@ -226,37 +226,73 @@ upgrade call itself is Open → M5.*
 
 ## 5b. AI marking per send path
 
-The rule (kernel #2098): every message under an agent's name gets the channel's AI label
-where the channel has one, the instance's disclosure sentence otherwise; once, never both.
-Teams has a label (the `AIGeneratedContent` entity on the message activity), so in Teams
-it is always the label and never the sentence. *Simulated*: no row was looked at in a
-Teams client for this release.
+**State after rollout defect D24 (2026-11-19).** *Live* for the observation, *Source* for
+the entity shape, *Simulated* for everything this plugin now does. Whether Teams renders
+its label for any message of this plugin is **open**.
 
-| Send path | What arrives from the kernel | What Teams shows | Test (`tests/teamsAiMarking.test.ts` unless named) |
-|---|---|---|---|
-| Turn answer (card) | text with the sentence folded in, `aiDisclosure` | label; sentence stripped | "a model answer with the folded sentence" |
-| Fixed refusal / "not set up" answer of a facilitator | same shape as a model answer | label; sentence stripped | "a fixed refusal of the facilitator" |
-| Turn answer, disclosure turned off | text, no `aiDisclosure` | label | "an answer without a disclosure" |
-| Long turn answer (several plain messages) | as a turn answer | label on the first part; sentence stripped | "a long answer that is posted as plain text" |
-| Blocking choice card | question, options | label | "a blocking choice card" |
-| `NO_REPLY` answer, also with the sentence behind it | sentinel | nothing is posted | "a NO_REPLY answer stays silent" |
-| Proactive text (`sendToConversation`) | text without the sentence, because `supports.aiLabel` is declared | label | "both providers declare the label" |
-| Poll card (`sendToConversation`) | poll | label | same test |
-| Private reminder (`sendToUser`) | text without the sentence | label | same test; `teamsOutboundAsOwnBot.test.ts` |
-| Routine delivery, card | text with the sentence folded in, `aiDisclosure` | label; sentence stripped from the card body | "a routine delivery as a card" |
-| Routine delivery, plain text | same | label; sentence stripped | "a routine delivery as plain text" |
-| Conductor reminder (`{ text }`) | text, no `aiDisclosure` | label | "a delivery without aiDisclosure" |
-| Approval card | deterministic text | label | "an approval card" |
-| `NO_REPLY` routine answer | sentinel | nothing is posted | "a NO_REPLY routine answer is still dropped" |
-| Streaming | does not exist: the adapter calls `chat()` and posts the final answer | n/a | n/a |
+Three things mark a message, and they were confused:
 
-- Both send providers declare `supports.aiLabel: true` (channel-sdk 0.3.2). The kernel
-  then leaves the sentence out of own-identity sends. The flag and the two activity
-  builders live in `teamsOutboundMessage.ts`; a test holds them together.
-- **Not marked, on purpose so far:** the adapter's own fixed texts and side cards in a
-  turn (acknowledgements of card clicks, "no agent is assigned here", error texts, the
-  recalled-context card, slot / consent / routine-list cards, the topic question). They
-  are not model output and carry neither label nor sentence. No test covers them.
+| | What it is | Who shows it |
+|---|---|---|
+| Platform label | the `AIGeneratedContent` entity on the message activity | Teams: "AI Generated" next to the agent's name in the message header, tooltip "AI-generated content may be incorrect." |
+| Disclosure sentence | the instance's line, folded into the text by the kernel | plain text, always visible |
+| Card chip | "✨ AI-generated" inside this plugin's **answer card** | the card itself, always visible |
+
+**What was observed.** With 0.37.0 the facilitator's proactive posts (handshake, reminder,
+notice) showed no marking in the Teams web client. "✨ AI-generated" was seen on turn
+answers; that text is the answer card's own chip, not Teams' label (which reads "AI
+Generated" and sits in the header). So the platform label has **not been seen on any
+message of this plugin**, proactive or reply.
+
+**What is known about the cause.**
+
+- Microsoft's Teams SDK sends the entity with `"@id": ""` (`microsoft/teams.ts`,
+  `packages/api/src/models/entity/message-entity.ts`: "Must be left blank. This is for Bot
+  Framework schema"; `addAiGenerated()` in `activities/activity.ts`; read at commit
+  `96ec9329e`, 2026-11-10). This plugin sent it **without** `@id` until 0.38.2. That is
+  the one field in which our entity differed from Microsoft's; whether it is why the label
+  did not show is not proven.
+- Microsoft's page for the label ("AI content labels", updated 2026-10-13,
+  `learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/integrate-ai/ai-content-labels`)
+  gives no JSON, names "personal chats, group chats, and channels", and does not mention
+  meeting chats, proactive messages, Adaptive Card messages or app type. The word
+  "proactive" does not occur on it.
+- By code, a plain-text reply in a turn and a proactive text differ in `inputHint` only.
+  No path sets `channelData`. The SDK's `continueConversationAsync` does not rebuild the
+  activity; `entities` are sent as built. A captured request is still missing; set
+  `TEAMS_LOG_OUTGOING_ACTIVITIES=1` to get one (see below).
+
+**What the plugin does now.** The label entity is attached to every message, in Microsoft's
+shape. It counts as a marking only once somebody has **seen** it: the setup switch
+`teams_native_ai_label` ("AI marking: rely on the Teams label"), **off by default**.
+
+| Send path | Switch off (default) | Switch on |
+|---|---|---|
+| Turn answer on a card (also a facilitator's fixed refusal) | card chip; sentence stripped | the same |
+| Long turn answer (several plain messages) | sentence at the end of the last part | sentence stripped |
+| Blocking choice card | entity only (no chip on that card) | the same |
+| Proactive text, poll card, question card, private reminder | `supports.aiLabel` **not** declared, so the kernel adds the sentence to an agent's own posts; the adapter posts the text as handed over | `supports.aiLabel` declared; no sentence |
+| Routine delivery, card and plain text | sentence kept | sentence stripped |
+| Conductor reminder, approval card | entity only (deterministic kernel text, nothing folded in) | the same |
+| `NO_REPLY` (turn, routine), also with the sentence behind it | nothing is posted | nothing is posted |
+| Streaming | does not exist | does not exist |
+
+Each row has a test in `tests/teamsAiMarking.test.ts`.
+
+- **Off** can show a message with label **and** sentence, if a client does render the
+  label. That is accepted until the label is confirmed: marked twice is a blemish, not
+  marked at all is a disclosure failure.
+- **Still without a visible marking of their own, in both modes:** the blocking choice
+  card, the approval card, the Conductor reminder, and cards without text (poll, question
+  card) when the kernel has no text to put the sentence into. They carry the entity
+  only. Also unmarked, on purpose: the adapter's fixed texts (acknowledgements, errors),
+  which are not model output.
+
+**Capturing an outgoing activity.** With the environment variable
+`TEAMS_LOG_OUTGOING_ACTIVITIES=1` every activity a turn sends or updates is logged as
+`[teams] outgoing path=turn|proactive|direct|update activity={…}`, exactly as the SDK
+hands it to the Bot Connector. The lines contain message text and names, so the flag is
+for a diagnosis, not for normal operation.
 
 ## 5c. Question cards
 
@@ -398,9 +434,26 @@ therefore gives chat and cards and an on-demand roster, and **no lifecycle event
    observed live.
 4. **The capability snapshot**, per conversation and bot:
    - **always:** inputs `text`, `message_edits`, `card_answers`; outputs `text`,
-     `mentions`, `cards`, `polls`, `private_messages`. Modality `online` for a meeting
-     chat or while a meeting or call is running, `chat` otherwise. The roster is
-     available through the kernel's roster provider.
+     `mentions`, `cards`, `polls`, `private_messages`. The roster is available through
+     the kernel's roster provider.
+   - **modality `online` only while a meeting or call is known to be running** in the
+     conversation: from its start event, or from a participant join when the start was
+     not seen, until its end event. `chat` otherwise, **also for the chat of a
+     meeting**: before the meeting, after it, between sessions, and whenever the state
+     is unknown (0.38.2; before, every meeting chat was `online` at any time). A leave
+     event never makes a meeting "running".
+   - **The running state cannot be read on demand.** Graph's `onlineMeeting` and the
+     chat's `onlineMeetingInfo` (`teamworkOnlineMeetingInfo`: `calendarEventId`,
+     `joinWebUrl`, `organizer`) carry scheduled times and no state; the meeting details
+     API returns "a meeting's static metadata"; a `call` can be read only by the app
+     that holds it. The participant API tells whether **one** participant is in the
+     meeting (`meeting.inMeeting`), needs that participant's id, and says nothing when
+     the answer is no. (Microsoft Learn, fetched 2026-11-19: `graph/api/resources/onlinemeeting`
+     updated 2026-07-23, `graph/api/resources/teamworkonlinemeetinginfo` updated
+     2024-11-27, `graph/api/resources/call` updated 2026-03-07, `apps-in-teams-meetings/
+     meeting-apps-apis` updated 2026-10-22, the last one read in part.) So the state is
+     what this bot saw. It is kept in memory in 0.38.2: after a restart during a
+     meeting the snapshot says `chat` until the next join or the next start.
    - **`presence`, only while it is proven.** All three must hold, none is assumed:
      a scheduled meeting is running in this chat (its start event said `Scheduled` or
      `Recurring`, or a participant event arrived, which exists for scheduled meetings

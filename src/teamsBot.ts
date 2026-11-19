@@ -710,6 +710,14 @@ export class TeamsBot extends TeamsActivityHandler {
     await super.dispatchEventActivity(context);
   }
 
+  /** D24 — the platform AI label was confirmed in a Teams client (operator
+   *  switch `teams_native_ai_label`). Off by default. */
+  private nativeAiLabel = false;
+
+  setNativeAiLabel(isConfirmed: boolean): void {
+    this.nativeAiLabel = isConfirmed;
+  }
+
   private questionCards?: TeamsQuestionCards;
 
   /** #2089 — the cards this plugin posted and what a click on one does. */
@@ -2280,6 +2288,12 @@ export class TeamsBot extends TeamsActivityHandler {
             ...(answerVerbosity ? { answerVerbosity } : {}),
             ...(result.answerSource === 'privacy-render' ? { systemData: true } : {}),
             cardFeatures: this.cardFeatures,
+            // D24 — an answer too long for a card goes out as plain text,
+            // where no chip of ours is shown. Unless the platform label was
+            // confirmed, the disclosure sentence goes back onto that text.
+            ...(!this.nativeAiLabel && result.aiDisclosure?.text
+              ? { plainTextDisclosure: result.aiDisclosure.text }
+              : {}),
           },
         );
 
@@ -2428,6 +2442,9 @@ async function sendAnswer(
     systemData?: boolean;
     /** Operator switches for the optional buttons; absent → all on. */
     cardFeatures?: TeamsCardFeatures;
+    /** The instance's disclosure sentence, appended when the answer is sent
+     *  as plain text instead of a card (the card carries its own chip). */
+    plainTextDisclosure?: string;
   },
 ): Promise<void> {
   const cardFeatures = directLine?.cardFeatures ?? DEFAULT_TEAMS_CARD_FEATURES;
@@ -2531,7 +2548,9 @@ async function sendAnswer(
     return;
   }
 
-  const chunks = splitAtParagraphs(resolvedText, TEAMS_MAX_MESSAGE_CHARS);
+  const disclosure = directLine?.plainTextDisclosure?.trim();
+  const plainText = disclosure && !resolvedText.endsWith(disclosure) ? `${resolvedText}\n\n${disclosure}` : resolvedText;
+  const chunks = splitAtParagraphs(plainText, TEAMS_MAX_MESSAGE_CHARS);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     if (chunk === undefined) continue;
