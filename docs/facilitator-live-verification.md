@@ -326,6 +326,22 @@ verified only when every "Expected" line was observed.
 4. The same in a Meet-now call, or without the portal subscription.
    - Expected: Mira does not notice until the person writes. This is the stated limit.
 
+## AI marking (0.38.2): to verify in the client
+
+Found on 2026-11-19 (rollout defect D24): the facilitator's proactive posts showed no AI
+marking at all. The cause is not proven; see `teams-meeting-apis.md` §5b. 0.38.2 makes
+every such post carry the instance's disclosure sentence again and sends the label entity
+in Microsoft's shape. What only a Teams client can show:
+
+| # | Do | Settles |
+|---|---|---|
+| A1 | After the update, let a facilitator post proactively (start a moderation). Look at the handshake in Teams desktop, web and mobile. | That the disclosure sentence is on the agent's first own post in the conversation (it must be: `teams_native_ai_label` is off). Note on which later posts it is absent: the kernel adds it to the first post per conversation |
+| A2 | On the same messages, look at the **message header** next to the agent's name. | Whether Teams now shows "AI Generated" there (tooltip "AI-generated content may be incorrect."). 0.38.2 sends the entity with `"@id": ""`, as Microsoft's SDK does. Do not confuse it with "✨ AI-generated" **inside** an answer card: that is the card's own chip |
+| A3 | Look at the header of a normal agent answer (a card) and of a very long answer (plain text). | Whether the platform label appears on replies in a turn at all. It has never been confirmed on any message of this plugin |
+| A4 | Repeat A2 in a group chat, a channel thread, a meeting chat and a 1:1. | Microsoft's page names personal chats, group chats and channels; meeting chats are not mentioned |
+| A5 | Set `TEAMS_LOG_OUTGOING_ACTIVITIES=1`, restart, post once proactively and once as a reply, then unset it. Keep the two `[teams] outgoing path=…` lines. | The exact activities that went to the Bot Connector, for a field-by-field comparison if the label still does not show |
+| A6 | Only if A2 shows the label on proactive posts in every scope you use: switch **AI marking: rely on the Teams label** on, and repeat A1. | That the sentence is gone and the label alone marks the post. If the label shows only in some scopes, leave the switch off |
+
 ## Question cards (0.38.0): not run yet
 
 Everything below is **unverified**: the question cards were built against Microsoft's

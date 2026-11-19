@@ -72,7 +72,7 @@ describe('declared send capabilities on the registered providers', () => {
     assert.ok(conversation);
     assert.equal(conversation.channelId, CATALOG_ID);
     assert.equal(conversation.provider['channelType'], 'teams');
-    assert.deepEqual(conversation.provider['supports'], { asChannelKey: true, mentions: true, poll: true, aiLabel: true });
+    assert.deepEqual(conversation.provider['supports'], { asChannelKey: true, mentions: true, poll: true, aiLabel: false });
   });
 
   it('wired as the plugin wires it, the conversation provider declares question cards and can update them', () => {
@@ -86,7 +86,7 @@ describe('declared send capabilities on the registered providers', () => {
       asChannelKey: true,
       mentions: true,
       poll: true,
-      aiLabel: true,
+      aiLabel: false,
       card: {
         kinds: ['single_choice', 'multiple_choice', 'ranking', 'consent', 'assignment', 'text'],
         maxQuestions: 5,
@@ -103,7 +103,7 @@ describe('declared send capabilities on the registered providers', () => {
     assert.ok(targeted);
     assert.equal(targeted.channelId, CATALOG_ID);
     assert.equal(targeted.provider['channelType'], 'teams');
-    assert.deepEqual(targeted.provider['supports'], { asChannelKey: true, aiLabel: true });
+    assert.deepEqual(targeted.provider['supports'], { asChannelKey: true, aiLabel: false });
   });
 
   it('what is declared is what the registered objects do: a post and a DM as the named bot', async () => {
@@ -133,13 +133,13 @@ describe('declared send capabilities on the registered providers', () => {
     const refs = new TeamsConversationReferenceCache();
     assert.deepEqual(createTeamsTargetedSendAdapter({ sendProactive: connector.sendProactive }).supports, {
       asChannelKey: false,
-      aiLabel: true,
+      aiLabel: false,
     });
     assert.deepEqual(createTeamsConversationSendAdapter({ refs, sendProactive: connector.sendProactive }).supports, {
       asChannelKey: true,
       mentions: false,
       poll: true,
-      aiLabel: true,
+      aiLabel: false,
     });
   });
 });

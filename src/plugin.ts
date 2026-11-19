@@ -59,6 +59,7 @@ import type {
 import { createAttachmentsRouter } from './attachmentsRouter.js';
 import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
+import { isOutgoingLogEnabled, LOG_OUTGOING_ENV, resolveNativeAiLabel } from './teamsAiMarkingMode.js';
 import { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 import {
@@ -753,13 +754,28 @@ export async function activate(
   // (own identity, mentions, polls) — see teamsKernelRegistration.ts.
   // #2089 — one registry of posted question cards, shared by the provider
   // that posts and updates them and the bot that answers the clicks.
+  // D24 — the platform AI label counts as a marking only once it was seen in
+  // a Teams client; until then the disclosure sentence stays on everything
+  // that has no card chip of its own. See teamsAiMarkingMode.ts.
+  const nativeAiLabel = resolveNativeAiLabel((key) => ctx.config.get(key));
+  core.log(
+    'info',
+    nativeAiLabel
+      ? "teams AI marking: platform label (teams_native_ai_label is on): no disclosure sentence on agent posts"
+      : "teams AI marking: disclosure sentence on agent posts; the label entity is attached but not relied on (teams_native_ai_label is off)",
+  );
+  if (isOutgoingLogEnabled()) {
+    core.log('warn', `teams: ${LOG_OUTGOING_ENV} is set: every outgoing activity is logged with its text`);
+  }
   const questionCards = new TeamsQuestionCards();
   bot.attachQuestionCards(questionCards);
+  bot.setNativeAiLabel(nativeAiLabel);
   registerTeamsSendProviders(core, ctx.agentId, {
     refs: conversationRefs,
     sendProactive,
     roster: teamsRosterProvider,
     cards: questionCards,
+    nativeAiLabel,
     openDirectConversation,
     botLabel: (botAppId) =>
       teamsBots.find((identity) => identity.appId.toLowerCase() === botAppId)?.displayName,
@@ -876,6 +892,7 @@ export async function activate(
       'teams',
       createTeamsRoutineDelivery({
         sendProactive,
+        nativeAiLabel,
         ...(buildRoutineSmartCardAttachment ? { buildRoutineSmartCardAttachment } : {}),
       }),
     );

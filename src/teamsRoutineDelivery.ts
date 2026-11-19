@@ -2,16 +2,16 @@
 // turn: a routine's scheduled answer, a Conductor approval request, a
 // Conductor reminder. Registered with `routinesIntegration.publishProactiveSend`.
 //
-// AI MARKING (#643, #2043). Everything posted under an agent's name carries
-// Teams' "AI generated" label, once, and never the disclosure sentence:
-//   - A routine delivery is an answer of the agent. The kernel hands it over
-//     with the instance's disclosure line folded into `text` and named in
-//     `aiDisclosure`. The line is stripped and the label attached, exactly as
-//     for a turn answer. Without `aiDisclosure` (the operator turned the
-//     disclosure off) there is nothing to strip; the label is attached all
-//     the same.
-//   - An approval card is deterministic kernel text with nothing folded in:
-//     label only.
+// AI MARKING (#643, #2043, D24). Every delivery carries the AI label entity.
+// Whether Teams SHOWS a label for it was never observed, so by default the
+// disclosure sentence the kernel folded into a routine delivery STAYS in the
+// text. Only with the operator switch `teams_native_ai_label` on (the label
+// was seen in a client) is the sentence removed, as for a turn answer's
+// card. See `teamsAiMarkingMode.ts`.
+//   - A routine delivery is an answer of the agent: `text` with the folded
+//     line, `aiDisclosure` naming it.
+//   - An approval card and a Conductor reminder are deterministic kernel
+//     text with nothing folded in: the entity only.
 
 import type { Activity, Attachment, ConversationReference, TurnContext } from 'botbuilder';
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
@@ -31,6 +31,12 @@ export interface TeamsRoutineDeliveryDeps {
     routine: { id: string; name: string; cron: string };
     body: string;
   }) => { contentType: string; content: unknown };
+  /**
+   * The platform AI label was confirmed in a Teams client. Only then is the
+   * folded disclosure sentence removed from a delivery; otherwise it stays,
+   * because nothing else on these messages is known to be visible (D24).
+   */
+  nativeAiLabel?: boolean;
 }
 
 /** The delivery's text without the disclosure line the kernel folded in. */
@@ -43,6 +49,7 @@ export function buildRoutineDeliveryActivity(
   message: RoutineMessage,
   routine: RoutineInfo,
   buildRoutineSmartCardAttachment: TeamsRoutineDeliveryDeps['buildRoutineSmartCardAttachment'],
+  nativeAiLabel = false,
 ): Partial<Activity> {
   const entities = [aiLabelEntity()];
   // Conductor human-await request: the approve/reject card (shows WHAT is
@@ -51,7 +58,8 @@ export function buildRoutineDeliveryActivity(
   if (message.approval) {
     return { type: 'message', attachments: [buildApprovalCard(message.approval)], entities };
   }
-  const body = deliveryBody(message);
+  // The sentence goes only when the label is known to be shown instead.
+  const body = nativeAiLabel ? deliveryBody(message) : message.text;
   // With routine metadata and the integration's card builder: the card, so
   // the user sees this is a scheduled delivery and can pause or delete it
   // inline. Otherwise plain text.
@@ -83,7 +91,7 @@ export function createTeamsRoutineDelivery(deps: TeamsRoutineDeliveryDeps): Proa
     }
     await deps.sendProactive(conversationRef as Partial<ConversationReference>, async (turnContext: TurnContext) => {
       await turnContext.sendActivity(
-        buildRoutineDeliveryActivity(message, routine, deps.buildRoutineSmartCardAttachment),
+        buildRoutineDeliveryActivity(message, routine, deps.buildRoutineSmartCardAttachment, deps.nativeAiLabel === true),
       );
     });
   };

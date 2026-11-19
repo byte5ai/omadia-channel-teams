@@ -326,3 +326,12 @@ export {
   RENDERED_CARD_KINDS,
   TEAMS_CARD_CAPABILITY,
 } from './teamsQuestionCardSpec.js';
+
+// D24 — how agent messages are marked as AI-generated, and the debug capture.
+export {
+  isOutgoingLogEnabled,
+  LOG_OUTGOING_ENV,
+  logOutgoingActivity,
+  NATIVE_AI_LABEL_CONFIG_KEY,
+  resolveNativeAiLabel,
+} from './teamsAiMarkingMode.js';

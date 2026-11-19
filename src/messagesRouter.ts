@@ -9,6 +9,7 @@ import type {
   TurnContext,
 } from 'botbuilder';
 import { Router } from 'express';
+import { isOutgoingLogEnabled, logOutgoingActivity } from './teamsAiMarkingMode.js';
 import type { Request, Response } from 'express';
 import type { TeamsBot } from './teamsBot.js';
 import type { TeamsBotAppType, TeamsBotIdentity } from './teamsBotIdentity.js';
@@ -150,6 +151,31 @@ export interface TeamsRouterArtifacts {
   getBotRuntimeBySlug(botSlug: string): TeamsBotRuntime | undefined;
 }
 
+/**
+ * Debug capture for D24 and whatever comes next: with
+ * `TEAMS_LOG_OUTGOING_ACTIVITIES=1` every activity a turn sends or updates is
+ * logged as JSON, exactly as the SDK hands it to the Bot Connector. The hook
+ * is the SDK's own (`onSendActivities` / `onUpdateActivity`), so nothing is
+ * rebuilt or guessed. Off by default: the lines contain message text.
+ */
+function withOutgoingLog<T>(
+  path: 'turn' | 'proactive' | 'direct',
+  logic: (context: TurnContext) => Promise<T>,
+): (context: TurnContext) => Promise<T> {
+  if (!isOutgoingLogEnabled()) return logic;
+  return (context) => {
+    context.onSendActivities(async (_context, activities, next) => {
+      for (const activity of activities) logOutgoingActivity(path, activity);
+      return next();
+    });
+    context.onUpdateActivity(async (_context, activity, next) => {
+      logOutgoingActivity('update', activity);
+      return next();
+    });
+    return logic(context);
+  };
+}
+
 /** Same read-path allowlist as the conversation-ref store (`isAllowedServiceUrl`,
  *  review M2): a poisoned reference — DB row, routine row, or cache — must not
  *  make `continueConversationAsync` present bot credentials to an attacker
@@ -206,7 +232,7 @@ function buildBotRuntime(config: BotCredentialConfig): TeamsBotRuntime {
     await adapter.continueConversationAsync(
       config.appId,
       reference as Partial<Activity>,
-      build,
+      withOutgoingLog('proactive', build),
     );
   };
 
@@ -226,7 +252,7 @@ function buildBotRuntime(config: BotCredentialConfig): TeamsBotRuntime {
         members: [{ id: target.userId, name: '' }],
         ...(config.tenantId ? { tenantId: config.tenantId, channelData: { tenant: { id: config.tenantId } } } : {}),
       } as Parameters<CloudAdapter['createConversationAsync']>[4],
-      build,
+      withOutgoingLog('direct', build),
     );
   };
 
@@ -357,7 +383,7 @@ export function createTeamsRouter(deps: TeamsRouterDeps): TeamsRouterArtifacts {
   /** Hand the request to ONE bot's CloudAdapter — BF authentication happens
    *  inside `adapter.process`, against exactly that bot's credential set. */
   const processTurn = (runtime: TeamsBotRuntime, req: Request, res: Response): void => {
-    runtime.adapter.process(req, res, (context) => deps.bot.run(context));
+    runtime.adapter.process(req, res, withOutgoingLog('turn', (context) => deps.bot.run(context)));
   };
 
   /**

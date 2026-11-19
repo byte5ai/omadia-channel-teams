@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.38.1"
+  version: "0.38.2"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als Kanal für omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -314,6 +314,16 @@ setup:
       label: "Dashboard-Label für Channel-Routing"
       help: "Optionales, für Administratoren lesbares Label für /operator/channels (statt 'Teams · <bot-app-id-short>'). Beispiel: 'Teams · Production · Marketing'. Leer lassen → generiertes Default-Label."
       required: false
+    - key: "teams_native_ai_label"
+      type: "boolean"
+      label:
+        en: "AI marking: rely on the Teams label"
+        de: "KI-Kennzeichnung: auf das Teams-Label verlassen"
+      help:
+        en: "Off (default): messages an agent posts on its own (moderation posts, reminders, routine deliveries, very long answers) carry the instance's AI disclosure sentence. Switch on only after you have SEEN the label \"AI Generated\" next to the agent's name on such a message in your Teams client; the sentence is then left out. Answer cards always show their own \"✨ AI-generated\" chip."
+        de: "Aus (Standard): Nachrichten, die ein Agent von sich aus postet (Moderationsbeiträge, Erinnerungen, Routine-Zustellungen, sehr lange Antworten), tragen den KI-Hinweissatz der Instanz. Erst einschalten, wenn du das Label „AI Generated“ neben dem Namen des Agenten an einer solchen Nachricht in deinem Teams-Client GESEHEN hast; dann entfällt der Satz. Antwort-Cards zeigen immer ihren eigenen Chip „✨ AI-generated“."
+      required: false
+      default: "false"
     - key: "teams_card_tool_trace"
       type: "boolean"
       label:

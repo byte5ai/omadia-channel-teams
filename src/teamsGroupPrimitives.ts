@@ -557,16 +557,20 @@ function buildQuestionCardActivity(card: QuestionCard): Partial<Activity> {
  * typecheck against the kernel's main branch for exactly that reason. The
  * values are this plugin's mirror type, which is a superset of every SDK's.
  */
-function targetedCapabilities(hasDirectPath: boolean): SendProviderCapabilities {
-  return { asChannelKey: hasDirectPath, aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL };
+function targetedCapabilities(hasDirectPath: boolean, declaresAiLabel: boolean): SendProviderCapabilities {
+  return { asChannelKey: hasDirectPath, aiLabel: declaresAiLabel && PROACTIVE_POSTS_CARRY_AI_LABEL };
 }
 
-function conversationCapabilities(hasRoster: boolean, hasCards: boolean): SendProviderCapabilities {
+function conversationCapabilities(hasRoster: boolean, hasCards: boolean, declaresAiLabel: boolean): SendProviderCapabilities {
   return {
     asChannelKey: true,
     mentions: hasRoster,
     poll: true,
-    aiLabel: PROACTIVE_POSTS_CARRY_AI_LABEL,
+    // Declared only once the platform label was SEEN in a Teams client (the
+    // operator switch `teams_native_ai_label`). Undeclared, the kernel adds
+    // the instance's disclosure sentence to an agent's own posts: a post is
+    // never left without a visible marking (rollout defect D24).
+    aiLabel: declaresAiLabel && PROACTIVE_POSTS_CARRY_AI_LABEL,
     // Question cards: the kinds really rendered, and `updateCard`.
     ...(hasCards ? { card: TEAMS_CARD_CAPABILITY } : {}),
   };
@@ -602,6 +606,9 @@ export interface TeamsDirectSendDeps {
 export function createTeamsTargetedSendAdapter(deps: {
   sendProactive: TeamsProactiveSend;
   direct?: TeamsDirectSendDeps;
+  /** The platform AI label was confirmed in a Teams client: declare
+   *  `supports.aiLabel`. Default: not declared. */
+  nativeAiLabel?: boolean;
   retry?: RetryOptions;
 }): TargetedSendProvider {
   type Target = Parameters<TargetedSendProvider['sendToUser']>[0];
@@ -706,7 +713,7 @@ export function createTeamsTargetedSendAdapter(deps: {
     // but there would be nothing to deliver with either.
     //   aiLabel       every activity of this provider is built by
     //                 `buildOutgoingActivity`, which attaches the label
-    supports: targetedCapabilities(deps.direct !== undefined),
+    supports: targetedCapabilities(deps.direct !== undefined, deps.nativeAiLabel === true),
     // Rest tuple for the same reason as `sendToConversation` below: the third
     // argument exists from channel-sdk 0.3.0 on.
     async sendToUser(
@@ -764,6 +771,9 @@ export function createTeamsConversationSendAdapter(deps: {
    *  question cards and declares `supports.card`; without it a card is
    *  refused. The bot is given the same instance to answer the clicks. */
   cards?: TeamsQuestionCards;
+  /** The platform AI label was confirmed in a Teams client: declare
+   *  `supports.aiLabel`. Default: not declared. */
+  nativeAiLabel?: boolean;
   retry?: RetryOptions;
   // The declared return type is a SUPERSET of the SDK interface, for the same
   // reason the send method takes a rest tuple: this plugin ships independently
@@ -790,7 +800,7 @@ export function createTeamsConversationSendAdapter(deps: {
     //   poll          posted as a card; an invalid poll is refused
     // Text and poll card are built by `buildOutgoingActivity` /
     // `buildPollActivity`, which attach the AI label.
-    supports: conversationCapabilities(deps.roster !== undefined, deps.cards !== undefined),
+    supports: conversationCapabilities(deps.roster !== undefined, deps.cards !== undefined, deps.nativeAiLabel === true),
     // Rest tuple, not three named parameters, ON PURPOSE: the plugin ships
     // independently of the kernel and is compiled against whatever
     // `@omadia/channel-sdk` is installed. On an SDK that predates
