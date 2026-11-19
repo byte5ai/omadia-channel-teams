@@ -554,6 +554,9 @@ export interface ConversationMessageEvent {
   replyToMessageId?: string;
   quoted?: boolean;
   forwarded?: boolean;
+  /** #2089 (channel-sdk 0.3.5) — the message addresses the receiving bot: a
+   *  mention of it, or any message in the bot's own 1:1 chat. */
+  addressedToBot?: boolean;
   reaction?: { name: string; removed: boolean };
   /** `answererVerified: false` when the platform did not state who clicked
    *  (no verified user id on the activity). */
@@ -738,7 +741,15 @@ export interface TargetedSendOptions {
  *  messages: `cardMessageId` is the card, and the `messageId` of every
  *  `card_answer` event for it. */
 export type FacilitatorDeliveryOutcome =
-  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string }
+  | {
+      outcome: 'delivered';
+      messageId?: string;
+      cardMessageId?: string;
+      /** A DIRECT message only (0.39.0, not in the kernel contract yet): the
+       *  Teams id of the 1:1 conversation the message went into. Together
+       *  with `messageId` it is what a later private reply refers to. */
+      conversationId?: string;
+    }
   | {
       outcome: 'unreachable';
       code:
@@ -757,6 +768,9 @@ export interface NativeFacilitatorCoreApi {
   /** Synchronous and kernel-cached; `false` for anything not positively
    *  subscribed. Absent means the mention gate always applies. */
   isAllMessagesSubscribed?(channelType: string, conversationId: string, channelKey: string): boolean;
+  /** #2089 (channel-sdk 0.3.5) — `all`, `addressed` or `none` for this
+   *  identity in this conversation. Absent on an older kernel. */
+  conversationDelivery?(channelType: string, conversationId: string, channelKey: string): 'all' | 'addressed' | 'none';
   registerReadinessProvider?(channelId: string, provider: ChannelReadinessProvider): void;
   registerMeetingSourceProvider?(channelId: string, provider: MeetingSourceProvider): void;
   emitSessionCapabilities?(snapshot: SessionCapabilitySnapshot): void;

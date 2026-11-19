@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.39.0
+
+T2 of the spec alignment (byte5ai/omadia#2043, #2089, #2091): what the kernel's K4
+contracts need from Teams. Feature-detected; on a kernel without them nothing changes.
+
+- **Delivery per mode** (`conversationDelivery`, channel-sdk 0.3.5). The adapter asks
+  the kernel per bot and conversation what to hand over:
+  - `all`: as before. Every human message is an event, the mention gate is lifted, no
+    turn starts.
+  - `addressed` (a facilitation in follow-up): the mention gate stays and the ordinary
+    turn runs as without a facilitation. Handed to the kernel as events: a mention of
+    the bot (`addressedToBot: true`), a reply (see below), a card answer, a reaction,
+    and an edit of a message that addresses the bot. A reply without a mention is an
+    event and no turn. A deletion is not handed over.
+  - `none`: nothing.
+  Until now the adapter emitted only where a bot read all messages, so a process in
+  follow-up got nothing from Teams. A kernel before 0.3.5 knows `all` and `none` only.
+- **A mention is marked** (`addressedToBot`) in `all` mode too, so a process in
+  follow-up next to a newer one in moderation still gets it.
+- **What counts as a reply.** A message that names the message it answers: a quoted
+  reply (the quoted message id), or `replyToId` where that is not just the root of the
+  channel thread the conversation is. The adapter does not judge whose message that is;
+  the kernel keeps the event only when it is one of a process's own.
+  A quote is read from the HTML attachment (as before) and from a `quotedReply`
+  entity, the shape Microsoft's page describes; neither was seen live.
+- **Private messages to a bot.** Every message of a bot's 1:1 chat is a turn whose
+  origin states the author as Teams does (`principal` and `speaker` with the Entra
+  object id, `conversationType: 'direct'`); that is what the kernel's private status
+  path reads (unchanged since 0.36.5, now covered by a test). When the kernel asks for
+  that 1:1 (`addressed`), the message is also an event with `addressedToBot: true` and,
+  for a quoted reply, the id of the quoted message.
+- **A direct send states its conversation.** `sendToUser` returns `conversationId` (the
+  1:1 it went into) next to `messageId`. Not in the kernel contract yet; without it
+  nobody can ask for that 1:1 or bind a reply to a reminder.
+- **Readiness of a linked meeting chat** needed no change: the check is per
+  conversation and per bot, reads Graph each time, and treats a meeting chat as the chat
+  it is. Criterion 60 is now a test (home ready, meeting chat without the all-messages
+  permission not ready, ready after the grant).
+- `compat.core` unchanged.
+
 ## 0.38.5
 
 - **The debug log shows both sides of a card click.** With

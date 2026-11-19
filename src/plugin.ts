@@ -731,11 +731,21 @@ export async function activate(
   const facilitatorCore: NativeFacilitatorCoreApi = core;
   const emitConversationMessage = facilitatorCore.emitConversationMessage?.bind(facilitatorCore);
   const isAllMessagesSubscribed = facilitatorCore.isAllMessagesSubscribed?.bind(facilitatorCore);
+  // #2089 — all / addressed / none per bot and conversation (channel-sdk
+  // 0.3.5). Without it the adapter knows `all` and `none` only, and a
+  // process in follow-up gets nothing from Teams.
+  const conversationDelivery = facilitatorCore.conversationDelivery?.bind(facilitatorCore);
   if (emitConversationMessage && isAllMessagesSubscribed) {
     bot.attachConversationMessages(
       new TeamsConversationMessages({
         isAllMessagesSubscribed: (conversationId, channelKey) =>
           isAllMessagesSubscribed('teams', conversationId, channelKey),
+        ...(conversationDelivery
+          ? {
+              conversationDelivery: (conversationId: string, channelKey: string) =>
+                conversationDelivery('teams', conversationId, channelKey),
+            }
+          : {}),
         // The catalog id is authoritative here — the bot cannot know it.
         emit: (event) => emitConversationMessage(stampChannel(event, ctx.agentId)),
       }),
@@ -876,7 +886,7 @@ export async function activate(
   }
   core.log(
     'info',
-    `native facilitators (#2043): meetingSource=${typeof facilitatorCore.registerMeetingSourceProvider === 'function' ? 'on' : 'kernel<2043'}, sessionEvents=${emitSessionEvent ? 'on' : 'kernel<K5'}, messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? 'on' : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
+    `native facilitators (#2043): meetingSource=${typeof facilitatorCore.registerMeetingSourceProvider === 'function' ? 'on' : 'kernel<2043'}, sessionEvents=${emitSessionEvent ? 'on' : 'kernel<K5'}, messageEvents=${emitConversationMessage && isAllMessagesSubscribed ? (conversationDelivery ? 'on (all/addressed)' : 'on (all only, kernel<K4.3)') : 'kernel<2043'}, readiness=${typeof facilitatorCore.registerReadinessProvider === 'function' ? 'on' : 'kernel<2043'}`,
   );
   core.log(
     'info',

@@ -32,7 +32,7 @@ statement carries one label:
 | Consent is per install and all-or-nothing. An install made from a package without the permission does not gain it by itself. | Docs [D1][D2]; Live (installs at versions 1.0.1 to 1.3.0 keep the set they were installed with) |
 | Tenant switch for RSC: the authorization policy's `permissionGrantPoliciesAssigned` contains `ManagePermissionGrantsForOwnedResource.microsoft-dynamically-managed-permissions-for-chat` and `…-for-team` (the Microsoft-managed default); there is no legacy group-settings override. With that, a normal user-side install grants the RSC permissions. **Prerequisite for customer tenants:** both entries (or the "all application permissions" variant) must be present. | Docs [D2]; **Live** (M6 read) |
 
-**Implemented.** The mention gate is lifted only for a bot that holds a message
+**Implemented.** (For `addressed` delivery, a facilitation in follow-up, see §5d.) The mention gate is lifted only for a bot that holds a message
 subscription for that conversation; it then emits every human message as a message
 event and starts **no chat turn** there, not for an @mention either: the engine holding
 the subscription drives every turn. An empty answer is never posted. Nothing concludes the size of a chat from
@@ -380,6 +380,63 @@ the newest answer of a person win. The 0.36.0 poll (`message.poll`) is unchanged
 **Not built:** a card in a direct message (the targeted send takes text only), the
 step-by-step questionnaire, an own-answer view that survives a restart.
 
+## 5d. Delivery modes and private messages (0.39.0)
+
+**What the kernel is handed.** Per bot and conversation the kernel answers
+`conversationDelivery` (channel-sdk 0.3.5, kernel K4.3): `all`, `addressed` or `none`. A
+kernel without it knows `all` (where `isAllMessagesSubscribed` says yes) and `none`.
+
+| Mode | Handed to the kernel as events | Turn |
+|---|---|---|
+| `all` | every human message, edit, deletion, reaction, card answer; a mention carries `addressedToBot: true` | none: the engine drives the conversation |
+| `addressed` | a mention of the bot (`addressedToBot: true`); a reply (below); a card answer; a reaction; an edit of a message that addresses the bot; in the bot's own 1:1 chat every message (`addressedToBot: true`) | as without a facilitation: a mention or a private message is an ordinary turn, a reply without a mention is none |
+| `none` | nothing | as without a facilitation |
+
+Not handed over in `addressed` mode: a deletion (it names nobody), and an edit that no
+longer addresses the bot. *Simulated.*
+
+**What a reply is, and who decides.** The adapter keeps no list of the bot's own messages
+that survives a restart. In `addressed` mode it hands over every message that names the
+message it answers; the kernel keeps the event only when that message is bound to a
+process (its own record) and drops it otherwise, unstored. A message names another one
+in two ways:
+
+| Where | What Teams provides | Evidence |
+|---|---|---|
+| Channel | `replyToId` = the root message of the thread, on every message of the thread. Graph: "ID of the parent chat message or root chat message of the thread. (Only applies to chat messages in channels, not chats.)" | Docs [D24]; Live for the bot activity (thread scope, 2026-11-18) |
+| Group chat, meeting chat, 1:1 chat | **No reply id.** Chats have no threads; an ordinary message after a reminder refers to nothing. | Docs [D24] |
+| Any conversation, "Reply" on one message (a quote) | The quoted message's id rides in the message. Microsoft states that "the quoted reply metadata is available on the inbound activity" and shows SDK code reading `quotedReply.messageId`; the wire format is not on the page. The adapter reads two shapes: an HTML attachment with a `schema.skype.com/Reply` blockquote whose `itemid` is the quoted id, and a `quotedReply` entity. | Docs [D6] (paraphrased by the fetch, the page was cut); **neither shape seen live** |
+
+In a channel thread the root alone is therefore not treated as a reply (every message of
+the thread carries it); a quote inside the thread is.
+
+**A private reply to a reminder.** So in a 1:1 chat with a facilitator bot:
+
+- A person who just writes "erledigt" sends a message with **no reference** to the
+  reminder. Which reminder is meant cannot come from Teams; the engine has to decide it
+  from its own state (one open item of that person) or ask.
+- A person who uses "Reply" on the reminder sends a quote: `replyToMessageId` is the
+  reminder's message id (assumed to be the id the Bot Connector returned for the send;
+  to be checked live, P3).
+- `sendToUser` returns `conversationId` (the 1:1) and `messageId` for a delivered direct
+  message. The 1:1 id is per bot and person and is the id private message events carry.
+- The adapter emits a private message as an event only when the kernel asks for that
+  1:1 (`addressed`). As of kernel #2118 nothing subscribes a 1:1, so today the private
+  message reaches the kernel as a **turn** only.
+
+**The turn of a private message** states the author as Teams does: `principal`
+`user:<Entra object id>`, `speaker` `{ kind: 'teams-aad', id, displayName }`,
+`conversationType: 'direct'`, `channelConversationId` = the 1:1 id. That is what the
+kernel's private status path compares with the people a running process lists. A sender
+without an Entra object id (not seen in a 1:1) is stated with the per-bot Teams id and
+matches nobody.
+
+**One answer per message.** For a mention in `addressed` mode the adapter hands over the
+event and runs the ordinary turn; it posts exactly the turn's answer, and nothing when
+that answer is empty. Whether the engine ALSO answers the event is not the adapter's to
+prevent: see the open point in the 0.39.0 report (kernel and engine have to agree that
+one of the two answers).
+
 ## 6. Mentions and returned ids in proactive posts
 
 | Finding | Evidence |
@@ -566,7 +623,7 @@ subscription set. Hand raise has no bot event. Audio needs a .NET media bot (#58
 | Limit | Consequence |
 |---|---|
 | The edit revision the adapter sends is counted in memory. | No consequence: the kernel assigns the stored revision itself (created = 0, each edit or deletion = highest stored + 1) and treats the adapter's number as a hint. |
-| Quoted and forwarded messages are recognised by attachment markers (`schema.skype.com/Reply`, `forwardedMessageReference`). | **Open**, from neither a page nor the evaluation. If Teams marks them differently such a message is an ordinary `created` event and the engine cannot tell it is a quote. |
+| Quoted messages are recognised by an attachment marker (`schema.skype.com/Reply`) or a `quotedReply` entity; forwarded ones by `forwardedMessageReference` (named on the Graph attachment page). | **Open** for the quote: no page gives the wire format and none was captured. If Teams marks a quote differently it is an ordinary `created` event without a reply reference, and in `addressed` mode a quote of a reminder without a mention is then not handed over at all (§5d). |
 | A team channel is checked against its team only after the bot received an activity from that channel in the running process. | Before that the readiness check answers `team_unknown`. |
 | The instance's app registration must be served by this channel (its secret in the vault). | Otherwise the readiness check answers `graph_unavailable`. |
 
@@ -593,3 +650,4 @@ Microsoft Learn, fetched 2026-11-18. Numbering follows the evaluation note.
 - [D21] <https://learn.microsoft.com/en-us/microsoftteams/platform/apps-in-teams-meetings/build-apps-for-teams-meeting-stage>
 - [D22] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/requirements-considerations-application-hosted-media-bots>
 - [D23] <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/real-time-media-concepts>
+- [D24] <https://learn.microsoft.com/en-us/graph/api/resources/chatmessage?view=graph-rest-1.0> (fetched 2026-11-19; `replyToId`). [D5] and [D6] were fetched again on 2026-11-19 for §5d; [D6] now redirects to <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/build-conversational-capability>.

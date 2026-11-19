@@ -6,8 +6,27 @@
 // and edits, deletions, reactions and card answers. This module turns Bot
 // Framework activities into `ConversationMessageEvent`s.
 //
+// HOW MUCH the kernel is handed is the kernel's answer per bot and
+// conversation (`conversationDelivery`, #2089, channel-sdk 0.3.5):
+//   all        every human message; the mention gate is lifted and the engine
+//              drives every turn (a facilitation in `configuring` / `active`)
+//   addressed  only what addresses the bot: a mention of it, a reply to a
+//              message, an answer to a card, a reaction; and every message of
+//              the bot's own 1:1 chat. The mention gate stays, the ordinary
+//              turn still runs (a facilitation in `following_up`)
+//   none       nothing
+// A kernel without `conversationDelivery` knows `all` and `none` only.
+//
+// WHAT "A REPLY" IS HERE. The adapter does not keep a list of the bot's own
+// messages that survives a restart, so it does not decide whose message a
+// reply answers. In `addressed` mode it hands over every message that names
+// another message as the one it answers (a quoted reply; `replyToId` where
+// that is not just the root of a channel thread), and the KERNEL keeps it
+// only when that message is one of a process's own (its record of bound
+// messages) and drops it otherwise, unstored.
+//
 // Three rules hold everywhere below:
-//   1. Subscription is per bot AND conversation. Bot B in the same chat as a
+//   1. Delivery is per bot AND conversation. Bot B in the same chat as a
 //      subscribed bot A emits nothing and keeps its mention gate.
 //   2. The author is `activity.from`, set by Teams. Nothing is read from the
 //      message text, a card payload or a quoted block.
@@ -19,6 +38,7 @@ import type { Activity } from 'botbuilder';
 
 import type { CardAnswerValue, ConversationMessageEvent, TeamsUserRef } from './kernel-types.js';
 import { parseTeamsBotKey, teamsBotKey, TEAMS_BOT_KEY_PREFIX } from './teamsBotIdentity.js';
+import { threadRootMessageId } from './teamsConversationIds.js';
 import { toSdkConversationType } from './teamsGroupPrimitives.js';
 import { stripMentionTokens } from './teamsMentions.js';
 import { cardActionData, parsePollAnswerValue } from './teamsPollCard.js';
@@ -31,11 +51,20 @@ const MAX_TRACKED_REVISIONS = 5_000;
 const QUOTED_REPLY_MARKER = 'schema.skype.com/Reply';
 const FORWARDED_ATTACHMENT_TYPE = 'forwardedMessageReference';
 
-/** The two kernel calls this module needs, already feature-detected. */
+/** What the kernel is handed of a conversation, for one bot. */
+export type TeamsDeliveryMode = 'all' | 'addressed' | 'none';
+
+/** The kernel calls this module needs, already feature-detected. */
 export interface TeamsConversationMessageSink {
   isAllMessagesSubscribed(conversationId: string, channelKey: string): boolean;
+  /** #2089 — absent on a kernel before channel-sdk 0.3.5: then the mode is
+   *  `all` where `isAllMessagesSubscribed` says yes, and `none` otherwise. */
+  conversationDelivery?(conversationId: string, channelKey: string): TeamsDeliveryMode;
   emit(event: ConversationMessageEvent): void;
 }
+
+/** Why a message counts as addressed to the bot, for the log line. */
+export type TeamsAddressedReason = 'mention' | 'direct' | 'reply' | 'card' | 'reaction';
 
 type InboundActivity = Partial<Activity>;
 
@@ -45,6 +74,17 @@ export function receivingBotKey(activity: InboundActivity): string | undefined {
   if (typeof recipientId !== 'string') return undefined;
   const appId = parseTeamsBotKey(recipientId);
   return appId ? teamsBotKey(appId) : undefined;
+}
+
+/** Does the activity carry a mention entity of the bot it was sent to? Set
+ *  by the Teams client when a person picks the bot from the @ list; text
+ *  that merely contains the bot's name is no mention. */
+export function isBotMentioned(activity: InboundActivity): boolean {
+  const recipientId = activity.recipient?.id;
+  if (!recipientId) return false;
+  return (activity.entities ?? []).some(
+    (entity) => entity.type === 'mention' && (entity as { mentioned?: { id?: string } }).mentioned?.id === recipientId,
+  );
 }
 
 /** `activity.from` as the kernel's author, or `undefined` for a bot / absent
@@ -81,9 +121,25 @@ interface QuoteInfo {
   replyToMessageId?: string;
 }
 
+/** Entity type of a quoted reply. Microsoft's page on conversation messages
+ *  says a quoted reply's metadata "is available on the inbound activity" as
+ *  quoted reply entities with a `messageId`; it shows SDK code, not the wire
+ *  format. Read tolerantly; NOT seen live. */
+const QUOTED_REPLY_ENTITY_TYPE = 'quotedReply';
+
+function quotedReplyEntityMessageId(activity: InboundActivity): string | undefined {
+  for (const entity of activity.entities ?? []) {
+    if (entity.type !== QUOTED_REPLY_ENTITY_TYPE) continue;
+    const messageId = (entity as { quotedReply?: { messageId?: unknown } }).quotedReply?.messageId;
+    if (typeof messageId === 'string' && messageId.length > 0) return messageId;
+  }
+  return undefined;
+}
+
 /** Quote / forward markers of a message. A quoted reply carries the quoted
  *  message as an HTML attachment with a `schema.skype.com/Reply` blockquote
- *  whose `itemid` is the quoted message id. */
+ *  whose `itemid` is the quoted message id, or (newer) as a `quotedReply`
+ *  entity. Neither shape is documented as a wire format. */
 export function readQuoteInfo(activity: InboundActivity): QuoteInfo {
   let quoted = false;
   let forwarded = false;
@@ -96,6 +152,13 @@ export function readQuoteInfo(activity: InboundActivity): QuoteInfo {
     quoted = true;
     const itemId = /itemid="([^"]+)"/.exec(attachment.content)?.[1];
     if (itemId) replyToMessageId = itemId;
+  }
+  if (!quoted) {
+    const entityMessageId = quotedReplyEntityMessageId(activity);
+    if (entityMessageId) {
+      quoted = true;
+      replyToMessageId = entityMessageId;
+    }
   }
   return { quoted, forwarded, ...(replyToMessageId ? { replyToMessageId } : {}) };
 }
@@ -142,18 +205,51 @@ export class TeamsConversationMessages {
 
   constructor(private readonly sink: TeamsConversationMessageSink) {}
 
+  /** What the kernel is handed of this conversation for the bot the
+   *  activity was sent to. `none` for anything not positively stated. */
+  delivery(activity: InboundActivity): TeamsDeliveryMode {
+    const conversationId = activity.conversation?.id;
+    const botKey = receivingBotKey(activity);
+    if (!conversationId || !botKey) return 'none';
+    try {
+      if (this.sink.conversationDelivery) {
+        const mode = this.sink.conversationDelivery(conversationId, botKey);
+        return mode === 'all' || mode === 'addressed' ? mode : 'none';
+      }
+      return this.sink.isAllMessagesSubscribed(conversationId, botKey) === true ? 'all' : 'none';
+    } catch (err) {
+      console.error('[teams] subscription lookup failed:', err instanceof Error ? err.message : err);
+      return 'none';
+    }
+  }
+
   /** Does the bot this activity was addressed to receive every message of
    *  this conversation? `false` for anything not positively subscribed. */
   isSubscribed(activity: InboundActivity): boolean {
-    const conversationId = activity.conversation?.id;
-    const botKey = receivingBotKey(activity);
-    if (!conversationId || !botKey) return false;
-    try {
-      return this.sink.isAllMessagesSubscribed(conversationId, botKey) === true;
-    } catch (err) {
-      console.error('[teams] subscription lookup failed:', err instanceof Error ? err.message : err);
-      return false;
-    }
+    return this.delivery(activity) === 'all';
+  }
+
+  /**
+   * Why this message activity is handed over in `addressed` mode, or
+   * `undefined` when it is not. A mention and a message in the bot's own 1:1
+   * chat address the bot by themselves (`addressedToBot`); a reply does only
+   * if the kernel finds the answered message among a process's own.
+   */
+  addressedReason(activity: InboundActivity): TeamsAddressedReason | undefined {
+    if (activity.conversation?.conversationType === 'personal') return 'direct';
+    if (isBotMentioned(activity)) return 'mention';
+    return this.replyReference(activity) !== undefined ? 'reply' : undefined;
+  }
+
+  /** The message this one answers, when that says something: a quoted
+   *  message, or `replyToId` unless it is only the root of the channel
+   *  thread the conversation IS (every message of a thread carries that). */
+  private replyReference(activity: InboundActivity): string | undefined {
+    const quote = readQuoteInfo(activity);
+    if (!quote.replyToMessageId) return undefined;
+    if (quote.quoted) return quote.replyToMessageId;
+    const threadRoot = threadRootMessageId(activity.conversation?.id ?? '');
+    return quote.replyToMessageId === threadRoot ? undefined : quote.replyToMessageId;
   }
 
   /** A new human message (mentioned or not). */
@@ -281,7 +377,19 @@ export class TeamsConversationMessages {
       },
   ): boolean {
     try {
-      if (!this.isSubscribed(activity)) return false;
+      const mode = this.delivery(activity);
+      if (mode === 'none') return false;
+      const isMessage = part.kind === 'created' || part.kind === 'edited';
+      const reason: TeamsAddressedReason | undefined = isMessage
+        ? this.addressedReason(activity)
+        : part.kind === 'card_answer'
+          ? 'card'
+          : part.kind === 'reaction'
+            ? 'reaction'
+            : undefined;
+      // `addressed`: a deletion names no addressee and is not handed over.
+      if (mode === 'addressed' && reason === undefined) return false;
+      const addressedToBot = isMessage && (reason === 'mention' || reason === 'direct');
       const conversationId = activity.conversation?.id;
       const botKey = receivingBotKey(activity);
       const author = platformAuthor(activity);
@@ -299,6 +407,7 @@ export class TeamsConversationMessages {
         author,
         ...(tenantId ? { tenantId } : {}),
         ...rest,
+        ...(addressedToBot ? { addressedToBot: true } : {}),
         occurredAt: occurredAt(activity),
         rawEvent: activity,
       });

@@ -333,18 +333,28 @@ export function membersAddedActivity(input: BaseInput & { added: SimUser[] }): P
 /** The kernel side of the subscription: which bot moderates which chat. */
 export class SimulatedKernel {
   readonly events: ConversationMessageEvent[] = [];
-  private readonly subscriptions = new Set<string>();
+  private readonly subscriptions = new Map<string, 'all' | 'addressed'>();
+  /** `false` models a kernel before channel-sdk 0.3.5: it offers
+   *  `isAllMessagesSubscribed` and no `conversationDelivery`. */
+  offersDeliveryModes = true;
 
-  subscribe(conversationId: string, bot: SimBot): void {
-    this.subscriptions.add(`${conversationId}|${bot.key}`);
+  /** `mode`: what the kernel's `conversationDelivery` answers for this bot
+   *  in this conversation (#2089). `addressed` is a process in follow-up. */
+  subscribe(conversationId: string, bot: SimBot, mode: 'all' | 'addressed' = 'all'): void {
+    this.subscriptions.set(`${conversationId}|${bot.key}`, mode);
   }
 
   unsubscribe(conversationId: string, bot: SimBot): void {
     this.subscriptions.delete(`${conversationId}|${bot.key}`);
   }
 
+  /** The kernel's `isAllMessagesSubscribed`: `true` exactly for `all`. */
   isSubscribed(conversationId: string, channelKey: string): boolean {
-    return this.subscriptions.has(`${conversationId}|${channelKey}`);
+    return this.subscriptions.get(`${conversationId}|${channelKey}`) === 'all';
+  }
+
+  deliveryMode(conversationId: string, channelKey: string): 'all' | 'addressed' | 'none' {
+    return this.subscriptions.get(`${conversationId}|${channelKey}`) ?? 'none';
   }
 
   eventsFor(bot: SimBot): ConversationMessageEvent[] {
@@ -435,6 +445,9 @@ export function simulatedBot(
   bot.attachConversationMessages(
     new TeamsConversationMessages({
       isAllMessagesSubscribed: (conversationId, channelKey) => kernel.isSubscribed(conversationId, channelKey),
+      ...(kernel.offersDeliveryModes
+        ? { conversationDelivery: (conversationId: string, channelKey: string) => kernel.deliveryMode(conversationId, channelKey) }
+        : {}),
       emit: (event) => {
         kernel.events.push(event);
       },

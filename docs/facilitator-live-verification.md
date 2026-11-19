@@ -395,6 +395,22 @@ header showed on no message.
 Record the results in a new "Recorded run" section. An item that fails becomes an issue;
 the fallback for every form is the chat ballot, which stays valid.
 
+## Delivery modes and private messages (0.39.0): not run yet
+
+Needs a kernel with `conversationDelivery` (K4.3) and a facilitation that reaches
+`following_up`. Set `TEAMS_LOG_OUTGOING_ACTIVITIES=1` for P3 to P5. Nothing below was
+seen in a Teams client; the tests run on the simulated transport.
+
+| # | Do | Settles |
+|---|---|---|
+| P1 | In the home chat of a facilitation in follow-up, write a message without a mention, then one that mentions the facilitator. | Log: `drop non-mention` for the first; for the second `recorded for the engine (addressed: mention)` and an ordinary turn. **Count the facilitator's posts for the mention: exactly one** (the engine's or the turn's, not both) |
+| P2 | In that chat use "Reply" on a reminder the facilitator posted, without a mention. | That the quote arrives with the reminder's id: log `recorded for the engine (addressed: reply)`, kernel event with `replyToMessageId` = the id the send returned. If the line is missing, capture the activity: the quote shape is then another one than the two the adapter reads |
+| P3 | Let the facilitator send a reminder as a direct message; note `messageId` and `conversationId` of the send. In the 1:1, use "Reply" on it and send "erledigt". | Whether a quote in a 1:1 names the quoted message, and whether that id equals the id the Bot Connector returned for the send. Capture the inbound activity (`entities`, `attachments`, `replyToId`) |
+| P4 | In the same 1:1 write "erledigt" as an ordinary message. | That it carries no reference (`replyToId` absent, no quote): documented for chats, to confirm for the bot activity |
+| P5 | As a participant of a running facilitation, ask the facilitator in its 1:1 "Wie ist der Stand?"; then the same as a person who takes part in nothing. | The kernel's private status path (#2118): the participant gets the status, the other person the fixed refusal. The adapter's part is the author on the turn (`principal` = Entra object id) |
+| P6 | Link the chat of a scheduled meeting where the facilitator's app was added without the all-messages permission; then repair the consent and check again. | Criterion 60 live: `consent_missing` for the meeting chat while the home chat stays ready; ready after the upgrade |
+| P7 | Click a question card and react to a facilitator post in a chat in follow-up. | That card answers and reactions reach the process in `addressed` mode |
+
 ## Recorded run: 2026-11-18, byte5 tenant
 
 The record issue #43 asks for. Source: the rollout log of that day and the evaluation

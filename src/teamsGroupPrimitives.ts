@@ -633,9 +633,12 @@ export function createTeamsTargetedSendAdapter(deps: {
     return messageId;
   };
 
-  const delivered = (messageId: string | undefined): FacilitatorDeliveryOutcome => ({
+  /** `conversationId`: the 1:1 conversation the message went into, so a
+   *  later private reply (a quote of this message) can be told apart. */
+  const delivered = (messageId: string | undefined, conversationId?: string): FacilitatorDeliveryOutcome => ({
     outcome: 'delivered',
     ...(messageId ? { messageId } : {}),
+    ...(conversationId ? { conversationId } : {}),
   });
 
   const sendAsBot = async (
@@ -666,7 +669,7 @@ export function createTeamsTargetedSendAdapter(deps: {
       (kernelRef && kernelRefBot === botAppId ? kernelRef : undefined) ??
       (userId ? direct.refs.getDirect(botAppId, userId)?.ref : undefined);
     try {
-      if (known) return delivered(await sendOnReference(known, text, botAppId));
+      if (known) return delivered(await sendOnReference(known, text, botAppId), known.conversation?.id);
       if (!userId) {
         return {
           outcome: 'unreachable',
@@ -675,6 +678,7 @@ export function createTeamsTargetedSendAdapter(deps: {
         };
       }
       let messageId: string | undefined;
+      let openedConversationId: string | undefined;
       let isOpened = false;
       const serviceUrl = direct.refs.serviceUrlFor(botAppId);
       const open = (): Promise<void> =>
@@ -684,6 +688,7 @@ export function createTeamsTargetedSendAdapter(deps: {
           async (turnContext) => {
             isOpened = true;
             const conversationId = turnContext.activity.conversation?.id;
+            openedConversationId = conversationId;
             if (conversationId) direct.refs.rememberDirectConversation(botAppId, [userId], conversationId);
             const sent = await retryTransient(
               () => turnContext.sendActivity(buildOutgoingActivity({ text })),
@@ -696,7 +701,7 @@ export function createTeamsTargetedSendAdapter(deps: {
       // conversation is open only the send itself is (above), so a retry can
       // never post the message twice.
       await retryTransient(open, deps.retry, () => !isOpened);
-      return delivered(messageId);
+      return delivered(messageId, openedConversationId);
     } catch (err) {
       const outcome = classifyDirectSendError(err, botLabel);
       // Log-safe: the bot's display name and the outcome code, no ids.
