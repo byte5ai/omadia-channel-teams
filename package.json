@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-teams",
-  "version": "0.38.3",
+  "version": "0.38.4",
   "private": true,
   "type": "module",
   "main": "dist/index.js",

@@ -23,6 +23,7 @@ import {
   DEFAULT_TEXT_MAX_LENGTH,
   EXPANDED_CHOICE_LIMIT,
   isRequired,
+  offersVolunteer,
   rankCount,
   textLimit,
 } from './teamsQuestionCardSpec.js';
@@ -258,7 +259,7 @@ export function buildQuestionCardContent(card: QuestionCard, view: QuestionCardV
   // "Ich übernehme das" answers for the person who clicks, with no input.
   // Only on a card whose single question is the assignment: a button that
   // sends no inputs would drop the answers to the other questions.
-  if (only?.kind === 'assignment' && only.allowVolunteer !== false) {
+  if (only?.kind === 'assignment' && offersVolunteer(only, card.questions.length)) {
     actions.push({
       type: 'Action.Execute',
       title: texts.volunteer,

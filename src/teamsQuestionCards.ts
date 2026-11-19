@@ -37,6 +37,11 @@ import { questionCardTexts } from './teamsQuestionCardTexts.js';
 
 const MAX_REGISTERED_CARDS = 2_000;
 const MAX_OWN_ANSWERS = 10_000;
+const MAX_REFUSED_SUBMISSIONS = 2_000;
+/** How long a refused submission is shown again when the client asks for the
+ *  person's view. Long enough for the refresh a client sends after it got a
+ *  card back, short enough that nobody meets an old error the next day. */
+const REFUSED_VIEW_MS = 10 * 60 * 1000;
 /** The response type for a card. Microsoft's samples spell it two ways; this
  *  is the one of the Bot Framework SDK and of the Universal Action Model. */
 const CARD_RESPONSE_TYPE = 'application/vnd.microsoft.card.adaptive';
@@ -49,6 +54,13 @@ interface OwnAnswer {
   values: CardInputValues;
   answeredAt: string;
   contributions: readonly string[];
+}
+
+/** A submission that was refused: what the person entered and why not. */
+interface RefusedSubmission {
+  values: CardInputValues;
+  errors: Readonly<Record<number, string>>;
+  at: number;
 }
 
 /** What the handler hands to the kernel for one accepted submission. */
@@ -101,6 +113,11 @@ export class TeamsQuestionCards {
   /** `${botAppId}|${cardId}|${person}` → what that person last sent. Only
    *  for the person's own view; the engine holds what counts. */
   private readonly ownAnswers = new Map<string, OwnAnswer>();
+  /** Same key → that person's last submission, if it was refused. A client
+   *  may ask for the person's view (`refresh`) right after it got the card
+   *  with the error back; the answer to that must be the same card, or the
+   *  error line is gone before anybody read it. */
+  private readonly refused = new Map<string, RefusedSubmission>();
   private readonly now: () => number;
   private readonly persistence: TeamsQuestionCardPersistence | undefined;
 
@@ -183,6 +200,9 @@ export class TeamsQuestionCards {
     for (const key of [...this.ownAnswers.keys()]) {
       if (key.startsWith(prefix)) this.ownAnswers.delete(key);
     }
+    for (const key of [...this.refused.keys()]) {
+      if (key.startsWith(prefix)) this.refused.delete(key);
+    }
   }
 
   /** Is this invoke a click on a question card (answer, change, refresh)? */
@@ -244,8 +264,13 @@ export class TeamsQuestionCards {
     }
 
     if (action.verb === QUESTION_CARD_VIEW_VERB) {
+      const refused = person.length > 0 ? this.refused.get(ownKey) : undefined;
+      if (refused && this.now() - refused.at <= REFUSED_VIEW_MS) {
+        return cardResponse(buildQuestionCardContent(card, { values: refused.values, errors: refused.errors }));
+      }
       return cardResponse(own ? buildOwnAnswerCardContent(card, own) : buildQuestionCardContent(card));
     }
+    this.refused.delete(ownKey);
     if (action.verb === QUESTION_CARD_CHANGE_VERB) {
       const isAppend = card.questions.length === 1 && card.questions[0]?.kind === 'text' && card.questions[0].mode === 'append';
       return cardResponse(buildQuestionCardContent(card, own && !isAppend ? { values: own.values } : {}));
@@ -255,6 +280,14 @@ export class TeamsQuestionCards {
     if (!submission.ok) {
       // The same card, the person's values kept, the reason shown. Only this
       // person sees it; nothing is emitted.
+      if (person.length > 0) {
+        boundedSet(
+          this.refused,
+          ownKey,
+          { values: submission.values, errors: submission.errors, at: this.now() },
+          MAX_REFUSED_SUBMISSIONS,
+        );
+      }
       return cardResponse(buildQuestionCardContent(card, { values: submission.values, errors: submission.errors }));
     }
     const isListening = emit({

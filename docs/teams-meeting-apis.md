@@ -311,6 +311,10 @@ it as an Adaptive Card 1.5 with one submit button (`Action.Execute`).
 | `ranking` | one dropdown per place, up to six options | `{ ranking }`, best first |
 | `consent` | agree / object, and a reason field | `{ decision, reason? }` |
 | `assignment` | the people picker of the conversation (or a given list), and "Ich übernehme das" | `{ assignee }`: `self` or a person |
+
+A fixed candidate list needs one candidate when the card shows "Ich übernehme das", and
+two otherwise. The button is shown when `allowVolunteer` is not `false` and the
+assignment is the card's only question (0.38.4).
 | `text` | a text field; `append` (idea collection) or `replace` | `{ text }` |
 
 `number` and `date` are in the contract and not built; a card with one is refused. The
