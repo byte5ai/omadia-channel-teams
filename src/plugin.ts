@@ -59,7 +59,7 @@ import type {
 import { createAttachmentsRouter } from './attachmentsRouter.js';
 import { TeamsAttachmentStore } from './teamsAttachmentStore.js';
 import { TeamsBot } from './teamsBot.js';
-import { buildApprovalCard } from './teamsCard.js';
+import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 import {
   disabledTeamsCardFeatures,
   resolveTeamsCardFeatures,
@@ -868,57 +868,10 @@ export async function activate(
   if (routinesIntegration) {
     routinesIntegration.publishProactiveSend(
       'teams',
-      async (conversationRef, message, routine) => {
-        // Routines fire on a cron without an active user question — the
-        // sentinel is the agent's way to signal "nothing to report this
-        // run". Drop the delivery; the routine's run-history still
-        // records the turn for audit, but the user's Teams chat stays
-        // quiet.
-        if (isNoReply(message)) {
-          logNoReplyDrop('teams', {
-            trigger: 'routine',
-            ...(routine?.id ? { routineId: routine.id } : {}),
-            ...(routine?.name ? { routineName: routine.name } : {}),
-          });
-          return;
-        }
-        await sendProactive(
-          conversationRef as Parameters<typeof sendProactive>[0],
-          async (turnContext) => {
-            // Conductor human-await reminder: render the approve/reject
-            // Adaptive Card (shows WHAT is being approved + the workflow's
-            // current step) so the user can decide inline. A click resolves
-            // the await in-process via the conductorAwaitResolver service.
-            if (message.approval) {
-              await turnContext.sendActivity({
-                type: 'message',
-                attachments: [buildApprovalCard(message.approval)],
-              });
-              return;
-            }
-            // When we have routine metadata + the integration's card
-            // builder, render the Adaptive Card so the user sees this
-            // is a cron-triggered delivery and can pause/delete inline.
-            // Otherwise fall back to plain text (channel-agnostic
-            // minimum).
-            if (routine && buildRoutineSmartCardAttachment) {
-              const attachment = buildRoutineSmartCardAttachment({
-                routine,
-                body: message.text,
-              });
-              await turnContext.sendActivity({
-                type: 'message',
-                attachments: [attachment],
-              });
-              return;
-            }
-            await turnContext.sendActivity({
-              type: 'message',
-              text: message.text,
-            });
-          },
-        );
-      },
+      createTeamsRoutineDelivery({
+        sendProactive,
+        ...(buildRoutineSmartCardAttachment ? { buildRoutineSmartCardAttachment } : {}),
+      }),
     );
   }
 

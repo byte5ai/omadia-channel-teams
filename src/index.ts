@@ -302,3 +302,7 @@ export {
   isChannelConversationId,
   threadRootMessageId,
 } from './teamsConversationIds.js';
+
+// AI marking of deliveries outside a chat turn (routines, approvals).
+export { buildRoutineDeliveryActivity, createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
+export { PROACTIVE_POSTS_CARRY_AI_LABEL } from './teamsOutboundMessage.js';

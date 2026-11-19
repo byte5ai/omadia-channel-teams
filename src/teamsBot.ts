@@ -650,7 +650,7 @@ export class TeamsBot extends TeamsActivityHandler {
       this.groupPrimitives?.captureConversationReference(context);
       const event = this.meetingSessions?.handle(context.activity);
       console.error(
-        `[teams] meeting event name=${(context.activity.name ?? '-').trim()} conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… recorded=${String(event !== undefined)}`,
+        `[teams] meeting event name=${(context.activity.name ?? '-').trim()} conv=${context.activity.conversation?.id ?? '-'} recorded=${String(event !== undefined)}`,
       );
       await next();
     };
@@ -725,7 +725,7 @@ export class TeamsBot extends TeamsActivityHandler {
     // (docs/facilitator-live-verification.md, step M2).
     const eventType = (activity.channelData as { eventType?: unknown } | undefined)?.eventType;
     console.error(
-      `[teams] ${activity.type ?? '-'} eventType=${typeof eventType === 'string' ? eventType : '-'} conv=${(activity.conversation?.id ?? '-').slice(0, 24)}… id=${activity.id ?? '-'} replyToId=${activity.replyToId ?? '-'}`,
+      `[teams] ${activity.type ?? '-'} eventType=${typeof eventType === 'string' ? eventType : '-'} conv=${activity.conversation?.id ?? '-'} id=${activity.id ?? '-'} replyToId=${activity.replyToId ?? '-'}`,
     );
     const messages = this.conversationMessages;
     if (!messages) return;
@@ -1084,7 +1084,7 @@ export class TeamsBot extends TeamsActivityHandler {
         this.conversationMessages?.emitCreated(context.activity);
       }
       console.error(
-        `[teams] recorded for the engine, no turn conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… type=${conversationType}`,
+        `[teams] recorded for the engine, no turn conv=${context.activity.conversation?.id ?? '-'} type=${conversationType}`,
       );
       return;
     }
@@ -1094,10 +1094,8 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
     if (!isPersonal && !isCardAction && !this.isMentioned(context.activity)) {
-      const conversationIdShort =
-        (context.activity.conversation?.id ?? '-').slice(0, 24);
       console.error(
-        `[teams] drop non-mention conv=${conversationIdShort}… type=${conversationType}`,
+        `[teams] drop non-mention conv=${context.activity.conversation?.id ?? '-'} type=${conversationType}`,
       );
       return;
     }
@@ -2190,7 +2188,12 @@ export class TeamsBot extends TeamsActivityHandler {
           result.interactive?.kind === 'routine_list'
             ? result.interactive
             : undefined;
-        if (isNoReply(result)) {
+        // Also on the text without a folded disclosure line: with the line
+        // appended the sentinel is no longer the last line of the answer.
+        if (
+          isNoReply(result) ||
+          isNoReply({ text: stripFoldedAiDisclosure(result.text, result.aiDisclosure?.text) })
+        ) {
           logNoReplyDrop('teams', {
             userId: input.userId,
             sessionScope: input.sessionScope,

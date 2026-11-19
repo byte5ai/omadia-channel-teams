@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.36.6
+
+One AI marking per message (kernel byte5ai/omadia#2098, `@omadia/channel-sdk` 0.3.2). In
+Teams that is always the "AI generated" label and never the disclosure sentence.
+**Install this before the kernel with #2098 is deployed**: without the declaration below
+that kernel adds the sentence to the first own-identity post, next to the label.
+
+- **Declared**: both send providers state `supports.aiLabel: true`, so the kernel adds no
+  disclosure sentence to posts and private reminders sent as an agent's own identity.
+- **Routine deliveries and approvals** (`publishProactiveSend`): a routine delivery was
+  posted with the folded sentence and without the label. The sentence is now stripped and
+  the label attached, for the routine card and the plain-text fallback; the approval card
+  and Conductor reminders get the label. Moved into `teamsRoutineDelivery.ts`.
+- **`NO_REPLY` with a folded sentence** is still dropped, for a routine delivery and for a
+  turn answer. With the sentence behind it the sentinel was no longer the last line and
+  the delivery would have been posted.
+- **Log**: the lines for edit / delete / reaction, `recorded for the engine`, `drop
+  non-mention` and meeting events print the full conversation id (they cut it at 24
+  characters, which hid the thread part of a channel id).
+- `compat` is unchanged (`core >=1.51.0 <2.0`).
+
+| Send path | What arrives from the kernel | What Teams shows | Test (`tests/teamsAiMarking.test.ts` unless named) |
+|---|---|---|---|
+| Turn answer (card) | text with the sentence folded in, `aiDisclosure` | label; sentence stripped | "a model answer with the folded sentence" |
+| Fixed refusal / "not set up" answer of a facilitator | same shape as a model answer | label; sentence stripped | "a fixed refusal of the facilitator" |
+| Turn answer, disclosure turned off | text, no `aiDisclosure` | label | "an answer without a disclosure" |
+| Long turn answer (several plain messages) | as a turn answer | label on the first part; sentence stripped | "a long answer that is posted as plain text" |
+| Blocking choice card | question, options | label | "a blocking choice card" |
+| `NO_REPLY` answer, also with the sentence behind it | sentinel | nothing is posted | "a NO_REPLY answer stays silent" |
+| Proactive text (`sendToConversation`) | text without the sentence, because `supports.aiLabel` is declared | label | "both providers declare the label" |
+| Poll card (`sendToConversation`) | poll | label | same test |
+| Private reminder (`sendToUser`) | text without the sentence | label | same test; `teamsOutboundAsOwnBot.test.ts` |
+| Routine delivery, card | text with the sentence folded in, `aiDisclosure` | label; sentence stripped from the card body | "a routine delivery as a card" |
+| Routine delivery, plain text | same | label; sentence stripped | "a routine delivery as plain text" |
+| Conductor reminder (`{ text }`) | text, no `aiDisclosure` | label | "a delivery without aiDisclosure" |
+| Approval card | deterministic text | label | "an approval card" |
+| `NO_REPLY` routine answer | sentinel | nothing is posted | "a NO_REPLY routine answer is still dropped" |
+| Streaming | does not exist: the adapter calls `chat()` and posts the final answer | n/a | n/a |
+
+Not marked: the adapter's own fixed texts and side cards in a turn (card-click
+acknowledgements, error texts, recalled-context, slot, consent and routine-list cards).
+
 ## 0.36.5
 
 From the first live facilitation in a Teams meeting chat (2026-11-18).

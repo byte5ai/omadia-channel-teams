@@ -152,6 +152,15 @@ export function readPollRequest(
  * direct reminders) builds its activities here and did not. The label is the
  * channel's marking; no disclosure sentence is added to the text.
  */
+/**
+ * `supports.aiLabel` of both send providers (channel-sdk 0.3.2). True because
+ * the two builders below, which build EVERY activity of `sendToConversation`
+ * and `sendToUser`, attach the label. A test holds the two together: whoever
+ * stops attaching the label has to stop declaring it, or the kernel leaves
+ * out the disclosure sentence for messages that carry no label either.
+ */
+export const PROACTIVE_POSTS_CARRY_AI_LABEL = true;
+
 export function buildOutgoingActivity(input: { text: string; entities?: readonly MentionEntity[] }): Partial<Activity> {
   return {
     type: 'message',

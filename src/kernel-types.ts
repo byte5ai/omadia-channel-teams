@@ -685,6 +685,14 @@ export interface SendProviderCapabilities {
   mentions?: boolean;
   /** Posts `message.poll` as a poll and refuses an invalid one. */
   poll?: boolean;
+  /**
+   * channel-sdk 0.3.2 — the channel marks EVERY message of these sends as
+   * AI-generated with its own label (Teams: the `AIGeneratedContent`
+   * entity). The kernel then adds no disclosure sentence to the text;
+   * without the declaration it folds the instance's disclosure line into the
+   * first message an agent posts as itself into a conversation.
+   */
+  aiLabel?: boolean;
 }
 
 /** Third argument of `TargetedSendProvider.sendToUser`. */
