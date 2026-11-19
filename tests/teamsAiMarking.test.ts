@@ -107,11 +107,26 @@ describe('#2043 AI marking: turn answers', () => {
     assert.ok(JSON.stringify(posted[0]).includes('Moderator und kein Assistent'));
   });
 
-  it('an answer without a disclosure (the operator turned it off): the label all the same', async () => {
+  it('an answer without a disclosure (the operator turned it off): no chip; the label entity all the same', async () => {
     const posted = await turnAnswer({ text: 'Die Antwort ist 42.' });
 
     assert.equal(posted.length, 1);
     assertLabelOnly(posted[0], 'turn answer without disclosure');
+    // 0.40.1 — the chip stands in for the kernel's sentence on a card. The
+    // kernel disclosed nothing, so the channel draws no marker of its own.
+    assert.equal(hasChip(posted[0]), false);
+    assert.ok(JSON.stringify(posted[0]).includes('Die Antwort ist 42.'), 'the answer itself is unchanged');
+  });
+
+  it('the chip follows the kernel\'s disclosure for every kind of turn answer: refusal and private status too', async () => {
+    const refusal = 'Ich bin Mira, Moderator und kein Assistent: Fragen beantworten kann ich nicht.';
+    const status = 'Stand: Schritt 2 von 3, eine Stimme fehlt.';
+    for (const text of [refusal, status]) {
+      const [disclosed] = await turnAnswer({ text: folded(text), aiDisclosure: { text: DISCLOSURE } });
+      const [undisclosed] = await turnAnswer({ text });
+      assert.equal(hasChip(disclosed), true, text);
+      assert.equal(hasChip(undisclosed), false, text);
+    }
   });
 
   it('a long answer posted as plain text has no chip: it keeps the sentence unless the label is confirmed', async () => {
@@ -357,7 +372,7 @@ describe('D24 the outgoing activity of a proactive post against a reply in a tur
 
   it('what a reply in a turn has and a proactive post has not', async () => {
     const proactive = await proactiveText();
-    const [reply] = await turnAnswer({ text: 'Die Antwort ist 42.' });
+    const [reply] = await turnAnswer({ text: folded('Die Antwort ist 42.'), aiDisclosure: { text: DISCLOSURE } });
     const [longReply] = await turnAnswer({ text: 'Absatz. '.repeat(4000) });
 
     // A card reply: an Adaptive Card with this plugin's own chip. This is
