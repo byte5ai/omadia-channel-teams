@@ -114,6 +114,14 @@ export interface BuildAnswerCardInput {
    */
   systemData?: boolean;
   /**
+   * `false`: the kernel supplied NO AI disclosure for this answer (the
+   * operator turned the disclosure off), so the card does not draw its
+   * "✨ AI-generated" chip either. Absent or `true`: the chip is drawn. The
+   * chip stands in for the kernel's disclosure sentence on a card; it never
+   * marks an answer the kernel decided not to mark.
+   */
+  aiMarker?: boolean;
+  /**
    * When present, renders a `🔄 Fresh Check` button that re-asks the same
    * question while bypassing memory read + FTS context block. Used when
    * the user suspects an old memory entry is poisoning the answer.
@@ -897,6 +905,7 @@ function buildCardBodyBase(rawInput: BuildAnswerCardInput): CardBody {
   const chips: StatusChips = {
     ...(input.verifier ? { verifier: input.verifier } : {}),
     systemData: input.systemData === true,
+    aiMarker: input.aiMarker !== false,
   };
 
   // Drop-order in size pressure: trace-detail → trace → disclosure → privacy
@@ -1003,11 +1012,17 @@ function bytes(body: CardBody): number {
   return Buffer.byteLength(JSON.stringify(body), 'utf8');
 }
 
+/** The answer card's own AI marking. NOT Teams' platform label: this is a
+ *  text line this plugin draws, in place of the kernel's disclosure sentence. */
+export const AI_MARKER_CHIP = '✨ AI-generated';
+
 /** The status chips under the "✨ AI-generated" marker. */
 interface StatusChips {
   verifier?: VerifierBadge;
   /** Privacy Shield rendered the answer: original system data. */
   systemData: boolean;
+  /** Draw the "✨ AI-generated" marker (the kernel disclosed this answer). */
+  aiMarker: boolean;
 }
 
 function assemble(
@@ -1022,16 +1037,18 @@ function assemble(
   privacy?: PrivacyReceipt,
   maskedValues: readonly string[] = [],
 ): CardBody {
-  const chipItems: unknown[] = [
-    {
-      type: 'TextBlock',
-      text: '✨ AI-generated',
-      size: 'Small',
-      weight: 'Bolder',
-      color: 'Accent',
-      wrap: true,
-    },
-  ];
+  const chipItems: unknown[] = chips.aiMarker
+    ? [
+        {
+          type: 'TextBlock',
+          text: AI_MARKER_CHIP,
+          size: 'Small',
+          weight: 'Bolder',
+          color: 'Accent',
+          wrap: true,
+        },
+      ]
+    : [];
   if (chips.verifier) {
     const { label, color } = verifierChip(chips.verifier);
     chipItems.push(chipText(label, color));
@@ -1040,7 +1057,9 @@ function assemble(
     chipItems.push(chipText(SYSTEM_DATA_CHIP, 'Accent'));
   }
   const body: unknown[] = [
-    // AI marker chip (visual, in addition to the activity-level entity).
+    // The chips: the AI marker (when the kernel disclosed this answer), the
+    // verifier and system-data chips. Kept as a container also when empty:
+    // the transparency chips are added to it afterwards.
     {
       type: 'Container',
       spacing: 'None',

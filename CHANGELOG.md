@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.40.1
+
+- **The answer card's "✨ AI-generated" chip follows the kernel's disclosure.** The chip
+  is this plugin's own text line at the top of every answer card (model answers, a
+  facilitator's fixed refusal, a private status answer: every answer of an ordinary
+  turn). It stands in for the kernel's disclosure sentence, which the channel strips
+  from a card. Until now the chip was drawn on every card. Now it is drawn only when
+  the kernel supplied a disclosure for that answer (`aiDisclosure` on the answer);
+  where the operator turned the disclosure off, the card carries no chip. Nothing else
+  about the card changes.
+- For the record: this chip is not Teams' platform label ("AI Generated" in the message
+  header), which Teams has rendered on no message of this plugin so far. Engine posts
+  are plain messages without a card and never had the chip.
+- A kernel from before the per-turn disclosure (#643/#644) supplies none, so its answer
+  cards lose the chip with this release.
+
 ## 0.40.0
 
 - **The turn origin names the message** (kernel K4.8, `TurnOrigin.messageId`,

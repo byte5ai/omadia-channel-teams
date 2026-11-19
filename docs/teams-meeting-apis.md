@@ -236,7 +236,7 @@ Three things mark a message, and they were confused:
 |---|---|---|
 | Platform label | the `AIGeneratedContent` entity on the message activity | Teams: "AI Generated" next to the agent's name in the message header, tooltip "AI-generated content may be incorrect." |
 | Disclosure sentence | the instance's line, folded into the text by the kernel | plain text, always visible |
-| Card chip | "✨ AI-generated" inside this plugin's **answer card** | the card itself, always visible |
+| Card chip | "✨ AI-generated" inside this plugin's **answer card** (every answer of an ordinary turn: model answer, fixed refusal, private status). It stands in for the disclosure sentence, which is stripped from a card | the card itself, whenever the kernel supplied a disclosure for that answer; no chip where the operator turned the disclosure off (0.40.1) |
 
 **What was observed.** With 0.37.0 the facilitator's proactive posts (handshake, reminder,
 notice) showed no marking in the Teams web client. "✨ AI-generated" was seen on turn

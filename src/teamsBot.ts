@@ -2320,6 +2320,10 @@ export class TeamsBot extends TeamsActivityHandler {
             ...(!this.nativeAiLabel && result.aiDisclosure?.text
               ? { plainTextDisclosure: result.aiDisclosure.text }
               : {}),
+            // The card's chip stands in for the kernel's disclosure sentence.
+            // No disclosure from the kernel (the operator turned it off):
+            // no chip. The channel never marks what the kernel did not.
+            isAiDisclosed: result.aiDisclosure !== undefined,
           },
         );
 
@@ -2471,6 +2475,9 @@ async function sendAnswer(
     /** The instance's disclosure sentence, appended when the answer is sent
      *  as plain text instead of a card (the card carries its own chip). */
     plainTextDisclosure?: string;
+    /** `false`: the kernel supplied no AI disclosure for this answer, so the
+     *  card draws no "✨ AI-generated" chip. Absent: the chip is drawn. */
+    isAiDisclosed?: boolean;
   },
 ): Promise<void> {
   const cardFeatures = directLine?.cardFeatures ?? DEFAULT_TEAMS_CARD_FEATURES;
@@ -2526,6 +2533,7 @@ async function sendAnswer(
       ...(attachments ? { attachments } : {}),
       ...(verifier ? { verifier } : {}),
       ...(directLine?.systemData ? { systemData: true } : {}),
+      ...(directLine?.isAiDisclosed === false ? { aiMarker: false } : {}),
       ...(originalUserMessage ? { originalUserMessage } : {}),
       ...(directLine?.memoryUsed ? { showFreshCheck: true } : {}),
       ...(directLine?.answerVerbosity
