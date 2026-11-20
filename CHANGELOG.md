@@ -57,6 +57,12 @@ by the parent session. The routing contract below has no fallback for an older k
   on the root and switched its one-open-question fallback off. A quoted reply still names the
   quoted message. The reported `messageId` of a sent text is the Teams activity id, and a mention
   is `addressedToBot` (both tested).
+- **No double turn for a typed answer (kernel 28da9b54a).** In the `addressed` mode an addressed
+  message (mention, 1:1) is reported with `reportConversationMessage` before the turn the channel
+  runs for it; when the kernel consumed it as the typed answer to an open question ("2"), no turn
+  starts. The wait is capped at 1.5 s (`REPORT_TIMEOUT_MS`); a timeout, an error or a kernel
+  without the method means "not answered": the message is emitted and the turn runs as before.
+  In the `all` mode (the engine drives every turn) nothing changes.
 - **Removed:** the `'fallback'` decision, `pickChatAgentForTurn` (now `pickTurnDecision`),
   the `TEAMS_NATIVE_IDENTITY` constant (the decision is per turn now).
 - **Plain-text parity (criterion 30)** is covered by tests: a card Teams does not render is
