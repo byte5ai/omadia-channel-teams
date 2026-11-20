@@ -17,7 +17,10 @@ identity:
     - "communication"
 
 compat:
-  core: ">=1.51.0 <2.0"
+  # Placeholder floor for the management layer's routing contract (spec 2042
+  # §5.3, kernel #2055: `reject` with a notice, no fallback agent, the routing
+  # context on resolve()). The release version is set by the parent session.
+  core: ">=1.74.0 <2.0"
   node: ">=20"
 
 lifecycle:
