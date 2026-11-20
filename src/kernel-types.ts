@@ -24,7 +24,11 @@ import type {
   SemanticAnswer,
   VerifierBadge,
   AgentConsultation,
-  DelegatedAnswer,
+  AiDisclosure,
+  Contribution,
+  AgentSpeaker,
+  Speaker,
+  SystemNotice,
   TurnOrigin,
 } from '@omadia/channel-sdk';
 
@@ -39,9 +43,14 @@ export type {
   OutgoingSlotPicker,
   SemanticAnswer,
   VerifierBadge,
-  // #332 — agent-transparency footer + Direct Line attributed answer.
+  // #332 — the consulted agents, shown in the answer details.
   AgentConsultation,
-  DelegatedAnswer,
+  // #2045 / #2047 — who spoke, a management-layer notice, colleagues' contributions.
+  AiDisclosure,
+  Contribution,
+  AgentSpeaker,
+  Speaker,
+  SystemNotice,
 };
 
 // ---------------------------------------------------------------------------
@@ -172,86 +181,8 @@ export interface TopicDetector {
 }
 
 // ---------------------------------------------------------------------------
-// Run trace — mirror of src/services/runTraceCollector.ts (structural)
-// ---------------------------------------------------------------------------
-
-/**
- * Structural shim for `RunTracePayload = Omit<RunTrace, 'turnId'>`. The
- * Teams adapter reads the fields below to render a trace panel in the
- * Adaptive Card — keep these in sync with
- * `src/services/knowledgeGraph.ts:RunTrace`.
- */
-export type RunStatus = 'success' | 'failed' | string;
-
-export interface RunToolCallShim {
-  toolName: string;
-  durationMs: number;
-  isError: boolean;
-}
-
-export interface RunAgentInvocationShim {
-  agentName: string;
-  status: RunStatus;
-  durationMs: number;
-  subIterations: number;
-  toolCalls: RunToolCallShim[];
-}
-
-export interface RunTracePayload {
-  status: RunStatus;
-  durationMs: number;
-  iterations: number;
-  orchestratorToolCalls: RunToolCallShim[];
-  agentInvocations: RunAgentInvocationShim[];
-}
-
-// ---------------------------------------------------------------------------
 // Chat agent — mirror of ChatAgent + ChatTurnInput
 // ---------------------------------------------------------------------------
-
-/**
- * Answer-size scale — mirror of the kernel's `ANSWER_VERBOSITY_LEVELS`
- * (`@omadia/channel-sdk` ≥ the phase-3 cut; mirrored here because the SDK
- * this package compiles against predates it). The kernel parses the wire
- * value and ignores anything outside the scale, so a drift here can only
- * make a button inert, never pick a wrong level.
- */
-export const ANSWER_VERBOSITY_LEVELS = [
-  'tldr',
-  'brief',
-  'standard',
-  'detailed',
-  'max',
-] as const;
-export type AnswerVerbosityLevel = (typeof ANSWER_VERBOSITY_LEVELS)[number];
-
-/** The level an answer was generated under (`SemanticAnswer.answerVerbosity`). */
-export interface AnswerVerbosityInfo {
-  readonly effective: AnswerVerbosityLevel;
-  readonly source: 'turn' | 'configured';
-}
-
-export function isAnswerVerbosityLevel(raw: unknown): raw is AnswerVerbosityLevel {
-  return (
-    typeof raw === 'string' &&
-    (ANSWER_VERBOSITY_LEVELS as readonly string[]).includes(raw)
-  );
-}
-
-/**
- * Read the level off a kernel answer structurally: the SDK type this package
- * compiles against may predate the field, and an older kernel simply omits
- * it — in which case the card offers no size buttons.
- */
-export function readAnswerVerbosity(answer: unknown): AnswerVerbosityInfo | undefined {
-  if (!answer || typeof answer !== 'object') return undefined;
-  const raw = (answer as { answerVerbosity?: unknown }).answerVerbosity;
-  if (!raw || typeof raw !== 'object') return undefined;
-  const { effective, source } = raw as { effective?: unknown; source?: unknown };
-  if (!isAnswerVerbosityLevel(effective)) return undefined;
-  if (source !== 'turn' && source !== 'configured') return undefined;
-  return { effective, source };
-}
 
 export interface ChatTurnInput {
   userMessage: string;
@@ -259,13 +190,6 @@ export interface ChatTurnInput {
   userId?: string;
   priorTurns?: Array<{ userMessage: string; assistantAnswer: string }>;
   extraSystemHint?: string;
-  freshCheck?: boolean;
-  /**
-   * Answer-size pick for THIS turn only (the "Kürzer" / "Mehr Details" card
-   * buttons re-asking the same question). Replaces the configured level for
-   * the one turn; an older kernel ignores the field.
-   */
-  answerVerbosity?: AnswerVerbosityLevel;
   ssoAssertion?: string;
   userTimeZone?: string;
   /**
@@ -774,6 +698,9 @@ export type FacilitatorDeliveryOutcome =
 /** The CoreApi members this plugin feature-detects for #2043. */
 export interface NativeFacilitatorCoreApi {
   emitConversationMessage?(event: ConversationMessageEvent): void;
+  /** #2086 — `emitConversationMessage` that says whether the kernel consumed the
+   *  message as the typed answer to an open question. Absent on an older kernel. */
+  reportConversationMessage?(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }>;
   /** Synchronous and kernel-cached; `false` for anything not positively
    *  subscribed. Absent means the mention gate always applies. */
   isAllMessagesSubscribed?(channelType: string, conversationId: string, channelKey: string): boolean;

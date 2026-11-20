@@ -1,5 +1,122 @@
 # Changelog
 
+## 0.41.0
+
+Agents as colleagues (byte5ai/omadia#2042, issue #42, spec 2042 §3 INV-3/4/5/7, §5.3,
+§5.4, §5.8, §5.14). Needs kernel #2045, #2047, #2055, #2086 and #2087 (channel SDK of the
+S6 branch): `compat.core` is the placeholder `>=1.75.0 <2.0` (the plugin-api of the S6 kernel; the parent session confirms the number before publishing), the release version is set
+by the parent session. The routing contract below has no fallback for an older kernel.
+
+- **Management-layer routing (#2055).** `channelResolver.resolve()` answers `bound` or
+  `reject`; the `'fallback'` decision is gone. `chatAgent` is set on `reject` too: it
+  carries out `/agent` and answers a refusal with the `system` notice, which Teams posts as
+  a card under the heading "System" (never as an agent's answer, no AI chip, no label).
+  Both probed keys (the bot's `28:<appId>` and the conversation) are asked; an exclusive
+  hit of the bot, also an exclusive `reject`, outranks everything (`pickTurnDecision`),
+  then the conversation's binding, then the bot's, then the refusal. A sender no agent
+  serves stores and starts nothing: no attachment download, topic detection, routine
+  capture, history entry, typing indicator or workflow event. Fail-closed with the fixed
+  text "Diesem Chat ist kein Agent zugeordnet …" when the platform gave neither an agent
+  nor a notice, or the resolver threw.
+- **`/agent <name>`, `/agent`, `/agents` reach the kernel as the whole message.** The
+  management layer recognises a command only when it is the whole message, so the group
+  chat's `[Name]: ` attribution (#330) no longer stands in front of it, and topic
+  detection no longer reads it as a break. The confirmation or list is a `system` card and
+  is not written to the conversation history.
+- **One principal form.** The sender goes to `resolve()` as `channelUserPrincipal`:
+  `user:<email>` once Graph (roster as fallback) verified the address, else
+  `user:teams-aad:<id>`, lowercase. `TurnOrigin.principal` stays the Entra object id the
+  facilitation engine matches participants by. The notice language is the activity's
+  locale (`de-DE` → `de`). The lookup runs only for a message that passes the mention gate.
+- **Speaker before the answer.** `resolve().speaker` names the agent that will answer. The
+  pace acknowledgement is the SDK template under that speaker: on the agent's own bot
+  (exclusive) the bot is the speaker; where one bot serves several agents (a binding, a
+  selection) the SDK's `speakerLine` puts "Mira:" in front of the acknowledgement and over
+  the first answer after the speaker changed (INV-4), never in a one-agent conversation. An
+  answer the kernel left without a speaker is stamped with the announced one.
+- **No singleton behind a registry.** `chatAgent@1` only answers a host WITHOUT the resolver
+  service (one agent, one bot): a wired resolver with nothing to ask about, or a decision
+  without a ChatAgent, is refused with the fixed text. `resolve()` goes through the SDK's
+  `resolveChannelRoute`. `chatAgent@^1` stays in `requires` for exactly that host.
+- **Selection key.** `/agent` is carried out by the management layer under the narrowest key
+  of the turn (the conversation; a channel thread is its own), plus the sender, as the kernel
+  stores selections (S1): not under the bot-wide catch-all binding that may have won the
+  routing. On an agent's own bot (exclusive) the bot key is the only key.
+- **Side channel for data (spec §5.13, criteria 25/35, kernel #2085).** `SemanticAnswer.data`
+  / `textWithoutData` are read structurally (feature-detect, S4 is not on every SDK). With both,
+  each table is a native Adaptive-Card `Table` (caption, at most 50 rows, a "… N weitere Zeilen"
+  line, fewer rows before the text is cut when the card would exceed Teams' size cap, masked cells
+  in the accent colour) under the text without the data rendering; the long-answer path posts
+  the full text, tables included, once. The conversation history never holds the rows (it
+  reaches a model). Without the fields the answer renders from `text` as before.
+- **Typed ballot replies are the kernel's (#2086).** A card or poll Teams does not show
+  natively goes out as numbered text from the kernel, and a matching typed reply becomes the
+  `card_answer` there; this plugin renders and parses no ballot. Fix for it: the `created` and
+  `edited` events no longer report the root of a channel thread as `replyToMessageId` (every
+  message of a thread carries it as `replyToId`); that value made the kernel look for a question
+  on the root and switched its one-open-question fallback off. A quoted reply still names the
+  quoted message. The reported `messageId` of a sent text is the Teams activity id, and a mention
+  is `addressedToBot` (both tested).
+- **No double turn for a typed answer (kernel 28da9b54a).** In the `addressed` mode an addressed
+  message (mention, 1:1) is reported with `reportConversationMessage` before the turn the channel
+  runs for it; when the kernel consumed it as the typed answer to an open question ("2"), no turn
+  starts. The wait is capped at 1.5 s (`REPORT_TIMEOUT_MS`); a timeout, an error or a kernel
+  without the method means "not answered": the message is emitted and the turn runs as before.
+  In the `all` mode (the engine drives every turn) nothing changes.
+- **Removed:** the `'fallback'` decision, `pickChatAgentForTurn` (now `pickTurnDecision`),
+  the `TEAMS_NATIVE_IDENTITY` constant (the decision is per turn now).
+- **Plain-text parity (criterion 30)** is covered by tests: a card Teams does not render is
+  refused with nothing posted (so the engine posts `renderCardAsText`), the rendered text is
+  delivered exactly as written, and a typed reply reaches the engine as typed and parses
+  with `parseCardReply` to the same typed answer a card click carries.
+
+- **Minimal answer card.** A normal answer is the text, plus the discreet "✨ AI-generated"
+  chip where the kernel's disclosure setting asks for it. Gone from the card body: the
+  verifier badge, the "🗄 Originaldaten aus dem System" chip, the "🔎 Konsultiert" footer,
+  the "💬 Direkte Antwort von" chip, "🔽 Kürzer / 🔼 Mehr Details", "💡 Nächste Varianten"
+  (buttons stay only for options the agent itself proposed, without the header), the
+  "🔄 Fresh Check" button, and the three toggle buttons Tool-Trace, Memory-Auswirkung and
+  Privacy Guard.
+- **ONE collapsed "Details" element** (`answer_details`), drawn from the channel SDK's
+  single projection `buildAnswerDetails(answer)`: verification, system data, colleagues who
+  contributed, privacy counters, memory use, plus the specialists the run trace shows. No
+  projection (a plain answer) means no element and no button. The full privacy receipt,
+  the memory-impact section and the tool trace are no longer drawn: the projection holds
+  counts only, and the trace was never passed to the card by the live path.
+- **Contributions** (`SemanticAnswer.contributions`): "Jonas (konsultiert von Mira)" with
+  Jonas's text exactly as delivered, below Mira's own text; a failed contribution reads
+  "… – fehlgeschlagen" and shows its failure line. Never shortened, also not on an
+  oversized card; on the long-answer path the same attribution in plain text.
+- **System notices** (`speaker: system`): a card under the heading "System", no AI chip,
+  no AI label, no details, no buttons; never under an agent's name without that heading.
+  Teams shows the agent natively (its own bot), so there is no name line there.
+- **Decoration registry.** Every card element (chip, details, proposed options, decision,
+  consent and poll cards) is attached through the channel SDK's `admitDecorations`; an
+  element the registry does not declare for `teams` is dropped, fail-closed.
+- **AI disclosure frequency (#2087).** The chip, and now also the activity-level "AI
+  generated" label of a turn answer, appear only when `aiDisclosure.markers.chip` is true
+  (absent `markers` = `channel_default` = every card). With the operator's `off` (no
+  `aiDisclosure`) neither is drawn; with `per_conversation` and nothing due, neither is.
+  Proactive posts, routine deliveries and polls are unchanged: they carry no disclosure
+  settings to follow.
+- **Pace** (spec 2042 §5.8): the agent call runs through the SDK's `runPacedTurn`. Typing
+  from the start, renewed every 5 s; ONE short acknowledgement after 8 s; no progress
+  chatter.
+- **Direct Line is gone**: the buttons, the `direct_line` submit handler, the `#<token>`
+  rewrite and the `delegatedAnswer`/`directLineSession` rendering. Teams addresses an
+  agent through its own bot; typed text, `/agent <name>` included, is handed to the kernel
+  as it is (a command as the whole message, see above).
+- **The seven `teams_card_*` setup fields are removed** (`teams_card_tool_trace`,
+  `_memory_disclosure`, `_privacy_receipt`, `_fresh_check`, `_follow_ups`, `_direct_line`,
+  `_verbosity_steps`): the buttons they switched do not exist any more. A saved
+  configuration that still holds them is not read; the values are ignored. `teams_native_ai_label`
+  is unchanged. Manifest guide, README and docs updated.
+- **A click on a button of a card posted by an earlier version** (fresh check, size steps)
+  answers with one line ("Diese Schaltfläche gibt es nicht mehr …") instead of "Ich habe
+  keinen Text …", and starts no turn.
+- Not verified in a Teams client: how the details element, the contribution block and
+  the system heading look. Simulated transport only.
+
 ## 0.40.2
 
 - **A question card whose close never arrived closes itself** (rollout pass 6,

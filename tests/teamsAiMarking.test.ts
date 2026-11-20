@@ -107,15 +107,41 @@ describe('#2043 AI marking: turn answers', () => {
     assert.ok(JSON.stringify(posted[0]).includes('Moderator und kein Assistent'));
   });
 
-  it('an answer without a disclosure (the operator turned it off): no chip; the label entity all the same', async () => {
+  it('an answer without a disclosure (the operator turned it off): no chip, no label entity (0.41.0)', async () => {
     const posted = await turnAnswer({ text: 'Die Antwort ist 42.' });
 
     assert.equal(posted.length, 1);
-    assertLabelOnly(posted[0], 'turn answer without disclosure');
     // 0.40.1 — the chip stands in for the kernel's sentence on a card. The
     // kernel disclosed nothing, so the channel draws no marker of its own.
+    // 0.41.0 — and the activity-level label follows the chip (kernel #2087:
+    // channels render their native label only when a marker is due).
     assert.equal(hasChip(posted[0]), false);
+    assert.equal(labelsOf(posted[0]).length, 0, 'operator off: no AI label either');
+    assert.ok(!JSON.stringify(posted[0]).includes(DISCLOSURE));
     assert.ok(JSON.stringify(posted[0]).includes('Die Antwort ist 42.'), 'the answer itself is unchanged');
+  });
+
+  it('the frequency setting (#2087): a marker that is not due leaves neither chip nor label', async () => {
+    const notDue = { text: DISCLOSURE, markers: { textLine: false, chip: false } };
+    const due = { text: DISCLOSURE, markers: { textLine: false, chip: true } };
+
+    const [quiet] = await turnAnswer({ text: 'Die Antwort ist 42.', aiDisclosure: notDue });
+    assert.equal(hasChip(quiet), false);
+    assert.equal(labelsOf(quiet).length, 0);
+    assert.ok(!JSON.stringify(quiet).includes(DISCLOSURE));
+
+    const [marked] = await turnAnswer({ text: 'Die Antwort ist 42.', aiDisclosure: due });
+    assert.equal(hasChip(marked), true);
+    assert.equal(labelsOf(marked).length, 1);
+
+    // A long answer that is not due carries no sentence either, whatever the label mode.
+    const long = Array.from({ length: 700 }, (_, n) => `Absatz ${String(n)}: ${'lorem ipsum '.repeat(4)}`).join('\n\n');
+    for (const nativeAiLabel of [false, true]) {
+      const posted = await turnAnswer({ text: long, aiDisclosure: notDue }, { nativeAiLabel });
+      assert.ok(posted.length > 1);
+      assert.ok(!JSON.stringify(posted).includes(DISCLOSURE));
+      assert.equal(posted.flatMap((activity) => labelsOf(activity)).length, 0);
+    }
   });
 
   it('the chip follows the kernel\'s disclosure for every kind of turn answer: refusal and private status too', async () => {
@@ -350,8 +376,9 @@ describe('D24 the outgoing activity of a proactive post against a reply in a tur
 
   it('both paths carry the same label entity, and it is the one Microsoft\'s SDK sends', async () => {
     const proactive = await proactiveText();
-    const [reply] = await turnAnswer({ text: 'Die Antwort ist 42.' });
-    const [longReply] = await turnAnswer({ text: 'Absatz. '.repeat(4000) });
+    const aiDisclosure = { text: DISCLOSURE };
+    const [reply] = await turnAnswer({ text: 'Die Antwort ist 42.', aiDisclosure });
+    const [longReply] = await turnAnswer({ text: 'Absatz. '.repeat(4000), aiDisclosure });
 
     for (const [name, activity] of [['proactive text', proactive], ['card reply', reply], ['plain-text reply', longReply]] as const) {
       assert.deepEqual(labelsOf(activity), [MICROSOFT_SDK_AI_ENTITY], name);
@@ -373,7 +400,7 @@ describe('D24 the outgoing activity of a proactive post against a reply in a tur
   it('what a reply in a turn has and a proactive post has not', async () => {
     const proactive = await proactiveText();
     const [reply] = await turnAnswer({ text: folded('Die Antwort ist 42.'), aiDisclosure: { text: DISCLOSURE } });
-    const [longReply] = await turnAnswer({ text: 'Absatz. '.repeat(4000) });
+    const [longReply] = await turnAnswer({ text: 'Absatz. '.repeat(4000), aiDisclosure: { text: DISCLOSURE } });
 
     // A card reply: an Adaptive Card with this plugin's own chip. This is
     // what was read as "the label" on turn answers in the client.

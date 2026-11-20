@@ -153,8 +153,8 @@ describe('manifest — Teams tab routes (#1620)', () => {
     assert.match(manifestYaml, /^ {2}public_paths:\n {4}- "\/p\/channel-teams"$/m);
   });
 
-  it('requires a core whose plugin-api knows auth:teams-sso', () => {
-    assert.match(manifestYaml, /^ {2}core: ">=1\.51\.0 <2\.0"$/m);
+  it('requires a core whose plugin-api knows auth:teams-sso (1.51.0; the S6 channel SDK this plugin imports, 1.75.0, is above it)', () => {
+    assert.match(manifestYaml, /^ {2}core: ">=1\.75\.0 <2\.0"$/m);
   });
 });
 

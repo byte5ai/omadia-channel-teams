@@ -337,6 +337,17 @@ export class SimulatedKernel {
   /** `false` models a kernel before channel-sdk 0.3.5: it offers
    *  `isAllMessagesSubscribed` and no `conversationDelivery`. */
   offersDeliveryModes = true;
+  /**
+   * `reportConversationMessage` (#2086): absent on a kernel before 28da9b54a
+   * (`undefined`); otherwise what the kernel answers about a reported message:
+   * consumed as the typed answer to an open question, not consumed, never
+   * answering in time, or failing.
+   */
+  reportMode: 'consume' | 'pass' | 'hang' | 'throw' | undefined = undefined;
+  /** How long the bot waits for the verdict in tests (the real one is 1.5 s). */
+  reportTimeoutMs = 40;
+  /** Every event handed to `reportConversationMessage`. */
+  readonly reported: ConversationMessageEvent[] = [];
 
   /** `mode`: what the kernel's `conversationDelivery` answers for this bot
    *  in this conversation (#2089). `addressed` is a process in follow-up. */
@@ -362,6 +373,15 @@ export class SimulatedKernel {
   }
 }
 
+/** What `channelResolver.resolve` is asked for one key (#2055). */
+export interface SimulatedResolveInput {
+  channelType: string;
+  channelKey: string;
+  conversationId: string;
+  principal?: string;
+  locale?: string;
+}
+
 export interface SimulatedBot {
   bot: TeamsBot;
   /** One entry per turn the agent was asked to answer. */
@@ -372,6 +392,12 @@ export interface SimulatedBot {
   scopes: string[];
   /** Everything the bot sent back into the conversation. */
   sent: unknown[];
+  /** What the conversation history was given, in order. */
+  appended: { userMessage: string; assistantAnswer: string }[];
+  /** What the bot asked the management layer, one entry per probed key. */
+  resolveCalls: SimulatedResolveInput[];
+  /** The agent the simulated management layer hands the text to. */
+  agent: { chat(input: { userMessage: string; origin?: unknown; sessionScope: string }): Promise<Record<string, unknown>> };
   /** Deliver one activity as the Bot Framework adapter would. */
   deliver(activity: Partial<Activity>): Promise<void>;
 }
@@ -394,6 +420,17 @@ export function simulatedBot(
     /** Every bot is an agent's OWN provisioned identity, as every
      *  facilitator's is: the session scope is then bot-qualified. */
     ownIdentity?: boolean;
+    /** The management layer's decision per resolved key (#2055). Wins over
+     *  `ownIdentity`. Receives what the bot asked: key, principal, locale. */
+    resolve?: (input: SimulatedResolveInput) => Record<string, unknown>;
+    /** Earlier turns of the conversation (what the history store holds). */
+    priorTurns?: { userMessage: string; assistantAnswer: string }[];
+    /** A topic detector; it is consulted only when there are prior turns. */
+    topicDetector?: { classify(input: { userMessage: string; history: unknown[] }): Promise<Record<string, unknown>> };
+    /** Verified e-mail address per Entra object id (Graph `getUserMail`). */
+    emailByAad?: Record<string, string>;
+    /** The agent the simulated management layer hands the text to; default: answers `answer`. */
+    chat?: (input: { userMessage: string; origin?: unknown; sessionScope: string }) => Promise<Record<string, unknown>>;
   },
 ): SimulatedBot {
   const turns: string[] = [];
@@ -401,19 +438,24 @@ export function simulatedBot(
   const scopes: string[] = [];
   const sent: unknown[] = [];
   const history = new Map<string, unknown[]>();
+  const appended: { userMessage: string; assistantAnswer: string }[] = [];
+  const resolveCalls: SimulatedResolveInput[] = [];
   const agent = {
     chat: async (input: { userMessage: string; origin?: unknown; sessionScope: string }) => {
       turns.push(input.userMessage);
       origins.push(input.origin);
       scopes.push(input.sessionScope);
+      if (group?.chat) return group.chat(input);
       return group?.answer ?? { text: group?.answerText ?? 'ok' };
     },
   };
   const bot = new (TeamsBot as unknown as new (...args: unknown[]) => TeamsBot)(
     agent,
     {
-      get: (scope: string) => history.get(scope) ?? [],
-      append: () => {},
+      get: (scope: string) => history.get(scope) ?? group?.priorTurns ?? [],
+      append: (_scope: string, turn: { userMessage: string; assistantAnswer: string }) => {
+        appended.push(turn);
+      },
       resetTurns: () => {},
       markPending: () => {},
       getPending: () => undefined,
@@ -421,7 +463,7 @@ export function simulatedBot(
       size: () => 0,
       clear: () => {},
     },
-    undefined,
+    group?.topicDetector,
     {
       run: async (_value: unknown, fn: () => Promise<unknown>) => fn(),
       enter: () => {},
@@ -434,12 +476,28 @@ export function simulatedBot(
     ...Array.from({ length: 7 }, () => undefined),
     // resolveChatAgentForActivity: the kernel's answer for a bot that IS one
     // agent (`exclusive`), which is what makes the session scope bot-qualified.
-    group?.ownIdentity
-      ? (input: { channelKey: string }) =>
-          input.channelKey.startsWith('28:') ? { decision: 'bound', chatAgent: agent, exclusive: true } : { decision: 'reject' }
+    group?.resolve
+      ? (input: SimulatedResolveInput) => {
+          resolveCalls.push(input);
+          return group.resolve?.(input);
+        }
+      : group?.ownIdentity
+        ? (input: SimulatedResolveInput) => {
+            resolveCalls.push(input);
+            return input.channelKey.startsWith('28:')
+              ? { decision: 'bound', chatAgent: agent, exclusive: true }
+              : { decision: 'reject', chatAgent: agent };
+          }
+        : undefined,
+    // conversationObserver, emitConductorEvent: not part of these scenarios.
+    undefined,
+    undefined,
+    // resolveEmailByAad: Graph's verified address for an Entra object id.
+    group?.emailByAad
+      ? async (aadObjectId: string) => group.emailByAad?.[aadObjectId] ?? null
       : undefined,
-    // conversationObserver … resolveConductorAwait: not part of these scenarios.
-    ...Array.from({ length: 4 }, () => undefined),
+    // resolveConductorAwait: not part of these scenarios.
+    undefined,
     group,
   );
   bot.attachConversationMessages(
@@ -451,7 +509,18 @@ export function simulatedBot(
       emit: (event) => {
         kernel.events.push(event);
       },
-    }),
+      ...(kernel.reportMode
+        ? {
+            report: async (event: ConversationMessageEvent) => {
+              kernel.reported.push(event);
+              kernel.events.push(event);
+              if (kernel.reportMode === 'throw') throw new Error('kernel unavailable');
+              if (kernel.reportMode === 'hang') return new Promise<{ answeredCard: boolean }>(() => {});
+              return { answeredCard: kernel.reportMode === 'consume' };
+            },
+          }
+        : {}),
+    }, kernel.reportTimeoutMs),
   );
   if (group?.meetingSessions) bot.attachMeetingSessions(group.meetingSessions);
   const deliver = async (activity: Partial<Activity>): Promise<void> => {
@@ -471,7 +540,7 @@ export function simulatedBot(
     } as unknown as TurnContext;
     await bot.run(context);
   };
-  return { bot, turns, origins, scopes, sent, deliver };
+  return { bot, turns, origins, scopes, sent, resolveCalls, appended, agent, deliver };
 }
 
 // ---------------------------------------------------------------------------

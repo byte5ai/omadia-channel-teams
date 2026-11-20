@@ -1,23 +1,27 @@
 import type { Attachment } from 'botbuilder';
 import { CardFactory } from 'botbuilder';
-import type { PrivacyReceipt } from '@omadia/plugin-api';
+import type { AnswerDetails } from '@omadia/channel-sdk';
 import type {
-  AgentConsultation,
-  AnswerVerbosityInfo,
-  AnswerVerbosityLevel,
-  CaptureDisclosure,
-  DelegatedAnswer,
+  AiDisclosure,
+  Contribution,
   OutgoingAttachment,
-  RunTracePayload,
-  VerifierBadge,
+  Speaker,
+  SystemNotice,
 } from './kernel-types.js';
-import { ANSWER_VERBOSITY_LEVELS, isAnswerVerbosityLevel } from './kernel-types.js';
 import type { MentionEntity } from './teamsMentions.js';
 import type { AgentAppInstallOutcome } from './teamsAgentInstaller.js';
+import { contributionBlocks, systemNoticeBody } from './teamsAnswerParts.js';
 import {
-  DEFAULT_TEAMS_CARD_FEATURES,
-  type TeamsCardFeatures,
-} from './teamsCardFeatures.js';
+  SIDE_CHANNEL_MAX_ROWS,
+  sideChannelCellText,
+  type SideChannelTable,
+} from './teamsSideChannelData.js';
+import { buildAnswerDetailsElements } from './teamsCardDetails.js';
+import {
+  admitTeamsDecorations,
+  assertTeamsDecoration,
+  TEAMS_DECORATION_IDS,
+} from './teamsDecorations.js';
 
 /**
  * Post-S+7.5 alias — the kernel/SemanticAnswer naming is "OutgoingAttachment",
@@ -33,8 +37,8 @@ const ADAPTIVE_CARD_CONTENT_TYPE = 'application/vnd.microsoft.card.adaptive';
 
 /** Keep a safety margin below Teams' 28 KB hard cap for a single AC attachment. */
 const CARD_BUDGET_BYTES = 26_000;
-/** If the answer alone exceeds this, we drop the trace section entirely. */
-const ANSWER_MAX_BYTES_WHEN_TRACED = 20_000;
+/** Answers that do not fit the card budget are cut to this many characters. */
+const ANSWER_MAX_BYTES_WHEN_TRUNCATED = 20_000;
 
 const AI_LABEL_ENTITY = {
   type: 'https://schema.org/Message',
@@ -90,9 +94,9 @@ export function stripFoldedAiDisclosure(
   return text;
 }
 
+
 export interface BuildAnswerCardInput {
   answer: string;
-  runTrace?: RunTracePayload;
   /**
    * Image attachments to embed inline under the answer. Today only diagram
    * renders (render_diagram tool) populate this; the shape is generic so
@@ -100,51 +104,23 @@ export interface BuildAnswerCardInput {
    */
   attachments?: DiagramAttachment[];
   /**
-   * Answer-verifier summary. When present the card shows a small badge
-   * ("✓ geprüft" / "⚠ teilweise bestätigt" / "↻ korrigiert") so the user
-   * knows the reply has been re-checked against the source of truth.
+   * The SDK's one projection of the answer's details
+   * (`buildAnswerDetails(answer)`): verification, data provenance, colleagues
+   * who contributed, privacy counters, memory use. Drawn as ONE collapsed
+   * "Details" element (decoration `answer_details`); never as chips or
+   * footers on the card. `undefined`: no details element at all.
    */
-  verifier?: VerifierBadge;
+  details?: AnswerDetails;
   /**
-   * The answer was rendered server-side by Privacy Shield
-   * (`SemanticAnswer.answerSource === 'privacy-render'`): its values are the
-   * source system's original data, inserted by the server, not text the
-   * model wrote. The card then shows a "🗄 Originaldaten aus dem System" chip
-   * next to the AI and verifier chips — the same marker the web chat shows.
-   */
-  systemData?: boolean;
-  /**
-   * `false`: the kernel supplied NO AI disclosure for this answer (the
-   * operator turned the disclosure off), so the card does not draw its
-   * "✨ AI-generated" chip either. Absent or `true`: the chip is drawn. The
-   * chip stands in for the kernel's disclosure sentence on a card; it never
-   * marks an answer the kernel decided not to mark.
+   * Draw the card's discreet "✨ AI-generated" chip (decoration
+   * `ai_disclosure_chip`). `false` means the kernel did not ask for a visible
+   * marker on this answer: the operator turned the disclosure off, or the
+   * frequency setting says it is not due (byte5ai/omadia#2087). Absent or
+   * `true`: the chip is drawn (a caller without kernel disclosure data keeps
+   * the card of old). {@link aiChipDue} derives the value from a kernel
+   * answer.
    */
   aiMarker?: boolean;
-  /**
-   * When present, renders a `🔄 Fresh Check` button that re-asks the same
-   * question while bypassing memory read + FTS context block. Used when
-   * the user suspects an old memory entry is poisoning the answer.
-   * Also feeds the #332 Direct-Line buttons (see `decorateDirectLine`).
-   */
-  originalUserMessage?: string;
-  /**
-   * Gate for the `🔄 Fresh Check` button: render it only when the kernel
-   * reported that memory actually influenced this answer
-   * (`SemanticAnswer.memoryUsed`). Without memory in the turn a fresh check
-   * cannot produce a different answer, so the affordance is noise. Does NOT
-   * affect the Direct-Line buttons, which read `originalUserMessage`
-   * independently.
-   */
-  showFreshCheck?: boolean;
-  /**
-   * The answer-size level this answer was generated under
-   * (`SemanticAnswer.answerVerbosity`). With `originalUserMessage` set, the
-   * card offers "🔽 Kürzer" / "🔼 Mehr Details" as a re-ask one step down /
-   * up the scale; the button at the end of the scale is left out. Absent
-   * (older kernel) → no size buttons.
-   */
-  answerVerbosity?: AnswerVerbosityInfo;
   /**
    * Teams @-mention entities resolved against the active chat's roster.
    * When non-empty, embedded in the card's `msteams.entities` so Teams
@@ -155,31 +131,13 @@ export interface BuildAnswerCardInput {
    */
   mentions?: readonly MentionEntity[];
   /**
-   * Non-blocking 1-click refinement buttons emitted by `suggest_follow_ups`.
-   * Rendered as `Action.Submit` entries in the card's actions array (next
-   * to Tool-Trace + Fresh-Check). Up to 4 options; each carries a full
-   * `prompt` that is submitted as a fresh user turn on click.
+   * Concrete next steps the agent itself proposed (`suggest_follow_ups`) and
+   * expects the user to pick from: decoration `follow_up_options`. Rendered as
+   * `Action.Submit` buttons under the answer; up to 4 options, each carrying a
+   * full `prompt` that is submitted as a fresh user turn on click. Without
+   * proposed options there is no button row.
    */
   followUpOptions?: ReadonlyArray<{ label: string; prompt: string }>;
-  /**
-   * Palaia capture-disclosure (OB-81): summary of what the orchestrator
-   * persisted into the knowledge graph for this turn. Rendered as a
-   * collapsed `Container` + `Action.ToggleVisibility` button parallel to
-   * the Tool-Trace section. Omitted (no button shown) when undefined.
-   * Connector-side cosmetic only — the same data is also delivered via the
-   * channel-agnostic `SemanticAnswer.captureDisclosure` field.
-   */
-  captureDisclosure?: CaptureDisclosure;
-  /**
-   * Privacy-Proxy receipt (Slice 6): summary of what the `privacy.redact@1`
-   * provider did to the outbound LLM payload — detections, actions,
-   * routing decision. Rendered as a collapsed `Container` +
-   * `Action.ToggleVisibility` button parallel to Tool-Trace and
-   * Memory-Auswirkung. Receipt is PII-free by contract (see
-   * `@omadia/plugin-api/privacyReceipt`) so we render fields directly
-   * without masking. Omitted (no button shown) when undefined.
-   */
-  privacyReceipt?: PrivacyReceipt;
   /**
    * Privacy Shield v4 — real values rendered into `answer` that the LLM
    * never saw (resolved server-side behind the data-plane boundary). Their
@@ -190,161 +148,50 @@ export interface BuildAnswerCardInput {
    */
   maskedValues?: readonly string[];
   /**
-   * #332 Layer 1 — tamper-evident agent transparency. The harness-built list
-   * of sub-agents actually invoked this turn (from the deterministic run
-   * trace, NOT the LLM's prose). Rendered as a "🔎 Konsultiert: …" footer chip
-   * and as one dynamic "💬 Direkt mit <Agent>" button per consulted agent.
-   * Omitted → no chip, no buttons.
+   * #2045 — who the message is from. Teams shows an agent natively (its own
+   * bot), so an agent speaker adds nothing to the card; a `system` speaker
+   * turns the card into a management-layer notice.
    */
-  agentsConsulted?: readonly AgentConsultation[];
+  speaker?: Speaker;
   /**
-   * #332 Layer 2 — Direct Line. Present when this turn's answer is a named
-   * specialist's verbatim reply, delivered by the harness. Renders an
-   * attribution chip ("💬 Direkte Antwort von <Agent>") above the answer so the
-   * user knows the body is the specialist's own words, not the orchestrator's.
+   * "Mira:" — shown above the answer where one bot serves several agents and
+   * the speaker would be unclear (INV-4; the SDK's `speakerLine` decides).
+   * Never on a card of an agent's own bot, never on a `system` notice.
    */
-  delegatedAnswer?: DelegatedAnswer;
+  speakerLine?: string;
   /**
-   * Operator switches for the optional buttons (`teams_card_*` setup
-   * fields, see `teamsCardFeatures.ts`). A switch that is off removes the
-   * button AND its hidden container / header, even when the data for it was
-   * passed in. Omitted → every switch on, i.e. the card renders exactly as
-   * it did before the switches existed. Chips are never affected.
+   * Side-channel data (spec 2042 §5.13): drawn as native tables after the
+   * answer text, which is then the text WITHOUT the data rendering. At most
+   * {@link SIDE_CHANNEL_MAX_ROWS} rows each, a "weitere Zeilen" line for the
+   * rest, fewer rows when the card would exceed Teams' size cap.
    */
-  features?: TeamsCardFeatures;
-}
-
-/** The effective switches for an input — defaults when the caller passed none. */
-function effectiveFeatures(input: Pick<BuildAnswerCardInput, 'features'>): TeamsCardFeatures {
-  return input.features ?? DEFAULT_TEAMS_CARD_FEATURES;
-}
-
-/** Operator-facing names of the answer-size levels, for the button tooltips. */
-const VERBOSITY_LABEL: Record<AnswerVerbosityLevel, string> = {
-  tldr: 'TL;DR',
-  brief: 'Kurz',
-  standard: 'Standard',
-  detailed: 'Ausführlich',
-  max: 'Maximal',
-};
-
-/** Adaptive-Card Submit payload for the fresh-check button. */
-export const FRESH_CHECK_VALUE_TYPE = 'fresh_check';
-
-export interface FreshCheckValue {
-  type: typeof FRESH_CHECK_VALUE_TYPE;
-  originalMessage: string;
-}
-
-export function parseFreshCheckValue(value: unknown): FreshCheckValue | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const v = value as Record<string, unknown>;
-  if (v['type'] !== FRESH_CHECK_VALUE_TYPE) return undefined;
-  const originalMessage = v['originalMessage'];
-  if (typeof originalMessage !== 'string' || originalMessage.length === 0) {
-    return undefined;
-  }
-  return { type: FRESH_CHECK_VALUE_TYPE, originalMessage };
+  dataTables?: readonly SideChannelTable[];
+  /** Internal: rows per table when the card had to shrink to fit Teams' size cap. */
+  dataRowCap?: number;
+  /** #2045 — the notice text of a `system` speaker; defaults to `answer`. */
+  systemNotice?: SystemNotice;
+  /**
+   * #2047 — colleagues' delivered contributions (spec 2042 §5.4), rendered
+   * attributed to the consulted agent, with its text unchanged, below the
+   * speaking agent's own text. A failed contribution is shown as failed.
+   */
+  contributions?: readonly Contribution[];
 }
 
 /**
- * Adaptive-Card Submit payload for the answer-size buttons ("🔽 Kürzer" /
- * "🔼 Mehr Details"): re-ask the same question one step down or up the
- * scale from the level the answer was generated under. Same shape and same
- * handling as Fresh Check — the question text travels in the card and comes
- * back verbatim in `activity.value`.
+ * Whether the card draws its AI chip for this kernel answer (decoration
+ * `ai_disclosure_chip`, byte5ai/omadia#2087). Fail-safe in the direction of
+ * marking:
+ *
+ *  - no `aiDisclosure` at all: the operator turned the disclosure `off`, no
+ *    chip;
+ *  - `aiDisclosure` without `markers` (a kernel that predates the frequency
+ *    setting): the default `channel_default`, i.e. a chip on every card;
+ *  - otherwise the chip is drawn exactly when `markers.chip` is true.
  */
-export const VERBOSITY_STEP_VALUE_TYPE = 'verbosity_step';
-
-export interface VerbosityStepValue {
-  type: typeof VERBOSITY_STEP_VALUE_TYPE;
-  level: AnswerVerbosityLevel;
-  originalMessage: string;
-}
-
-export function parseVerbosityStepValue(value: unknown): VerbosityStepValue | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const v = value as Record<string, unknown>;
-  if (v['type'] !== VERBOSITY_STEP_VALUE_TYPE) return undefined;
-  const level = v['level'];
-  const originalMessage = v['originalMessage'];
-  if (!isAnswerVerbosityLevel(level)) return undefined;
-  if (typeof originalMessage !== 'string' || originalMessage.length === 0) {
-    return undefined;
-  }
-  return { type: VERBOSITY_STEP_VALUE_TYPE, level, originalMessage };
-}
-
-/** The neighbouring level, or undefined at either end of the scale. */
-export function verbosityNeighbour(
-  level: AnswerVerbosityLevel,
-  direction: 'shorter' | 'longer',
-): AnswerVerbosityLevel | undefined {
-  const idx = ANSWER_VERBOSITY_LEVELS.indexOf(level);
-  if (idx < 0) return undefined;
-  return ANSWER_VERBOSITY_LEVELS[direction === 'shorter' ? idx - 1 : idx + 1];
-}
-
-/**
- * #332 Layer 2 — Adaptive-Card Submit payload for a dynamic "💬 Direkt mit
- * <Agent>" button. Carries the directive `token` (resolved server-side against
- * the orchestrator's whitelisted sub-agents) plus the original user message, so
- * the click re-issues the question as `#<token> <message>` — a harness-routed
- * Direct Line, no typing required. The token is derived per agent at render
- * time (NEVER hardcoded).
- */
-export const DIRECT_LINE_VALUE_TYPE = 'direct_line';
-
-export interface DirectLineValue {
-  type: typeof DIRECT_LINE_VALUE_TYPE;
-  /** Space-free directive token derived from the agent label/id. */
-  token: string;
-  /** The question to re-route verbatim to the specialist. */
-  originalMessage: string;
-}
-
-export function parseDirectLineValue(value: unknown): DirectLineValue | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const v = value as Record<string, unknown>;
-  if (v['type'] !== DIRECT_LINE_VALUE_TYPE) return undefined;
-  const token = v['token'];
-  const originalMessage = v['originalMessage'];
-  if (typeof token !== 'string' || token.length === 0) return undefined;
-  if (typeof originalMessage !== 'string' || originalMessage.length === 0) {
-    return undefined;
-  }
-  return { type: DIRECT_LINE_VALUE_TYPE, token, originalMessage };
-}
-
-/**
- * Derive a space-free directive token for an agent. Prefers the stable agent
- * id's last segment, falls back to the label; strips everything but
- * alphanumerics so it survives the channel mention/markup + the core parser's
- * `#<token>` grammar (and the core resolver normalizes the same way).
- */
-export function directLineToken(agent: {
-  agentId?: string;
-  label: string;
-}): string {
-  const base = agent.agentId
-    ? (agent.agentId.split(/[./]/).pop() ?? agent.agentId)
-    : agent.label;
-  return base.replace(/[^A-Za-z0-9]/g, '');
-}
-
-/**
- * Reduce a directive token / agent label to the comparison key the CORE
- * resolver uses (`normalizeKey` in middleware directLine.ts): take the last
- * dotted/slashed segment, strip a leading `ask_`/`consult_`/`query_`/`invoke_`/
- * `agent_` verb, lowercase, then keep only alphanumerics. Used on BOTH sides of
- * the Direct-Line strip match so that whatever form the user typed
- * (`#strategist`, `#ask_strategist`, `#de.byte5.agent.strategist`) reduces to
- * the same key as the consulted agent — exactly as the core would resolve it.
- */
-function normalizeDirectiveToken(value: string): string {
-  const last = value.split(/[./]/).pop() ?? value;
-  const deverbed = last.replace(/^(?:ask|consult|query|invoke|agent)[-_]/i, '');
-  return deverbed.toLowerCase().replace(/[^a-z0-9]/g, '');
+export function aiChipDue(aiDisclosure: AiDisclosure | undefined): boolean {
+  if (aiDisclosure === undefined) return false;
+  return aiDisclosure.markers?.chip !== false;
 }
 
 /** Adaptive-Card Submit payload for `ask_user_choice` option clicks. */
@@ -440,6 +287,7 @@ export interface BuildChoiceAskCardInput {
  * likely answer.
  */
 export function buildChoiceAskCard(input: BuildChoiceAskCardInput): Attachment {
+  assertTeamsDecoration(TEAMS_DECORATION_IDS.decisionCard);
   const question =
     input.question.length > 500
       ? `${input.question.slice(0, 499)}…`
@@ -513,15 +361,16 @@ export function buildChoiceAskCard(input: BuildChoiceAskCardInput): Attachment {
  * Minimal standalone card carrying ONLY follow-up buttons, used for the
  * long-answer fallback where the answer is sent as plain-text chunks
  * (which can't carry Adaptive-Card actions). Attached as a final activity
- * after the chunks so the buttons still appear. Returns undefined when the
- * operator switched follow-ups off (or there is nothing to offer) — the
- * gate lives here so the card and its fallback can never disagree.
+ * after the chunks so the buttons still appear. Returns undefined when there
+ * is nothing to offer or the decoration registry does not admit the buttons.
  */
 export function buildFollowUpsOnlyCard(
   options: ReadonlyArray<{ label: string; prompt: string }>,
-  features: TeamsCardFeatures = DEFAULT_TEAMS_CARD_FEATURES,
 ): Attachment | undefined {
-  if (!features.followUps || options.length === 0) return undefined;
+  if (options.length === 0) return undefined;
+  if (!admitTeamsDecorations([TEAMS_DECORATION_IDS.followUps]).has(TEAMS_DECORATION_IDS.followUps)) {
+    return undefined;
+  }
   return CardFactory.adaptiveCard({
     $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
     type: 'AdaptiveCard',
@@ -570,23 +419,35 @@ function followUpAction(opt: { label: string; prompt: string }): Record<string, 
   };
 }
 
+
 /** Teams rejects card images over 1 MB; our service caps at ~900 KB. */
 const MAX_ATTACHMENTS_PER_CARD = 3;
 
 /**
- * Builds the final Teams Adaptive Card for a completed turn:
- * - AI-label container at the top
- * - Answer as markdown (truncated if too large)
- * - Collapsed `Action.ToggleVisibility` → expandable tool-trace section
+ * Builds the final Teams Adaptive Card for a completed turn. A normal answer
+ * is the answer text and nothing else, plus (spec 2042 §5.14, every element
+ * declared in the channel SDK's decoration registry and admitted through
+ * {@link admitTeamsDecorations}):
  *
- * Size-aware: if the serialised card would exceed Teams' 28 KB cap we
- * progressively degrade — first drop sub-tool-call detail, then drop the
- * trace entirely, then truncate the answer. `trace` is always user-local
- * (ToggleVisibility doesn't ping the channel), so keeping it off by default
- * keeps group-chat surface area quiet.
+ *  - the discreet "✨ AI-generated" chip, when the kernel's disclosure
+ *    settings ask for a visible marker on this answer (`ai_disclosure_chip`);
+ *  - the colleagues' contributions, attributed to the consulted agent;
+ *  - ONE collapsed "Details" element from the SDK's details projection
+ *    (`answer_details`; `Action.ToggleVisibility` is evaluated on the viewer's
+ *    client, so expanding never shows anything to the rest of a group chat);
+ *  - buttons only for next steps the agent itself proposed
+ *    (`follow_up_options`).
+ *
+ * A `system` speaker renders as a management-layer notice instead.
+ *
+ * Size-aware: if the serialised card would exceed Teams' 28 KB cap the answer
+ * is truncated; images and contributions are never shortened.
  */
 export function buildAnswerCard(input: BuildAnswerCardInput): Attachment {
-  const cardBody = buildCardBody(input);
+  const cardBody =
+    input.speaker?.kind === 'system'
+      ? { body: systemNoticeBody(input.systemNotice?.text ?? input.answer) }
+      : buildCardBody(input);
   const mentions = input.mentions ?? [];
   // Teams requires mention entities on `msteams.entities` of the card itself
   // to render the blue @-pill around `<at>Display Name</at>` tokens inside
@@ -602,7 +463,7 @@ export function buildAnswerCard(input: BuildAnswerCardInput): Attachment {
     type: 'AdaptiveCard',
     version: '1.5',
     body: cardBody.body,
-    ...(cardBody.actions ? { actions: cardBody.actions } : {}),
+    ...('actions' in cardBody && cardBody.actions ? { actions: cardBody.actions } : {}),
     msteams,
   });
 }
@@ -612,401 +473,51 @@ interface CardBody {
   actions?: unknown[];
 }
 
-/**
- * #332 — slim card carrying ONLY the agent-transparency chips + Direct-Line
- * buttons, for the long-answer fallback (answer > Teams' single-message cap)
- * where the full answer card is replaced by plain text chunks. Without this,
- * the transparency footer and Direct-Line affordance would silently vanish on
- * long answers. Returns undefined when there is nothing to surface.
- */
-export function buildDirectLineOnlyCard(
-  input: Pick<
-    BuildAnswerCardInput,
-    | 'agentsConsulted'
-    | 'delegatedAnswer'
-    | 'originalUserMessage'
-    | 'answerVerbosity'
-    | 'features'
-  >,
-): Attachment | undefined {
-  const features = effectiveFeatures(input);
-  const hasConsulted = (input.agentsConsulted?.length ?? 0) > 0;
-  // The size steps ride along on this slim card too: a long answer is
-  // exactly the one most likely to have been generated at `detailed`/`max`,
-  // so losing "🔽 Kürzer" here would strand the user one click up. The
-  // operator's switch applies here as on the full card.
-  const hasSizeSteps =
-    features.verbositySteps &&
-    Boolean(input.answerVerbosity && input.originalUserMessage?.trim());
-  if (!hasConsulted && !input.delegatedAnswer && !hasSizeSteps) return undefined;
-  const base: CardBody = {
-    body: [{ type: 'Container', spacing: 'None', items: [] }],
-    actions: [],
-  };
-  const decorated = decorateVerbositySteps(
-    decorateDirectLine(base, input as BuildAnswerCardInput),
-    input as BuildAnswerCardInput,
-  );
-  const head = decorated.body[0] as { items?: unknown[] } | undefined;
-  const hasChips = (head?.items?.length ?? 0) > 0;
-  const hasActions = (decorated.actions?.length ?? 0) > 0;
-  if (!hasChips && !hasActions) return undefined;
-  return CardFactory.adaptiveCard({
-    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
-    type: 'AdaptiveCard',
-    version: '1.5',
-    body: decorated.body,
-    ...(hasActions ? { actions: decorated.actions } : {}),
-    msteams: { width: 'Full' },
-  });
+/** The decoration parts of one card, after the registry gate. */
+interface AdmittedParts {
+  readonly chip: boolean;
+  readonly followUps: ReadonlyArray<{ label: string; prompt: string }>;
+  readonly details: AnswerDetails | undefined;
+}
+
+function truncateAnswer(answer: string): string {
+  return `${answer.slice(0, ANSWER_MAX_BYTES_WHEN_TRUNCATED - 1)}…`;
 }
 
 function buildCardBody(input: BuildAnswerCardInput): CardBody {
-  // Size-tier selection stays in `buildCardBodyBase`; the #332 transparency
-  // chips + Direct-Line buttons are decorated onto the chosen tier here.
-  const card = decorateVerbositySteps(
-    decorateDirectLine(buildCardBodyBase(input), input),
-    input,
-  );
-  // The decoration runs AFTER the base fitter, so on an answer fitted near the
-  // budget the added buttons could push the card over Teams' hard cap → silent
-  // render failure. The chips are tiny (keep them); the buttons carry the bulk,
-  // so shed them if we're over budget. The Direct-Line buttons also surface in
-  // the long-answer fallback's slim card, so dropping them here is not a total
-  // loss of the affordance. The size steps go first: they are the cheaper
-  // affordance to lose (the user can still type "kürzer").
-  if (bytes(card) > CARD_BUDGET_BYTES && card.actions) {
-    card.actions = card.actions.filter((a) => !isVerbosityStepAction(a));
-    if (card.actions.length === 0) delete card.actions;
-  }
-  if (bytes(card) > CARD_BUDGET_BYTES && card.actions) {
-    card.actions = card.actions.filter((a) => !isDirectLineAction(a));
-    if (card.actions.length === 0) delete card.actions;
-  }
-  return card;
-}
-
-/** True for an `Action.Submit` carrying a Direct-Line button payload. */
-function isDirectLineAction(action: unknown): boolean {
-  const data = (action as { data?: { type?: unknown } } | undefined)?.data;
-  return data?.type === DIRECT_LINE_VALUE_TYPE;
-}
-
-/** True for an `Action.Submit` carrying an answer-size step payload. */
-function isVerbosityStepAction(action: unknown): boolean {
-  const data = (action as { data?: { type?: unknown } } | undefined)?.data;
-  return data?.type === VERBOSITY_STEP_VALUE_TYPE;
-}
-
-/**
- * Add "🔽 Kürzer" / "🔼 Mehr Details" — a re-ask of the same question one
- * step down / up the answer-size scale. NOT behind the Fresh-Check gate: like
- * the Direct-Line buttons it reads the original question directly, and only
- * needs the kernel to have said which level the answer was generated under
- * (`answerVerbosity`); an older kernel omits that and gets no buttons. The
- * button at the end of the scale is left out rather than disabled.
- */
-function decorateVerbositySteps(
-  card: CardBody,
-  input: BuildAnswerCardInput,
-): CardBody {
-  if (!effectiveFeatures(input).verbositySteps) return card;
-  const question = input.originalUserMessage?.trim();
-  const level = input.answerVerbosity?.effective;
-  if (!question || !level) return card;
-  // Same cap as the Fresh-Check payload: the question is serialised into
-  // every button's `data`.
-  const originalMessage =
-    question.length > 2000 ? `${question.slice(0, 1999)}…` : question;
-  const actions = card.actions ?? [];
-  const shorter = verbosityNeighbour(level, 'shorter');
-  const longer = verbosityNeighbour(level, 'longer');
-  if (shorter) {
-    actions.push({
-      type: 'Action.Submit',
-      title: '🔽 Kürzer',
-      tooltip: `Dieselbe Frage noch einmal, eine Stufe knapper (${VERBOSITY_LABEL[shorter]}).`,
-      data: {
-        type: VERBOSITY_STEP_VALUE_TYPE,
-        level: shorter,
-        originalMessage,
-      } satisfies VerbosityStepValue,
-    });
-  }
-  if (longer) {
-    actions.push({
-      type: 'Action.Submit',
-      title: '🔼 Mehr Details',
-      tooltip: `Dieselbe Frage noch einmal, eine Stufe ausführlicher (${VERBOSITY_LABEL[longer]}).`,
-      data: {
-        type: VERBOSITY_STEP_VALUE_TYPE,
-        level: longer,
-        originalMessage,
-      } satisfies VerbosityStepValue,
-    });
-  }
-  if (actions.length > 0) card.actions = actions;
-  return card;
-}
-
-/**
- * #332 — add the tamper-evident "🔎 Konsultiert" footer chip, the Direct-Line
- * attribution chip, and one dynamic "💬 Direkt mit <Agent>" button per consulted
- * agent. All sourced from harness-built fields (`agentsConsulted` /
- * `delegatedAnswer`), never hardcoded. Mutates a copy of the assembled card.
- */
-function decorateDirectLine(
-  card: CardBody,
-  input: BuildAnswerCardInput,
-): CardBody {
-  const consulted = input.agentsConsulted ?? [];
-  const delegated = input.delegatedAnswer;
-  if (consulted.length === 0 && !delegated) return card;
-
-  // The chip Container is body[0] in every `assemble` tier; push there so the
-  // chips sit next to the "✨ AI-generated" / verifier chips. Guard defensively.
-  const head = card.body[0] as { type?: string; items?: unknown[] } | undefined;
-  const chipItems =
-    head?.type === 'Container' && Array.isArray(head.items)
-      ? head.items
-      : undefined;
-
-  if (delegated && chipItems) {
-    chipItems.push({
-      type: 'TextBlock',
-      text: `💬 Direkte Antwort von ${delegated.label}${
-        delegated.status === 'error' ? ' (Fehler)' : ''
-      }`,
-      size: 'Small',
-      weight: 'Bolder',
-      color: delegated.status === 'error' ? 'Attention' : 'Good',
-      wrap: true,
-      spacing: 'Small',
-    });
-  }
-
-  if (consulted.length > 0 && chipItems) {
-    // Cap the rendered list so a many-agent turn can't grow the (retained)
-    // chip without bound — the size guard in buildCardBody only sheds buttons.
-    const CHIP_MAX = 6;
-    const shown = consulted.slice(0, CHIP_MAX);
-    const extra = consulted.length - shown.length;
-    chipItems.push({
-      type: 'TextBlock',
-      text: `🔎 Konsultiert: ${shown
-        .map(
-          (c) =>
-            `${c.label} ${c.status === 'success' ? '✓' : '✗'}${
-              c.toolCalls ? ` · ${String(c.toolCalls)}` : ''
-            }`,
-        )
-        .join(' · ')}${extra > 0 ? ` · +${String(extra)}` : ''}`,
-      size: 'Small',
-      isSubtle: true,
-      wrap: true,
-      spacing: 'Small',
-    });
-  }
-
-  // One dynamic Direct-Line button per consulted agent — re-issues the user's
-  // question routed straight to that specialist. Deduped by token; capped so a
-  // many-agent turn doesn't flood the action row.
-  const consultedTokens = new Set<string>();
-  for (const a of consulted) {
-    const fromLabel = normalizeDirectiveToken(a.label);
-    if (fromLabel) consultedTokens.add(fromLabel);
-    if (a.agentId) {
-      const fromId = normalizeDirectiveToken(a.agentId);
-      if (fromId) consultedTokens.add(fromId);
-    }
-  }
-  // Strip a leading `#<token>` directive ONLY when it names one of THIS turn's
-  // consulted agents — so a re-click can't compound the prefix
-  // (`#strategist #strategist …`), while a legitimate leading hashtag in the
-  // user's text is preserved. The captured token is normalized through the
-  // SAME `directLineToken` reduction used to build `consultedTokens` (and that
-  // the core resolver mirrors), so a manually-typed dotted/verb-prefixed form
-  // (`#ask_strategist`, `#de.byte5.agent.strategist`) matches too. `(\s+|$)`
-  // also catches a directive-only message (bare `#strategist`), which then
-  // collapses to '' and renders no button.
-  const stripDirective = (msg: string): string => {
-    const m = /^#([A-Za-z0-9._-]+)(\s+|$)/.exec(msg);
-    if (!m) return msg;
-    const norm = normalizeDirectiveToken(m[1]!);
-    return consultedTokens.has(norm) ? msg.slice(m[0].length) : msg;
-  };
-  const original = input.originalUserMessage
-    ? stripDirective(input.originalUserMessage)
-    : undefined;
-  // Cap short (600) — four buttons each embed this, so a 2 KB message would be
-  // the dominant card-size cost. The operator's `directLine` switch removes
-  // only these buttons — the chips above are the #332 transparency layer and
-  // stay regardless.
-  if (
-    effectiveFeatures(input).directLine &&
-    consulted.length > 0 &&
-    original &&
-    original.trim().length > 0
-  ) {
-    const trimmed =
-      original.length > 600 ? `${original.slice(0, 599)}…` : original;
-    const actions = card.actions ?? [];
-    const seen = new Set<string>();
-    for (const agent of consulted) {
-      const token = directLineToken(agent);
-      if (token.length === 0 || seen.has(token)) continue;
-      seen.add(token);
-      actions.push({
-        type: 'Action.Submit',
-        title: `💬 Direkt mit ${agent.label}`,
-        tooltip: `Stelle dieselbe Frage erneut — direkt an ${agent.label}. Die Antwort kommt wortwörtlich vom Spezialisten, ohne dass der Orchestrator sie umformulieren oder unterdrücken kann.`,
-        data: {
-          type: DIRECT_LINE_VALUE_TYPE,
-          token,
-          originalMessage: trimmed,
-        } satisfies DirectLineValue,
-      });
-      if (seen.size >= 4) break;
-    }
-    card.actions = actions;
-  }
-
-  return card;
-}
-
-function buildCardBodyBase(rawInput: BuildAnswerCardInput): CardBody {
-  const features = effectiveFeatures(rawInput);
-  // Operator switches: a button that is off is dropped TOGETHER with the
-  // data that would render it, so the ToggleVisibility button and its hidden
-  // target container (and the follow-ups header + ActionSet) always go as a
-  // pair — never a button pointing at a missing element, never an orphaned
-  // container that only costs card bytes. Done by narrowing the input once,
-  // so every size tier below sees the same picture.
-  const input: BuildAnswerCardInput = {
-    ...rawInput,
-    ...(features.toolTrace ? {} : { runTrace: undefined }),
-    ...(features.memoryDisclosure ? {} : { captureDisclosure: undefined }),
-    ...(features.privacyReceipt ? {} : { privacyReceipt: undefined }),
-    ...(features.followUps ? {} : { followUpOptions: undefined }),
-  };
   const attachments = (input.attachments ?? []).slice(0, MAX_ATTACHMENTS_PER_CARD);
-  // Fresh-Check gate: `originalMessage` here ONLY drives the Fresh-Check
-  // action in `assemble`. The Direct-Line buttons read
-  // `input.originalUserMessage` directly in `decorateDirectLine` and stay
-  // available regardless of the gate. The operator's `freshCheck` switch
-  // sits on top of the kernel's memoryUsed gate.
-  const originalMessage =
-    features.freshCheck && input.showFreshCheck === true
-      ? input.originalUserMessage
-      : undefined;
-  const followUps = (input.followUpOptions ?? []).slice(0, FOLLOW_UP_MAX_OPTIONS);
-  const disclosure = input.captureDisclosure;
-  const privacy = input.privacyReceipt;
-  const chips: StatusChips = {
-    ...(input.verifier ? { verifier: input.verifier } : {}),
-    systemData: input.systemData === true,
-    aiMarker: input.aiMarker !== false,
+  const proposed = (input.followUpOptions ?? []).slice(0, FOLLOW_UP_MAX_OPTIONS);
+  const hasDetails = buildAnswerDetailsElements(input.details) !== undefined;
+  // The registry gate: nothing below is attached unless it was admitted.
+  const admitted = admitTeamsDecorations([
+    ...(input.aiMarker !== false ? [TEAMS_DECORATION_IDS.aiChip] : []),
+    ...(hasDetails ? [TEAMS_DECORATION_IDS.details] : []),
+    ...(proposed.length > 0 ? [TEAMS_DECORATION_IDS.followUps] : []),
+  ]);
+  const parts: AdmittedParts = {
+    chip: admitted.has(TEAMS_DECORATION_IDS.aiChip),
+    followUps: admitted.has(TEAMS_DECORATION_IDS.followUps) ? proposed : [],
+    details: admitted.has(TEAMS_DECORATION_IDS.details) ? input.details : undefined,
   };
 
-  // Drop-order in size pressure: trace-detail → trace → disclosure → privacy
-  // → truncate answer. Privacy survives longer than disclosure because it's
-  // a per-turn trust signal the operator may need to refer back to ("which
-  // detector ran, what did it do") — disclosure can be re-derived from the
-  // memory store, privacy receipt cannot.
-
-  // Tier 1: full answer + full trace + disclosure + privacy.
-  const full = assemble(
-    input.answer,
-    input.runTrace,
-    'full',
-    attachments,
-    chips,
-    originalMessage,
-    followUps,
-    disclosure,
-    privacy,
-    input.maskedValues,
-  );
+  const full = assemble(input, input.answer, attachments, parts);
   if (bytes(full) <= CARD_BUDGET_BYTES) return full;
-
-  // Tier 2: full answer + compact trace + disclosure + privacy.
-  if (input.runTrace) {
-    const compact = assemble(
-      input.answer,
-      input.runTrace,
-      'compact',
-      attachments,
-      chips,
-      originalMessage,
-      followUps,
-      disclosure,
-      privacy,
-      input.maskedValues,
-    );
-    if (bytes(compact) <= CARD_BUDGET_BYTES) return compact;
+  // Data is the elastic part: fewer rows first (the "weitere Zeilen" line
+  // says how many are left), the answer text is cut only after that.
+  if ((input.dataTables?.length ?? 0) > 0) {
+    for (const rowCap of SIDE_CHANNEL_ROW_STEPS) {
+      const reduced = assemble({ ...input, dataRowCap: rowCap }, input.answer, attachments, parts);
+      if (bytes(reduced) <= CARD_BUDGET_BYTES) return reduced;
+    }
+    return assemble({ ...input, dataRowCap: 0 }, truncateAnswer(input.answer), attachments, parts);
   }
-
-  // Tier 3: full answer + disclosure + privacy, no trace.
-  const noTrace = assemble(
-    input.answer,
-    undefined,
-    'full',
-    attachments,
-    chips,
-    originalMessage,
-    followUps,
-    disclosure,
-    privacy,
-    input.maskedValues,
-  );
-  if (bytes(noTrace) <= CARD_BUDGET_BYTES) return noTrace;
-
-  // Tier 4: drop disclosure but keep privacy.
-  const noDisclosure = assemble(
-    input.answer,
-    undefined,
-    'full',
-    attachments,
-    chips,
-    originalMessage,
-    followUps,
-    undefined,
-    privacy,
-    input.maskedValues,
-  );
-  if (bytes(noDisclosure) <= CARD_BUDGET_BYTES) return noDisclosure;
-
-  // Tier 5: drop privacy too — last collapsed section to go.
-  const noPrivacy = assemble(
-    input.answer,
-    undefined,
-    'full',
-    attachments,
-    chips,
-    originalMessage,
-    followUps,
-    undefined,
-    undefined,
-    input.maskedValues,
-  );
-  if (bytes(noPrivacy) <= CARD_BUDGET_BYTES) return noPrivacy;
-
-  // Tier 6: truncate the answer but still keep the images — they carry the
-  // actual payload the user asked for.
-  const truncatedAnswer = `${input.answer.slice(0, ANSWER_MAX_BYTES_WHEN_TRACED - 1)}…`;
-  return assemble(
-    truncatedAnswer,
-    undefined,
-    'full',
-    attachments,
-    chips,
-    originalMessage,
-    followUps,
-    undefined,
-    undefined,
-    input.maskedValues,
-  );
+  // Truncate the answer but still keep the images and the colleagues' words:
+  // they carry the actual payload the user asked for.
+  return assemble(input, truncateAnswer(input.answer), attachments, parts);
 }
+
+/** Row caps tried, in order, when the tables push a card over its size cap. */
+const SIDE_CHANNEL_ROW_STEPS: readonly number[] = [25, 10, 3, 0];
 
 function bytes(body: CardBody): number {
   return Buffer.byteLength(JSON.stringify(body), 'utf8');
@@ -1016,73 +527,39 @@ function bytes(body: CardBody): number {
  *  text line this plugin draws, in place of the kernel's disclosure sentence. */
 export const AI_MARKER_CHIP = '✨ AI-generated';
 
-/** The status chips under the "✨ AI-generated" marker. */
-interface StatusChips {
-  verifier?: VerifierBadge;
-  /** Privacy Shield rendered the answer: original system data. */
-  systemData: boolean;
-  /** Draw the "✨ AI-generated" marker (the kernel disclosed this answer). */
-  aiMarker: boolean;
+function aiChipContainer(): unknown {
+  return {
+    type: 'Container',
+    id: TEAMS_DECORATION_IDS.aiChip,
+    spacing: 'None',
+    items: [
+      {
+        type: 'TextBlock',
+        text: AI_MARKER_CHIP,
+        size: 'Small',
+        weight: 'Bolder',
+        color: 'Accent',
+        wrap: true,
+      },
+    ],
+  };
 }
 
-function assemble(
-  answer: string,
-  runTrace: RunTracePayload | undefined,
-  traceLevel: 'full' | 'compact',
-  attachments: readonly DiagramAttachment[],
-  chips: StatusChips,
-  originalMessage?: string,
-  followUps: ReadonlyArray<{ label: string; prompt: string }> = [],
-  disclosure?: CaptureDisclosure,
-  privacy?: PrivacyReceipt,
-  maskedValues: readonly string[] = [],
-): CardBody {
-  const chipItems: unknown[] = chips.aiMarker
-    ? [
-        {
-          type: 'TextBlock',
-          text: AI_MARKER_CHIP,
-          size: 'Small',
-          weight: 'Bolder',
-          color: 'Accent',
-          wrap: true,
-        },
-      ]
-    : [];
-  if (chips.verifier) {
-    const { label, color } = verifierChip(chips.verifier);
-    chipItems.push(chipText(label, color));
-  }
-  if (chips.systemData) {
-    chipItems.push(chipText(SYSTEM_DATA_CHIP, 'Accent'));
-  }
-  const body: unknown[] = [
-    // The chips: the AI marker (when the kernel disclosed this answer), the
-    // verifier and system-data chips. Kept as a container also when empty:
-    // the transparency chips are added to it afterwards.
-    {
-      type: 'Container',
-      spacing: 'None',
-      items: chipItems,
-    },
-    // Answer. A v4 table renders as a native Adaptive-Card `Table` with
-    // masked cells in the accent (violet) colour; prose / non-table answers
-    // stay a markdown `TextBlock` (plus a compact violet line when they
-    // resolved masked values).
-    ...buildAnswerElements(answer, maskedValues),
-  ];
-
-  // Attachments sit directly under the answer.
-  //  - image: rendered inline (Teams renders PNG/JPEG/GIF up to 1024x1024 / 1 MB;
-  //    SVG is not supported, the service never emits it).
-  //  - file (e.g. create_xlsx .xlsx, create_docx .docx): Teams has no inline
-  //    element for an arbitrary blob, so we surface a one-click download button.
-  //    Action.OpenUrl opens the signed /documents URL in the browser, which
-  //    streams the file. (Native upload into the channel's Files tab would need
-  //    a Graph file-consent flow — deferred.)
+/**
+ * Attachments sit directly under the answer.
+ *  - image: rendered inline (Teams renders PNG/JPEG/GIF up to 1024x1024 / 1 MB;
+ *    SVG is not supported, the service never emits it).
+ *  - file (e.g. create_xlsx .xlsx, create_docx .docx): Teams has no inline
+ *    element for an arbitrary blob, so we surface a one-click download button.
+ *    Action.OpenUrl opens the signed /documents URL in the browser, which
+ *    streams the file. (Native upload into the channel's Files tab would need
+ *    a Graph file-consent flow — deferred.)
+ */
+function attachmentElements(attachments: readonly DiagramAttachment[]): unknown[] {
+  const elements: unknown[] = [];
   for (const att of attachments) {
     if (att.kind === 'image') {
-      body.push({
+      elements.push({
         type: 'Image',
         url: att.url,
         altText: att.altText,
@@ -1100,7 +577,7 @@ function assemble(
         typeof att.sizeBytes === 'number' && att.sizeBytes > 0
           ? ` (${String(Math.max(1, Math.round(att.sizeBytes / 1024)))} KB)`
           : '';
-      body.push({
+      elements.push({
         type: 'ActionSet',
         spacing: 'Medium',
         separator: true,
@@ -1112,113 +589,47 @@ function assemble(
           },
         ],
       });
-      continue;
     }
   }
+  return elements;
+}
+
+function assemble(
+  input: BuildAnswerCardInput,
+  answer: string,
+  attachments: readonly DiagramAttachment[],
+  parts: AdmittedParts,
+): CardBody {
+  const body: unknown[] = [
+    ...(input.speakerLine
+      ? [{ type: 'TextBlock', text: input.speakerLine, weight: 'Bolder', size: 'Small', wrap: true }]
+      : []),
+    ...(parts.chip ? [aiChipContainer()] : []),
+    // Answer. A v4 table renders as a native Adaptive-Card `Table` with
+    // masked cells in the accent (violet) colour; prose / non-table answers
+    // stay a markdown `TextBlock` (plus a compact violet line when they
+    // resolved masked values).
+    ...buildAnswerElements(answer, input.maskedValues ?? []),
+    ...sideChannelElements(input),
+    ...attachmentElements(attachments),
+    // Colleagues' words: attributed to them, unchanged, never dropped.
+    ...contributionBlocks(input.contributions, input.speaker),
+  ];
 
   const actions: unknown[] = [];
-
-  if (runTrace) {
-    const summary = traceSummary(runTrace);
-    // The trace-container starts hidden (`isVisible: false`). ToggleVisibility
-    // actions are evaluated on the *viewer's* client only — expanding the
-    // trace never broadcasts to the rest of the group chat.
-    body.push({
-      type: 'Container',
-      id: 'trace-container',
-      isVisible: false,
-      spacing: 'Medium',
-      separator: true,
-      items: buildTraceItems(runTrace, traceLevel),
-    });
-    actions.push({
-      type: 'Action.ToggleVisibility',
-      title: `🔧 Tool-Trace (${summary})`,
-      targetElements: ['trace-container'],
-    });
+  const detailElements = buildAnswerDetailsElements(parts.details);
+  if (detailElements) {
+    body.push(detailElements.container);
+    actions.push(detailElements.toggle);
   }
 
-  if (disclosure) {
-    // Same ToggleVisibility pattern as Tool-Trace — the disclosure stays
-    // local to the viewer's client and is invisible to the rest of the
-    // group chat until they expand it themselves.
-    body.push({
-      type: 'Container',
-      id: 'capture-disclosure-container',
-      isVisible: false,
-      spacing: 'Medium',
-      separator: true,
-      items: buildCaptureDisclosureItems(disclosure),
-    });
-    actions.push({
-      type: 'Action.ToggleVisibility',
-      title: `🧠 Memory-Auswirkung (${captureDisclosureSummary(disclosure)})`,
-      targetElements: ['capture-disclosure-container'],
-    });
-  }
-
-  if (privacy) {
-    // Per-turn audit row mirroring web-ui's <PrivacyReceiptCard>. Same
-    // ToggleVisibility pattern as Tool-Trace + Memory-Auswirkung — local
-    // to the viewer, doesn't broadcast on expand.
-    body.push({
-      type: 'Container',
-      id: 'privacy-receipt-container',
-      isVisible: false,
-      spacing: 'Medium',
-      separator: true,
-      items: buildPrivacyReceiptItems(privacy),
-    });
-    actions.push({
-      type: 'Action.ToggleVisibility',
-      title: `🛡 Privacy Guard (${privacyReceiptSummary(privacy)})`,
-      targetElements: ['privacy-receipt-container'],
-    });
-  }
-
-  if (originalMessage && originalMessage.trim().length > 0) {
-    // Trim to a sane length — Adaptive-Card Action.Submit `data` is
-    // serialised into the card payload, and we don't want a 25 kB
-    // attachment-info block inflating every reply.
-    const trimmed =
-      originalMessage.length > 2000
-        ? `${originalMessage.slice(0, 1999)}…`
-        : originalMessage;
-    actions.push({
-      type: 'Action.Submit',
-      title: '🔄 Fresh Check (ohne Memory)',
-      tooltip:
-        'Stelle die gleiche Frage erneut — ohne Memory-Lese-Konvention und ohne FTS-Kontext-Block. Nützlich, wenn du vermutest, dass ein alter Memory-Eintrag die Antwort verfälscht hat.',
-      data: {
-        type: FRESH_CHECK_VALUE_TYPE,
-        originalMessage: trimmed,
-      } satisfies FreshCheckValue,
-    });
-  }
-
-
-  // Follow-up refinements live INSIDE the body as an ActionSet, visually
-  // separated from the meta-actions (Tool-Trace, Fresh-Check) in the card's
-  // `actions[]`. Rationale: they are *content* — they generate the next
-  // answer — while Tool-Trace + Fresh-Check are diagnostic affordances.
-  // Mixing both in the same action row made it hard to spot which button
-  // triggers a new turn vs. expands debug info. The separator line + header
-  // makes the hierarchy explicit.
-  if (followUps.length > 0) {
-    body.push({
-      type: 'TextBlock',
-      text: '💡 **Nächste Varianten**',
-      size: 'Small',
-      weight: 'Bolder',
-      color: 'Accent',
-      spacing: 'Large',
-      separator: true,
-      wrap: true,
-    });
+  // Next steps the agent proposed: the buttons replace typing the option.
+  if (parts.followUps.length > 0) {
     body.push({
       type: 'ActionSet',
-      spacing: 'Small',
-      actions: followUps.map((opt) => ({
+      id: TEAMS_DECORATION_IDS.followUps,
+      spacing: 'Medium',
+      actions: parts.followUps.map((opt) => ({
         ...followUpAction(opt),
         style: 'positive',
       })),
@@ -1263,6 +674,52 @@ function buildAnswerElements(
     out.push(maskedValuesLine(masked));
   }
   return out;
+}
+
+/**
+ * The side-channel tables as native Adaptive-Card `Table`s: a caption, the
+ * rows (masked cells in the accent colour like in a markdown table), and one
+ * subtle line for the rows that are not shown.
+ */
+function sideChannelElements(input: BuildAnswerCardInput): unknown[] {
+  const masked = new Set((input.maskedValues ?? []).filter((v) => v.trim().length > 0));
+  const cap = Math.min(input.dataRowCap ?? SIDE_CHANNEL_MAX_ROWS, SIDE_CHANNEL_MAX_ROWS);
+  return (input.dataTables ?? []).flatMap((table) => {
+    const shown = table.rows.slice(0, cap);
+    const hidden = table.rows.length - shown.length;
+    const out: unknown[] = [];
+    if (table.caption) {
+      out.push({ type: 'TextBlock', text: table.caption, weight: 'Bolder', wrap: true, spacing: 'Medium' });
+    }
+    if (table.columns.length === 0 || table.rows.length === 0) {
+      out.push({ type: 'TextBlock', text: '—', wrap: true, isSubtle: true });
+      return out;
+    }
+    if (shown.length > 0) {
+      out.push(
+        buildTableElement(
+          {
+            prose: '',
+            trailing: '',
+            headers: table.columns.map(sideChannelCellText as (value: string) => string),
+            rows: shown.map((row) => table.columns.map((_, i) => sideChannelCellText(row[i] ?? null))),
+          },
+          masked,
+        ),
+      );
+    }
+    if (hidden > 0) {
+      out.push({
+        type: 'TextBlock',
+        text: `… ${String(hidden)} weitere Zeilen`,
+        isSubtle: true,
+        size: 'Small',
+        wrap: true,
+        spacing: 'Small',
+      });
+    }
+    return out;
+  });
 }
 
 /** A parsed GFM table — the shape the v4 Materializer emits. */
@@ -1392,310 +849,6 @@ function maskedValuesLine(masked: ReadonlySet<string>): unknown {
   return { type: 'RichTextBlock', spacing: 'Small', inlines };
 }
 
-/** Same wording as the web chat's `SystemDataBadge` (`chat.systemData.label`). */
-export const SYSTEM_DATA_CHIP = '🗄 Originaldaten aus dem System';
-
-function chipText(text: string, color: 'Good' | 'Warning' | 'Attention' | 'Accent'): unknown {
-  return {
-    type: 'TextBlock',
-    text,
-    size: 'Small',
-    weight: 'Bolder',
-    color,
-    wrap: true,
-    spacing: 'Small',
-  };
-}
-
-function verifierChip(verifier: VerifierBadge): {
-  label: string;
-  color: 'Good' | 'Warning' | 'Attention';
-} {
-  // Post-S+7.5: SDK VerifierBadge only carries `status` + optional `hint`.
-  // Shadow-mode suffix + unverifiedCount details dropped — they were debug
-  // tooltip text, not user-facing correctness signals. Hint is rendered if
-  // set (forward-compat; the kernel doesn't populate it today).
-  const hintSuffix = verifier.hint ? ` — ${verifier.hint}` : '';
-  switch (verifier.status) {
-    case 'verified':
-      return { label: `✓ Antwort geprüft${hintSuffix}`, color: 'Good' };
-    case 'corrected':
-      return {
-        label: `↻ Antwort korrigiert (nach Verifier-Prüfung)${hintSuffix}`,
-        color: 'Warning',
-      };
-    case 'partial':
-      return {
-        label: `⚠ Teilweise bestätigt${hintSuffix}`,
-        color: 'Warning',
-      };
-    case 'failed':
-      return {
-        label: `⚠ Verifier-Widerspruch${hintSuffix}`,
-        color: 'Attention',
-      };
-  }
-}
-
-function traceSummary(trace: RunTracePayload): string {
-  const totalTools =
-    trace.orchestratorToolCalls.length +
-    trace.agentInvocations.reduce((n, inv) => n + inv.toolCalls.length, 0);
-  return `${String(trace.agentInvocations.length)} Agent${trace.agentInvocations.length === 1 ? '' : 'en'}, ${String(totalTools)} Call${totalTools === 1 ? '' : 's'}, ${formatMs(trace.durationMs)}`;
-}
-
-function buildTraceItems(
-  trace: RunTracePayload,
-  level: 'full' | 'compact',
-): unknown[] {
-  const items: unknown[] = [];
-
-  items.push({
-    type: 'FactSet',
-    facts: [
-      { title: 'Status', value: trace.status === 'success' ? '✓ OK' : '✗ FAIL' },
-      { title: 'Dauer', value: formatMs(trace.durationMs) },
-      { title: 'Iterationen', value: String(trace.iterations) },
-    ],
-  });
-
-  if (trace.orchestratorToolCalls.length > 0) {
-    items.push({
-      type: 'TextBlock',
-      text: '**Orchestrator-Tools**',
-      weight: 'Bolder',
-      size: 'Small',
-      spacing: 'Medium',
-      wrap: true,
-    });
-    for (const tc of trace.orchestratorToolCalls) {
-      items.push(toolRow(tc.toolName, tc.durationMs, tc.isError));
-    }
-  }
-
-  for (const inv of trace.agentInvocations) {
-    const statusIcon = inv.status === 'success' ? '✓' : '✗';
-    items.push({
-      type: 'TextBlock',
-      text: `**${statusIcon} 🤖 ${inv.agentName}** · ${formatMs(inv.durationMs)} · ${String(inv.subIterations)} iter · ${String(inv.toolCalls.length)} call${inv.toolCalls.length === 1 ? '' : 's'}`,
-      spacing: 'Medium',
-      wrap: true,
-    });
-    if (level === 'full') {
-      for (const tc of inv.toolCalls) {
-        items.push(toolRow(tc.toolName, tc.durationMs, tc.isError, true));
-      }
-    }
-  }
-
-  return items;
-}
-
-/**
- * Header summary for the Memory-Auswirkung toggle button.
- * Examples: "persisted · memory · 0.74", "stripped 1× private",
- * "verworfen · score 0.08".
- */
-function captureDisclosureSummary(d: CaptureDisclosure): string {
-  if (!d.persisted) {
-    if (d.significance !== null) {
-      return `verworfen · score ${d.significance.toFixed(2)}`;
-    }
-    return 'verworfen';
-  }
-  const parts: string[] = ['persisted'];
-  if (d.entryType) parts.push(d.entryType);
-  if (d.significance !== null) parts.push(d.significance.toFixed(2));
-  if (d.privacyBlocksStripped > 0) {
-    parts.push(`–${String(d.privacyBlocksStripped)}×privat`);
-  }
-  return parts.join(' · ');
-}
-
-function buildCaptureDisclosureItems(d: CaptureDisclosure): unknown[] {
-  const items: unknown[] = [];
-
-  items.push({
-    type: 'TextBlock',
-    text: '**🧠 Was landet in Palaia?**',
-    weight: 'Bolder',
-    size: 'Small',
-    wrap: true,
-  });
-
-  const facts: Array<{ title: string; value: string }> = [
-    {
-      title: 'Persistiert',
-      value: d.persisted ? '✓ ja' : '✗ verworfen',
-    },
-  ];
-  if (d.entryType) {
-    facts.push({ title: 'Eintrag-Typ', value: d.entryType });
-  }
-  if (d.visibility) {
-    facts.push({ title: 'Sichtbarkeit', value: d.visibility });
-  }
-  if (d.significance !== null) {
-    facts.push({ title: 'Significance', value: d.significance.toFixed(2) });
-  }
-  facts.push({
-    title: 'Embedding',
-    value: d.embedded ? '✓ vektorisiert' : '— kein Vektor',
-  });
-  if (d.privacyBlocksStripped > 0) {
-    facts.push({
-      title: '<private>-Blöcke entfernt',
-      value: String(d.privacyBlocksStripped),
-    });
-  }
-  if (d.hintTagsProcessed > 0) {
-    facts.push({
-      title: '<palaia-hint>-Tags',
-      value: String(d.hintTagsProcessed),
-    });
-  }
-  items.push({ type: 'FactSet', facts });
-
-  if (d.reasons.length > 0) {
-    items.push({
-      type: 'TextBlock',
-      text: '**Begründung**',
-      weight: 'Bolder',
-      size: 'Small',
-      spacing: 'Medium',
-      wrap: true,
-    });
-    for (const reason of d.reasons) {
-      items.push({
-        type: 'TextBlock',
-        text: `• \`${reason}\``,
-        size: 'Small',
-        spacing: 'Small',
-        wrap: true,
-      });
-    }
-  }
-
-  if (d.graphRefs && d.graphRefs.entityNodeIds.length > 0) {
-    items.push({
-      type: 'TextBlock',
-      text: `**Verknüpfte Entitäten** (${String(d.graphRefs.entityNodeIds.length)})`,
-      weight: 'Bolder',
-      size: 'Small',
-      spacing: 'Medium',
-      wrap: true,
-    });
-    for (const id of d.graphRefs.entityNodeIds.slice(0, 8)) {
-      items.push({
-        type: 'TextBlock',
-        text: `• \`${id}\``,
-        size: 'Small',
-        spacing: 'Small',
-        wrap: true,
-      });
-    }
-    if (d.graphRefs.entityNodeIds.length > 8) {
-      items.push({
-        type: 'TextBlock',
-        text: `… +${String(d.graphRefs.entityNodeIds.length - 8)} weitere`,
-        size: 'Small',
-        isSubtle: true,
-        spacing: 'Small',
-        wrap: true,
-      });
-    }
-  }
-
-  return items;
-}
-
-/**
- * Header summary for the Privacy-Shield toggle button — e.g.
- * "1 Tool-Ergebnis · 1 Feld maskiert".
- */
-function privacyReceiptSummary(r: PrivacyReceipt): string {
-  const datasets = `${String(r.datasetsInterned)} Tool-Ergebnis${
-    r.datasetsInterned === 1 ? '' : 'se'
-  }`;
-  const masked =
-    r.fieldsMasked > 0
-      ? ` · ${String(r.fieldsMasked)} Feld${
-          r.fieldsMasked === 1 ? '' : 'er'
-        } maskiert`
-      : '';
-  const onWire = r.identityValuesOnWire ?? 0;
-  const named =
-    onWire > 0
-      ? ` · ⚠ ${String(onWire)} Name${onWire === 1 ? '' : 'n'} ans Modell`
-      : '';
-  return `${datasets}${masked}${named}`;
-}
-
-function buildPrivacyReceiptItems(r: PrivacyReceipt): unknown[] {
-  const facts: Array<{ title: string; value: string }> = [
-    { title: 'Tool-Ergebnisse interned', value: String(r.datasetsInterned) },
-    { title: 'Felder maskiert', value: String(r.fieldsMasked) },
-    { title: 'Felder Klartext', value: String(r.fieldsCleartext) },
-    {
-      title: 'Verben',
-      value: r.verbsExecuted.length > 0 ? r.verbsExecuted.join(', ') : '—',
-    },
-    {
-      title: 'Pseudonym-Projektion',
-      value: r.pseudonymProjectionUsed ? 'verwendet' : 'nicht verwendet',
-    },
-  ];
-  // Transparency notice — identity values the requester named themselves.
-  // Shown only when it actually happened.
-  if ((r.identityValuesOnWire ?? 0) > 0) {
-    facts.push({
-      title: 'Namen ans Modell (selbst genannt)',
-      value: String(r.identityValuesOnWire),
-    });
-  }
-  return [
-    {
-      type: 'TextBlock',
-      text: '**🛡 Privacy Shield v4 · Data-Plane-Boundary**',
-      weight: 'Bolder',
-      size: 'Small',
-      wrap: true,
-    },
-    { type: 'FactSet', facts },
-    {
-      type: 'TextBlock',
-      text: 'Rohe Tool-Ergebnisse blieben server-seitig — das Modell sah nur einen identitätsfreien Digest. Server-seitig eingesetzte Werte sind in der Antwort violett hervorgehoben.',
-      size: 'Small',
-      isSubtle: true,
-      wrap: true,
-      spacing: 'Small',
-    },
-  ];
-}
-
-function toolRow(
-  name: string,
-  durationMs: number,
-  isError: boolean,
-  indented = false,
-): unknown {
-  const icon = isError ? '⚠' : '🔧';
-  const prefix = indented ? '    ' : '';
-  return {
-    type: 'TextBlock',
-    text: `${prefix}${icon} \`${name}\` · ${formatMs(durationMs)}`,
-    size: 'Small',
-    color: isError ? 'Attention' : 'Default',
-    spacing: 'Small',
-    wrap: true,
-  };
-}
-
-function formatMs(ms: number): string {
-  if (ms < 1000) return `${String(ms)}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
 export const TEAMS_CARD_CONTENT_TYPE = ADAPTIVE_CARD_CONTENT_TYPE;
 
 /**
@@ -1723,6 +876,7 @@ export interface TopicDecisionValue {
 }
 
 export function buildTopicAskCard(input: TopicAskCardInput): Attachment {
+  assertTeamsDecoration(TEAMS_DECORATION_IDS.decisionCard);
   const summary = input.previousSummary.length > 240
     ? `${input.previousSummary.slice(0, 239)}…`
     : input.previousSummary;
@@ -1835,6 +989,7 @@ export interface BuildApprovalCardInput {
 }
 
 export function buildApprovalCard(input: BuildApprovalCardInput): Attachment {
+  assertTeamsDecoration(TEAMS_DECORATION_IDS.decisionCard);
   const progress =
     input.stepIndex !== undefined && input.totalSteps !== undefined
       ? `Schritt ${String(input.stepIndex)}/${String(input.totalSteps)} · ${input.stepLabel}`
@@ -1944,6 +1099,7 @@ export interface BuildSlotPickerCardInput {
  * Graph confidence) gets `style: 'positive'` so Teams visually flags it.
  */
 export function buildSlotPickerCard(input: BuildSlotPickerCardInput): Attachment {
+  assertTeamsDecoration(TEAMS_DECORATION_IDS.decisionCard);
   const slots = input.slots.slice(0, SLOT_MAX_OPTIONS);
   const body: unknown[] = [
     {
@@ -2056,8 +1212,7 @@ export function parseRoutineListFilterValue(
 // per configured agent app, a per-reason hint block (consent missing vs. app
 // not in catalog), install deep links for apps that could not be installed,
 // and a "Prüfen" re-check Action.Submit that re-runs the installer and
-// UPDATES this card in place (DIRECT_LINE_VALUE_TYPE precedent for the
-// submit-value round trip). Deep links carry ONLY public Teams app ids.
+// UPDATES this card in place. Deep links carry ONLY public Teams app ids.
 
 /** Deep-link base for a published Teams app — public app id only. */
 const TEAMS_APP_DEEP_LINK_BASE = 'https://teams.microsoft.com/l/app/';

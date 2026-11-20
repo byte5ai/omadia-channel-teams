@@ -10,7 +10,7 @@ export { activate } from './plugin.js';
 // Bot runtime + adapters (re-exported for the kernel bootstrap call-site
 // + the answer-card tests under test/)
 // ---------------------------------------------------------------------------
-export { TeamsBot, teamsSessionScope, teamsTurnOrigin } from './teamsBot.js';
+export { RETIRED_CARD_ACTION_TEXT, TeamsBot, teamsSessionScope, teamsTurnOrigin } from './teamsBot.js';
 
 // ---------------------------------------------------------------------------
 // #860 W2 — auto-invite agent apps (issues #20/#21/#22). Config surface,
@@ -202,11 +202,12 @@ export {
 // Adaptive-Card builders + parsers
 // ---------------------------------------------------------------------------
 export {
+  aiChipDue,
   aiLabelEntity,
+  AI_MARKER_CHIP,
   buildAgentAppsResultCard,
   buildAnswerCard,
   buildChoiceAskCard,
-  buildDirectLineOnlyCard,
   buildFollowUpsOnlyCard,
   buildSlotPickerCard,
   buildTopicAskCard,
@@ -214,31 +215,24 @@ export {
   parseBookSlotValue,
   parseChoiceAskValue,
   parseFollowUpValue,
-  parseFreshCheckValue,
   parseTopicDecisionValue,
-  parseVerbosityStepValue,
   stripFoldedAiDisclosure,
-  verbosityNeighbour,
-  VERBOSITY_STEP_VALUE_TYPE,
   AGENT_APPS_RECHECK_VALUE_TYPE,
   type AgentAppsRecheckValue,
   type BuildAgentAppsCardInput,
   type BuildAnswerCardInput,
   type BuildChoiceAskCardInput,
-  type FreshCheckValue,
   type ChoiceAskValue,
   type FollowUpValue,
   type BookSlotValue,
   type TopicAskCardInput,
   type TopicDecisionChoice,
   type TopicDecisionValue,
-  FRESH_CHECK_VALUE_TYPE,
   CHOICE_ASK_VALUE_TYPE,
   FOLLOW_UP_VALUE_TYPE,
   BOOK_SLOT_VALUE_TYPE,
   TOPIC_DECISION_VALUE_TYPE,
   TEAMS_CARD_CONTENT_TYPE,
-  SYSTEM_DATA_CHIP,
 } from './teamsCard.js';
 
 // ---------------------------------------------------------------------------
@@ -278,22 +272,6 @@ export {
   tabConfigChoices,
   type DiscoveredUiRoute,
 } from './uiRouter.js';
-
-// ---------------------------------------------------------------------------
-// Operator switches for the optional answer-card buttons (`teams_card_*`
-// setup fields). Re-exported for plugin.ts' sibling consumers and the tests
-// under tests/ (scripts/test.mjs runs them against the built dist/).
-// ---------------------------------------------------------------------------
-export {
-  DEFAULT_TEAMS_CARD_FEATURES,
-  TEAMS_CARD_FEATURE_CONFIG_KEYS,
-  TEAMS_CARD_FEATURE_KEYS,
-  disabledTeamsCardFeatures,
-  parseBooleanSetting,
-  resolveTeamsCardFeatures,
-  type TeamsCardFeatureKey,
-  type TeamsCardFeatures,
-} from './teamsCardFeatures.js';
 
 // #2043 — which conversation id goes where (kernel key vs. Graph).
 export {
@@ -339,8 +317,26 @@ export {
   LOG_OUTGOING_ENV,
   logOutgoingActivity,
   NATIVE_AI_LABEL_CONFIG_KEY,
+  parseBooleanSetting,
   resolveNativeAiLabel,
 } from './teamsAiMarkingMode.js';
+
+// #2086 — the Teams side of the kernel's decoration registry, the answer's
+// attributed parts (colleagues' contributions, system notices) and the details
+// element of an answer card.
+export {
+  admitTeamsDecorations,
+  TEAMS_DECORATION_IDS,
+} from './teamsDecorations.js';
+export {
+  contributionLabel,
+  contributionsAsText,
+  SYSTEM_NOTICE_LABEL,
+  systemNoticeAsText,
+} from './teamsAnswerParts.js';
+export { buildAnswerDetailsElements, ANSWER_DETAILS_CONTAINER_ID } from './teamsCardDetails.js';
+// Spec 2042 §5.8 — pace: typing, one acknowledgement, no progress chatter.
+export { TEAMS_PACE_PROFILE, teamsPaceHooks } from './teamsPace.js';
 // #2089 — posted question cards kept across restarts.
 export {
   expiresAt as questionCardExpiresAt,

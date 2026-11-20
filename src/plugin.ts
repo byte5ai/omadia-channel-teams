@@ -1,4 +1,3 @@
-import type Anthropic from '@anthropic-ai/sdk';
 import type { Pool } from 'pg';
 
 import {
@@ -14,6 +13,7 @@ import {
   InMemoryConversationHistoryStore,
   isNoReply,
   logNoReplyDrop,
+  resolveChannelRoute,
   type ChannelBindingResolver,
   type ChannelHandle,
   type ChannelKeyDirectory,
@@ -31,7 +31,8 @@ import { readTeamsAppTemplateInfo } from './teamsAppTemplate.js';
 import { registerTeamsSendProviders, stampChannel } from './teamsKernelRegistration.js';
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
-import type { NativeFacilitatorCoreApi } from './kernel-types.js';
+import type { TurnAgentDecision } from './agentForTurn.js';
+import type { ConversationMessageEvent, NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
 /**
@@ -65,10 +66,6 @@ import { PgTeamsMeetingStateStore } from './teamsMeetingStateStore.js';
 import { PgTeamsQuestionCardStore } from './teamsQuestionCardStore.js';
 import { createOverdueCardSweep, OVERDUE_SWEEP_INTERVAL_MS } from './teamsQuestionCardSweep.js';
 import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
-import {
-  disabledTeamsCardFeatures,
-  resolveTeamsCardFeatures,
-} from './teamsCardFeatures.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import {
   createTeamsRosterAdapter,
@@ -129,7 +126,7 @@ interface UiRouteCatalogShim {
  *
  * Phase 5B: standalone activate() shape — no constructor, no Deps
  * interface. Every kernel-side resource is sourced from `ctx.services`
- * (anthropicClient, tigrisStore, graphPool, graphTenantId,
+ * (tigrisStore, graphPool, graphTenantId,
  * embeddingClient, topicDetector, turnContext, microsoft365.graph,
  * chatAgent, routinesIntegration) or constructed in-package
  * (InMemoryConversationHistoryStore). This is the contract the
@@ -340,12 +337,6 @@ export async function activate(
   const chatAgent = chatAgentBundle.agent;
 
   // --- Phase 5B: kernel-published deps via ctx.services ----------------
-  const anthropicClient = ctx.services.get<Anthropic>('anthropicClient');
-  if (!anthropicClient) {
-    throw new Error(
-      "anthropicClient service not published — kernel must publish it before channel activation (see middleware/src/index.ts).",
-    );
-  }
   const turnContext = ctx.services.get<TurnContextModule>('turnContext');
   if (!turnContext) {
     throw new Error(
@@ -559,27 +550,29 @@ export async function activate(
   const channelResolver = ctx.services.get<ChannelBindingResolver>(
     CHANNEL_RESOLVER_SERVICE,
   );
+  // The management layer's answer for one key (byte5ai/omadia#2055): `bound`
+  // or `reject`, never a fallback agent. `chatAgent` is set on `reject` too: it
+  // handles `/agent` and answers a refusal with the `system` notice. The
+  // sender (`principal`, from `turnPrincipal`) and the notice locale ride along.
   const resolveChatAgentForActivity = channelResolver
-    ? (input: { channelType: 'teams'; channelKey: string }): {
-        decision: 'bound' | 'fallback' | 'reject';
-        chatAgent?: ChatAgent;
-        exclusive?: boolean;
-      } => {
-        const decision = channelResolver.resolve(
-          input.channelType,
-          input.channelKey,
-        );
-        // `exclusive` is additive on the platform side and this plugin is
-        // built against whichever @omadia/channel-sdk the host tree ships,
-        // which may predate the field. Read it structurally so an older SDK
-        // typing degrades to "not exclusive" (the pre-existing behaviour)
-        // instead of failing the build.
-        const exclusive =
-          (decision as { exclusive?: boolean }).exclusive === true;
+    ? (input: {
+        channelType: 'teams';
+        channelKey: string;
+        principal?: string;
+        locale?: string;
+      }): TurnAgentDecision => {
+        const result = resolveChannelRoute(ctx, input.channelType, input.channelKey, {
+          ...(input.principal ? { principal: input.principal } : {}),
+          ...(input.locale ? { locale: input.locale } : {}),
+        });
+        // Published at activation, gone later: nothing to answer with.
+        if (!result) return { decision: 'reject' };
         return {
-          decision: decision.decision,
-          ...(decision.chatAgent ? { chatAgent: decision.chatAgent } : {}),
-          ...(exclusive ? { exclusive: true } : {}),
+          decision: result.decision,
+          ...(result.chatAgent ? { chatAgent: result.chatAgent } : {}),
+          ...(result.exclusive === true ? { exclusive: true } : {}),
+          ...(result.notice ? { notice: result.notice } : {}),
+          ...(result.speaker ? { speaker: result.speaker } : {}),
         };
       }
     : undefined;
@@ -645,18 +638,6 @@ export async function activate(
     }
   }
 
-  // Operator switches for the optional answer-card buttons (`teams_card_*`
-  // boolean setup fields). Resolved once here — the kernel re-activates the
-  // plugin when its config is saved. Log names only, never config values.
-  const cardFeatures = resolveTeamsCardFeatures((key) => ctx.config.get(key));
-  const disabledCardFeatures = disabledTeamsCardFeatures(cardFeatures);
-  if (disabledCardFeatures.length > 0) {
-    core.log(
-      'info',
-      `Teams answer-card features disabled by config: ${disabledCardFeatures.join(', ')}`,
-    );
-  }
-
   const bot = new TeamsBot(
     chatAgent,
     conversationHistoryStore,
@@ -676,7 +657,6 @@ export async function activate(
     resolveConductorAwait,
     groupPrimitives,
     autoInvite,
-    cardFeatures,
   );
 
   if (resolveChatAgentForActivity) {
@@ -687,7 +667,7 @@ export async function activate(
   } else {
     core.log(
       'info',
-      'channelResolver@1 not published — Teams routes all turns to default chatAgent',
+      'channelResolver@1 not published — no agent registry: the host\'s single chatAgent answers every turn',
     );
   }
   if (ssoConnectionName) {
@@ -701,11 +681,6 @@ export async function activate(
       'Teams SSO disabled (teams_sso_connection_name unset) — calendar tools surface sso_unavailable',
     );
   }
-  // anthropicClient is currently unused inside this scope — TeamsBot
-  // pulls Claude via `chatAgent` only. Keep the resolved variable so a
-  // future direct-Anthropic feature (e.g. inline image-OCR) doesn't
-  // need to re-thread DI.
-  void anthropicClient;
   // embeddingClient + topicDetector are passed through as constructor
   // args above (topicDetector) or stay undefined-tracked for diagnostics.
   void embeddingClient;
@@ -731,6 +706,7 @@ export async function activate(
   // mention gate for everybody.
   const facilitatorCore: NativeFacilitatorCoreApi = core;
   const emitConversationMessage = facilitatorCore.emitConversationMessage?.bind(facilitatorCore);
+  const reportConversationMessage = facilitatorCore.reportConversationMessage?.bind(facilitatorCore);
   const isAllMessagesSubscribed = facilitatorCore.isAllMessagesSubscribed?.bind(facilitatorCore);
   // #2089 — all / addressed / none per bot and conversation (channel-sdk
   // 0.3.5). Without it the adapter knows `all` and `none` only, and a
@@ -749,6 +725,11 @@ export async function activate(
           : {}),
         // The catalog id is authoritative here — the bot cannot know it.
         emit: (event) => emitConversationMessage(stampChannel(event, ctx.agentId)),
+        // #2086 — a message this adapter answers with a turn of its own: the
+        // kernel says whether it consumed it as an answer to an open question.
+        ...(reportConversationMessage
+          ? { report: (event: ConversationMessageEvent) => reportConversationMessage(stampChannel(event, ctx.agentId)) }
+          : {}),
       }),
     );
   }

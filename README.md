@@ -24,10 +24,17 @@ roster + @mention resolution, HMAC-signed attachment persistence, and the
 | Concern | Implementation |
 |---|---|
 | Transport | Microsoft Bot Framework `CloudAdapter`, inbound `/api/messages` + reply |
-| Rendering | Adaptive Cards — answer cards, approve/reject cards, Direct-Line buttons, smart follow-up/choice cards. The seven optional answer-card buttons (Tool-Trace, Memory impact, Privacy Guard, Fresh Check, follow-ups, Direct Line, answer-size steps) are individually switchable via the `teams_card_*` setup fields |
+| Rendering | Adaptive Cards: minimal answer cards (text, discreet AI chip when the kernel asks for it, colleagues' contributions attributed to them, one collapsed "Details" element), `system` notices under their own heading, approve/reject cards, decision and choice cards. Every decoration is declared in the channel SDK's decoration registry; buttons exist only for options the agent proposes, decisions, sign-in and polls |
 | Roster | Mention + roster resolution (`teamsRoster.ts`, `teamsMentions.ts`) |
 | Attachments | HMAC-signed proxy at `/attachments/<key>`, persisted via `teamsAttachmentStore.ts` |
-| Delegation | Every user turn is handed to the kernel's agent runtime (`chatAgent@^1` service) |
+| Delegation | Every user turn is handed to the kernel's agent runtime: per turn the `channelResolver` decides `bound` (an agent answers) or `reject` (the management layer answers with a `system` notice; there is no fallback agent). The channel only passes text through |
+| Addressing | An agent is addressed through its own bot. `/agent <name>` (select), `/agent` (clear the selection) and `/agents` (list) are plain text the kernel's management layer carries out and answers as `system`; the channel hands over the whole message, in a group chat too (no `[Name]:` attribution in front of a command) |
+| Selection key | `/agent` is stored per sender and the narrowest key of the turn: the conversation (a channel thread is its own conversation), not the bot-wide catch-all binding; on an agent's own bot (exclusive) the bot's key is the only key |
+| Ballots | A card or poll Teams does not show natively (kinds it does not declare, more than 5 questions) is posted by the KERNEL as numbered text, and a matching typed reply becomes the typed `card_answer` (kernel #2086); this plugin renders and parses no ballot itself. It reports the Teams activity id of a sent text as `messageId`, sets `replyToMessageId` only for a message the person really answered (a quoted reply, not the root every message of a channel thread carries) and `addressedToBot` for a mention |
+| Typed replies | For an addressed message (mention, the bot's own 1:1) that would start a turn, Teams reports it with `reportConversationMessage` first and waits at most 1.5 s: if the kernel consumed it as the typed answer to an open question, no turn starts (no acknowledgement, no agent reply); a timeout, a failure or a kernel without the method lets the turn run as before |
+| Data | `SemanticAnswer.data` (spec §5.13, kernel #2085) is drawn as native tables (at most 50 rows each, then a "weitere Zeilen" line) next to `textWithoutData`; an answer without the fields renders from `text` as before |
+| Sender | The routing principal is `user:<email>` once Graph verified the address, else `user:teams-aad:<id>`. `TurnOrigin.principal` stays the Entra object id on purpose: the facilitation engine matches participants by it, and `turnPrincipal` would prefer it over the address |
+| Pace | Typing from the start; ONE acknowledgement after 8 s under the answering agent's speaker (its own bot, or with a name line where one bot serves several agents) |
 | Events | Emits `teams.message.posted` / `teams.mention` on the deny-by-default event catalog |
 | Shared credentials | Reuses the Azure AD app registration owned by [`@omadia/integration-microsoft365`](https://github.com/byte5ai/omadia-m365-connector) — install that first |
 

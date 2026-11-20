@@ -13,6 +13,8 @@
 
 import { CardFactory, type Attachment } from 'botbuilder';
 
+import { assertTeamsDecoration, TEAMS_DECORATION_IDS } from './teamsDecorations.js';
+
 export const POLL_ANSWER_VALUE_TYPE = 'facilitation.poll';
 /** `verb` of the poll's `Action.Execute`. */
 export const POLL_ANSWER_VERB = 'facilitation.poll.answer';
@@ -61,6 +63,7 @@ export function validatePollInput(input: BuildPollCardInput): string | undefined
 }
 
 export function buildPollCard(input: BuildPollCardInput): Attachment {
+  assertTeamsDecoration(TEAMS_DECORATION_IDS.facilitationPoll);
   const problem = validatePollInput(input);
   if (problem) throw new Error(`invalid poll: ${problem}`);
   const body: Record<string, unknown>[] = [
