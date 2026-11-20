@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **Bot reactions (spec 2043 §5.14, omadia #2061, ADR 0027).** The conversation send
+  provider implements `react` and declares `supports.reactions: true`
+  (`@omadia/channel-sdk` 0.3.9, `@omadia/plugin-api` 1.82.0, kernel PR byte5ai/omadia#2151).
+  `acknowledge` becomes the Teams thumbs-up (`like`), set by the agent's own bot with
+  `PUT {serviceUrl}/v3/conversations/{conversationId}/activities/{activityId}/reactions/like`
+  on the Bot Connector
+  ([agent reactions](https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/agent-reactions)).
+  The request is signed with the credentials of exactly the bot `asChannelKey` names
+  (the Bot Connector client of its proactive turn); an invalid key or credentials of
+  another bot is `not_permitted`, a bot without a reference in the chat `no_binding`,
+  platform failures (deleted message, bot removed, lasting rate limit) `channel_error`
+  with the platform's message. A 429 is retried with backoff (Teams allows two reaction
+  changes per second per bot). No new permission and no new outbound host: the bot
+  token and the already declared Bot Connector hosts suffice. Graph
+  `chatMessage: setReaction` is delegated-only and not used.
+
 ## 0.41.1
 
 - The manifest now declares every outbound host the plugin uses:

@@ -16,6 +16,7 @@ import type { TeamsBot } from './teamsBot.js';
 import type { TeamsBotAppType, TeamsBotIdentity } from './teamsBotIdentity.js';
 import { findTeamsBotBySlug, parseTeamsBotKey, teamsBotLogLabel } from './teamsBotIdentity.js';
 import { normalizeTeamsBotAppId } from './teamsConversationRefStore.js';
+import { isAllowedProactiveServiceUrl } from './teamsServiceUrl.js';
 
 /**
  * #860 W0a — multi-bot: one Bot-Framework credential set per bot. Each
@@ -179,22 +180,6 @@ function withOutgoingLog<T>(
     });
     return logic(context);
   };
-}
-
-/** Same read-path allowlist as the conversation-ref store (`isAllowedServiceUrl`,
- *  review M2): a poisoned reference — DB row, routine row, or cache — must not
- *  make `continueConversationAsync` present bot credentials to an attacker
- *  host. With N bots a poisoned `bot.id` could additionally pick ANOTHER bot's
- *  credentials, so the guard sits directly in front of every proactive turn,
- *  not only behind the ref store's loads. */
-function isAllowedProactiveServiceUrl(serviceUrl: unknown): boolean {
-  if (typeof serviceUrl !== 'string') return false;
-  try {
-    const host = new URL(serviceUrl).hostname.toLowerCase();
-    return host === 'smba.trafficmanager.net' || host.endsWith('.botframework.com');
-  } catch {
-    return false;
-  }
 }
 
 interface BotCredentialConfig {

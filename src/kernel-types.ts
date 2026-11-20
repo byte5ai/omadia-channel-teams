@@ -661,7 +661,17 @@ export interface SendProviderCapabilities {
   aiLabel?: boolean;
   /** Posts `message.card` as a question card; absent = not supported. */
   card?: CardSupport;
+  /** channel-sdk 0.3.9 — implements `react` (spec 2043 §5.14). */
+  reactions?: boolean;
 }
+
+/** plugin-api 1.82.0 — the reactions a channel maps to its own form. */
+export type ConversationReaction = 'acknowledge';
+
+/** What `react` answers (channel-sdk 0.3.9 `ConversationReactionOutcome`). */
+export type ConversationReactionOutcome =
+  | { outcome: 'reacted' }
+  | { outcome: 'unreachable'; code: string; message: string };
 
 /** Third argument of `TargetedSendProvider.sendToUser`. */
 export interface TargetedSendOptions {
