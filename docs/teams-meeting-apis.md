@@ -236,7 +236,7 @@ Three things mark a message, and they were confused:
 |---|---|---|
 | Platform label | the `AIGeneratedContent` entity on the message activity | Teams: "AI Generated" next to the agent's name in the message header, tooltip "AI-generated content may be incorrect." |
 | Disclosure sentence | the instance's line, folded into the text by the kernel | plain text, always visible |
-| Card chip | "✨ AI-generated" inside this plugin's **answer card** (every answer of an ordinary turn: model answer, fixed refusal, private status). It stands in for the disclosure sentence, which is stripped from a card | the card itself, whenever the kernel supplied a disclosure for that answer; no chip where the operator turned the disclosure off (0.40.1) |
+| Card chip | "✨ AI-generated" inside this plugin's **answer card** (every answer of an ordinary turn: model answer, fixed refusal, private status). It stands in for the disclosure sentence, which is stripped from a card | the card itself, whenever the kernel's frequency setting asks for a visible marker on that answer (`aiDisclosure.markers.chip`, absent = `channel_default` = every card); no chip where the operator turned the disclosure off (0.40.1) or where `per_conversation` says it is not due (0.41.0) |
 
 **What was observed.** With 0.37.0 the facilitator's proactive posts (handshake, reminder,
 notice) showed no marking in the Teams web client. "✨ AI-generated" was seen on turn
@@ -268,11 +268,12 @@ shape. It counts as a marking only once somebody has **seen** it: the setup swit
 
 | Send path | Switch off (default) | Switch on |
 |---|---|---|
-| Turn answer on a card (also a facilitator's fixed refusal) | card chip; sentence stripped | the same |
+| Turn answer on a card (also a facilitator's fixed refusal) | card chip and label entity when a marker is due; sentence stripped | the same |
 | Long turn answer (several plain messages) | sentence at the end of the last part | sentence stripped |
-| Blocking choice card | entity only (no chip on that card) | the same |
+| Blocking choice card | entity when a marker is due (no chip on that card) | the same |
 | Proactive text, poll card, question card, private reminder | `supports.aiLabel` **not** declared, so the kernel adds the sentence to an agent's own posts; the adapter posts the text as handed over | `supports.aiLabel` declared; no sentence |
 | Routine delivery, card and plain text | sentence kept | sentence stripped |
+| `system` notice | no marker (a template of the management layer, not AI output) | the same |
 | Conductor reminder, approval card | entity only (deterministic kernel text, nothing folded in) | the same |
 | `NO_REPLY` (turn, routine), also with the sentence behind it | nothing is posted | nothing is posted |
 | Streaming | does not exist | does not exist |

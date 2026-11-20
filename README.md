@@ -24,7 +24,7 @@ roster + @mention resolution, HMAC-signed attachment persistence, and the
 | Concern | Implementation |
 |---|---|
 | Transport | Microsoft Bot Framework `CloudAdapter`, inbound `/api/messages` + reply |
-| Rendering | Adaptive Cards — answer cards, approve/reject cards, Direct-Line buttons, smart follow-up/choice cards. The seven optional answer-card buttons (Tool-Trace, Memory impact, Privacy Guard, Fresh Check, follow-ups, Direct Line, answer-size steps) are individually switchable via the `teams_card_*` setup fields |
+| Rendering | Adaptive Cards: minimal answer cards (text, discreet AI chip when the kernel asks for it, colleagues' contributions attributed to them, one collapsed "Details" element), `system` notices under their own heading, approve/reject cards, decision and choice cards. Every decoration is declared in the channel SDK's decoration registry; buttons exist only for options the agent proposes, decisions, sign-in and polls |
 | Roster | Mention + roster resolution (`teamsRoster.ts`, `teamsMentions.ts`) |
 | Attachments | HMAC-signed proxy at `/attachments/<key>`, persisted via `teamsAttachmentStore.ts` |
 | Delegation | Every user turn is handed to the kernel's agent runtime (`chatAgent@^1` service) |
