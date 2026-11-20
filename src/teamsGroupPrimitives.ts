@@ -1016,7 +1016,7 @@ export function createTeamsConversationSendAdapter(deps: {
     async updateCard(conversationId, cardMessageId, update, opts): Promise<CardUpdateOutcome> {
       const cards = deps.cards;
       if (!cards) return { outcome: 'unreachable', code: 'channel_error', message: 'question cards are not wired in this Teams channel' };
-      const botAppId = parseTeamsBotKey(opts?.asChannelKey ?? '');
+      const botAppId = typeof opts?.asChannelKey === 'string' ? parseTeamsBotKey(opts.asChannelKey) : undefined;
       if (!botAppId) {
         return {
           outcome: 'unreachable',
@@ -1115,7 +1115,7 @@ export function createTeamsConversationSendAdapter(deps: {
      * through that bot's reference and credentials, or not at all.
      */
     async react(conversationId, messageId, reaction, opts): Promise<ConversationReactionOutcome> {
-      const botAppId = parseTeamsBotKey(opts?.asChannelKey ?? '');
+      const botAppId = typeof opts?.asChannelKey === 'string' ? parseTeamsBotKey(opts.asChannelKey) : undefined;
       if (!botAppId) {
         return {
           outcome: 'unreachable',

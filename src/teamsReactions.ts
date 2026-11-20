@@ -30,8 +30,12 @@ export const TEAMS_REACTION_TYPES: Readonly<Record<ConversationReaction, string>
 /** The part of `fetch` this module uses; injected in tests. */
 export type TeamsReactionFetch = (
   url: string,
-  init: { method: 'PUT'; headers: Record<string, string> },
+  init: { method: 'PUT'; headers: Record<string, string>; signal?: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+
+/** One reaction request waits at most this long: a stalled Bot Connector
+ *  must not hold the proactive turn (and the facilitator) for minutes. */
+export const TEAMS_REACTION_TIMEOUT_MS = 10_000;
 
 /** A failed reaction request. `statusCode` lets `retryTransient` retry a 429. */
 export class TeamsReactionError extends Error {
@@ -98,7 +102,9 @@ export async function putTeamsReaction(
   fetchImpl: TeamsReactionFetch,
 ): Promise<void> {
   const serviceUrl = turnContext.activity.serviceUrl;
-  if (!isAllowedProactiveServiceUrl(serviceUrl)) {
+  // The bearer token goes only to an allowlisted Bot Framework host, and
+  // only over TLS.
+  if (!isAllowedProactiveServiceUrl(serviceUrl) || !serviceUrl.toLowerCase().startsWith('https://')) {
     throw new TeamsReactionError('the conversation reference names no Bot Framework service URL', 'channel_error');
   }
   const credentials = turnCredentials(turnContext);
@@ -113,7 +119,7 @@ export async function putTeamsReaction(
     );
   }
   const url = teamsReactionUrl(serviceUrl, request.conversationId, request.messageId, request.reactionType);
-  const response = await fetchImpl(url, { method: 'PUT', headers: await signedHeaders(credentials) });
+  const response = await fetchImpl(url, { method: 'PUT', headers: await signedHeaders(credentials), signal: AbortSignal.timeout(TEAMS_REACTION_TIMEOUT_MS) });
   if (!response.ok) {
     throw new TeamsReactionError(await platformErrorMessage(response), 'channel_error', response.status);
   }
