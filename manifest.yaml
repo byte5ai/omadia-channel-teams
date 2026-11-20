@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.41.1"
+  version: "0.42.0"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als Kanal für omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -23,7 +23,9 @@ compat:
   # SDK parts this plugin imports as values (pace, speaker line, decoration
   # registry, answer details, resolveChannelRoute). A host below it cannot load
   # the plugin: the named imports fail at link time.
-  core: ">=1.75.0 <2.0"
+  # 0.42.0 raises it to 1.82.0: the send provider implements `react` with the
+  # reaction contract of plugin-api 1.82.0 / channel-sdk 0.3.9 (#2061, #2151).
+  core: ">=1.82.0 <2.0"
   node: ">=20"
 
 lifecycle:
