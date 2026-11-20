@@ -1,4 +1,3 @@
-import type Anthropic from '@anthropic-ai/sdk';
 import type { Pool } from 'pg';
 
 import {
@@ -127,7 +126,7 @@ interface UiRouteCatalogShim {
  *
  * Phase 5B: standalone activate() shape — no constructor, no Deps
  * interface. Every kernel-side resource is sourced from `ctx.services`
- * (anthropicClient, tigrisStore, graphPool, graphTenantId,
+ * (tigrisStore, graphPool, graphTenantId,
  * embeddingClient, topicDetector, turnContext, microsoft365.graph,
  * chatAgent, routinesIntegration) or constructed in-package
  * (InMemoryConversationHistoryStore). This is the contract the
@@ -338,12 +337,6 @@ export async function activate(
   const chatAgent = chatAgentBundle.agent;
 
   // --- Phase 5B: kernel-published deps via ctx.services ----------------
-  const anthropicClient = ctx.services.get<Anthropic>('anthropicClient');
-  if (!anthropicClient) {
-    throw new Error(
-      "anthropicClient service not published — kernel must publish it before channel activation (see middleware/src/index.ts).",
-    );
-  }
   const turnContext = ctx.services.get<TurnContextModule>('turnContext');
   if (!turnContext) {
     throw new Error(
@@ -688,11 +681,6 @@ export async function activate(
       'Teams SSO disabled (teams_sso_connection_name unset) — calendar tools surface sso_unavailable',
     );
   }
-  // anthropicClient is currently unused inside this scope — TeamsBot
-  // pulls Claude via `chatAgent` only. Keep the resolved variable so a
-  // future direct-Anthropic feature (e.g. inline image-OCR) doesn't
-  // need to re-thread DI.
-  void anthropicClient;
   // embeddingClient + topicDetector are passed through as constructor
   // args above (topicDetector) or stay undefined-tracked for diagnostics.
   void embeddingClient;
