@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.41.1
+
+- The manifest now declares every outbound host the plugin uses:
+  `login.microsoftonline.com` (bot and Graph tokens) and `graph.microsoft.com`
+  were missing and showed up as `not_allowed` in the kernel's egress guard;
+  `*.sharepoint.com` (pre-signed download URLs of file attachments) is added
+  for the same reason. `smba.trafficmanager.net` and `*.botframework.com` (Bot
+  Connector, `api.`/`login.`/`token.botframework.com`) were already declared.
+  Without this a kernel running the guard in `enforce` mode would refuse the
+  token requests and the plugin would stop answering. No code change.
+
 ## 0.41.0
 
 Agents as colleagues (byte5ai/omadia#2042, issue #42, spec 2042 §3 INV-3/4/5/7, §5.3,

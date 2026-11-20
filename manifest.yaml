@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/channel-teams"
   name: "Microsoft Teams Channel"
-  version: "0.41.0"
+  version: "0.41.1"
   kind: "channel"
   domain: "channel.teams"
   description: "Microsoft Teams als Kanal für omadia. Bot-Framework-Adapter, Adaptive-Card-Rendering, Roster + Mention-Resolution, Attachment-Persistenz mit HMAC-signiertem Proxy. Konsumiert den geteilten Graph-Client aus `@omadia/integration-microsoft365` für Attachment-Downloads + Roster-Lookups."
@@ -353,11 +353,27 @@ permissions:
     reads: []
     writes: []
   network:
-    # Teams-specific outbound; MS-Graph is covered by the
-    # microsoft365 integration's own permissions.
+    # Everything this plugin's own code and its botbuilder dependency reach.
+    # The kernel's egress guard checks global fetch and node:http(s) per plugin
+    # (a leading `*.` matches exactly one label), so a host missing here is
+    # reported as not_allowed in `observe` and refused in `enforce`.
     outbound:
+      # Bot Connector: replies, proactive messages, conversation members
+      # (service URL of every Teams activity).
       - "smba.trafficmanager.net"
+      # Bot Framework: api.* (channel token audience), login.* (OpenID
+      # metadata and signing keys of inbound activities), token.* (user token
+      # service for the OAuth/SSO cards).
       - "*.botframework.com"
+      # Azure AD: the bot's own client-credential token (botbuilder/MSAL) and
+      # the Graph token (teamsGraphResolver.ts).
+      - "login.microsoftonline.com"
+      # Microsoft Graph: members, chat messages, file shares
+      # (teamsGraphResolver.ts, teamsAttachmentStore.ts).
+      - "graph.microsoft.com"
+      # Pre-signed download URLs of file attachments (file.download.info of a
+      # 1:1 chat, SharePoint/OneDrive links; teamsAttachmentStore.ts).
+      - "*.sharepoint.com"
   filesystem:
     scratch: false
   # byte5ai/omadia#1596 / #1620 — Teams loads the Hub (`/hub`) and Tab-Config
