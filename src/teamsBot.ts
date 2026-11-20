@@ -74,25 +74,6 @@ export const POLL_NOT_ACTIVE_TEXT = 'Diese Abstimmung ist nicht mehr aktiv.';
 export const NO_AGENT_FOR_CONVERSATION_TEXT =
   'Diesem Chat ist kein Agent zugeordnet. Bitte wende dich an deinen Administrator.';
 
-/** The management layer's own speaker: a notice, never an agent's answer. */
-const SYSTEM_SPEAKER: Speaker = { kind: 'system' };
-
-/**
- * `/agent <name>`, `/agent` and `/agents` as the SDK reads them: the whole
- * message. The channel does not carry them out (the management layer behind
- * the resolver's ChatAgent does); it only has to leave them the whole message,
- * so no attribution stands in front of them and no topic detection reads them
- * as a break.
- */
-function isAgentCommandText(text: string): boolean {
-  return parseAgentCommand(text) !== undefined;
-}
-
-/** The notice language the management layer knows (`de`, `en`) from Teams' `activity.locale` (`de-DE`). */
-function noticeLocale(locale: string | undefined): 'de' | 'en' | undefined {
-  const language = locale?.trim().slice(0, 2).toLowerCase();
-  return language === 'de' || language === 'en' ? language : undefined;
-}
 import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { TeamsTurnOrigin } from './kernel-types.js';
@@ -110,6 +91,7 @@ import type {
   TopicDetector,
   TurnContextModule,
 } from './kernel-types.js';
+
 import type {
   PersistedAttachment,
   TeamsAttachmentStore,
@@ -148,6 +130,26 @@ import {
   stripMentionTokens,
   type MentionEntity,
 } from './teamsMentions.js';
+
+/** The management layer's own speaker: a notice, never an agent's answer. */
+const SYSTEM_SPEAKER: Speaker = { kind: 'system' };
+
+/**
+ * `/agent <name>`, `/agent` and `/agents` as the SDK reads them: the whole
+ * message. The channel does not carry them out (the management layer behind
+ * the resolver's ChatAgent does); it only has to leave them the whole message,
+ * so no attribution stands in front of them and no topic detection reads them
+ * as a break.
+ */
+function isAgentCommandText(text: string): boolean {
+  return parseAgentCommand(text) !== undefined;
+}
+
+/** The notice language the management layer knows (`de`, `en`) from Teams' `activity.locale` (`de-DE`). */
+function noticeLocale(locale: string | undefined): 'de' | 'en' | undefined {
+  const language = locale?.trim().slice(0, 2).toLowerCase();
+  return language === 'de' || language === 'en' ? language : undefined;
+}
 
 // Teams accepts long messages but the UI truncates around 28k chars. We leave a safety
 // margin and split on paragraph boundaries so tables aren't cut in half.
