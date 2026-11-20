@@ -11,6 +11,11 @@ import type {
 import type { MentionEntity } from './teamsMentions.js';
 import type { AgentAppInstallOutcome } from './teamsAgentInstaller.js';
 import { contributionBlocks, systemNoticeBody } from './teamsAnswerParts.js';
+import {
+  SIDE_CHANNEL_MAX_ROWS,
+  sideChannelCellText,
+  type SideChannelTable,
+} from './teamsSideChannelData.js';
 import { buildAnswerDetailsElements } from './teamsCardDetails.js';
 import {
   admitTeamsDecorations,
@@ -154,6 +159,15 @@ export interface BuildAnswerCardInput {
    * Never on a card of an agent's own bot, never on a `system` notice.
    */
   speakerLine?: string;
+  /**
+   * Side-channel data (spec 2042 §5.13): drawn as native tables after the
+   * answer text, which is then the text WITHOUT the data rendering. At most
+   * {@link SIDE_CHANNEL_MAX_ROWS} rows each, a "weitere Zeilen" line for the
+   * rest, fewer rows when the card would exceed Teams' size cap.
+   */
+  dataTables?: readonly SideChannelTable[];
+  /** Internal: rows per table when the card had to shrink to fit Teams' size cap. */
+  dataRowCap?: number;
   /** #2045 — the notice text of a `system` speaker; defaults to `answer`. */
   systemNotice?: SystemNotice;
   /**
@@ -488,10 +502,22 @@ function buildCardBody(input: BuildAnswerCardInput): CardBody {
 
   const full = assemble(input, input.answer, attachments, parts);
   if (bytes(full) <= CARD_BUDGET_BYTES) return full;
+  // Data is the elastic part: fewer rows first (the "weitere Zeilen" line
+  // says how many are left), the answer text is cut only after that.
+  if ((input.dataTables?.length ?? 0) > 0) {
+    for (const rowCap of SIDE_CHANNEL_ROW_STEPS) {
+      const reduced = assemble({ ...input, dataRowCap: rowCap }, input.answer, attachments, parts);
+      if (bytes(reduced) <= CARD_BUDGET_BYTES) return reduced;
+    }
+    return assemble({ ...input, dataRowCap: 0 }, truncateAnswer(input.answer), attachments, parts);
+  }
   // Truncate the answer but still keep the images and the colleagues' words:
   // they carry the actual payload the user asked for.
   return assemble(input, truncateAnswer(input.answer), attachments, parts);
 }
+
+/** Row caps tried, in order, when the tables push a card over its size cap. */
+const SIDE_CHANNEL_ROW_STEPS: readonly number[] = [25, 10, 3, 0];
 
 function bytes(body: CardBody): number {
   return Buffer.byteLength(JSON.stringify(body), 'utf8');
@@ -584,6 +610,7 @@ function assemble(
     // stay a markdown `TextBlock` (plus a compact violet line when they
     // resolved masked values).
     ...buildAnswerElements(answer, input.maskedValues ?? []),
+    ...sideChannelElements(input),
     ...attachmentElements(attachments),
     // Colleagues' words: attributed to them, unchanged, never dropped.
     ...contributionBlocks(input.contributions, input.speaker),
@@ -647,6 +674,52 @@ function buildAnswerElements(
     out.push(maskedValuesLine(masked));
   }
   return out;
+}
+
+/**
+ * The side-channel tables as native Adaptive-Card `Table`s: a caption, the
+ * rows (masked cells in the accent colour like in a markdown table), and one
+ * subtle line for the rows that are not shown.
+ */
+function sideChannelElements(input: BuildAnswerCardInput): unknown[] {
+  const masked = new Set((input.maskedValues ?? []).filter((v) => v.trim().length > 0));
+  const cap = Math.min(input.dataRowCap ?? SIDE_CHANNEL_MAX_ROWS, SIDE_CHANNEL_MAX_ROWS);
+  return (input.dataTables ?? []).flatMap((table) => {
+    const shown = table.rows.slice(0, cap);
+    const hidden = table.rows.length - shown.length;
+    const out: unknown[] = [];
+    if (table.caption) {
+      out.push({ type: 'TextBlock', text: table.caption, weight: 'Bolder', wrap: true, spacing: 'Medium' });
+    }
+    if (table.columns.length === 0 || table.rows.length === 0) {
+      out.push({ type: 'TextBlock', text: '—', wrap: true, isSubtle: true });
+      return out;
+    }
+    if (shown.length > 0) {
+      out.push(
+        buildTableElement(
+          {
+            prose: '',
+            trailing: '',
+            headers: table.columns.map(sideChannelCellText as (value: string) => string),
+            rows: shown.map((row) => table.columns.map((_, i) => sideChannelCellText(row[i] ?? null))),
+          },
+          masked,
+        ),
+      );
+    }
+    if (hidden > 0) {
+      out.push({
+        type: 'TextBlock',
+        text: `… ${String(hidden)} weitere Zeilen`,
+        isSubtle: true,
+        size: 'Small',
+        wrap: true,
+        spacing: 'Small',
+      });
+    }
+    return out;
+  });
 }
 
 /** A parsed GFM table — the shape the v4 Materializer emits. */

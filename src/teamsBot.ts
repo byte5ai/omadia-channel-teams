@@ -125,6 +125,7 @@ import { contributionsAsText, contributionsLength, systemNoticeAsText } from './
 import { TEAMS_PACE_PROFILE, teamsPaceHooks } from './teamsPace.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
+import { readSideChannelData, sideChannelLength, type SideChannelTable } from './teamsSideChannelData.js';
 import {
   resolveMentions,
   stripMentionTokens,
@@ -2385,9 +2386,7 @@ export class TeamsBot extends TeamsActivityHandler {
         const chipDue = !isSystemNotice && aiChipDue(result.aiDisclosure);
         const answerText = isSystemNotice
           ? (result.systemNotice?.text ?? result.text)
-          : chipDue
-            ? stripFoldedAiDisclosure(result.text, result.aiDisclosure?.text)
-            : result.text;
+          : withoutDisclosure(side ? side.textWithoutData : result.text);
         const nameLine = isSystemNotice
           ? undefined
           : this.nameLineFor(input.sessionScope, result.speaker, isNativeIdentity);
@@ -2400,6 +2399,13 @@ export class TeamsBot extends TeamsActivityHandler {
           chipDue,
           // D24 — an answer too long for a card goes out as plain text,
           // where no chip of ours is shown. Unless the platform label was
+        // Side-channel data (spec §5.13): the rows are drawn natively and the
+        // answer shows the text WITHOUT their markdown rendering. Without the
+        // fields `text` is the one source, tables included, as before. Neither
+        // the history (it reaches a model) nor the card text carries the rows.
+        const side = isSystemNotice ? undefined : readSideChannelData(result);
+        const withoutDisclosure = (text: string): string =>
+          chipDue ? stripFoldedAiDisclosure(text, result.aiDisclosure?.text) : text;
           // confirmed, the disclosure sentence goes back onto that text.
           ...(chipDue && !this.nativeAiLabel && result.aiDisclosure?.text
             ? { plainTextDisclosure: result.aiDisclosure.text }
@@ -2411,6 +2417,7 @@ export class TeamsBot extends TeamsActivityHandler {
         // deine 3 Routinen") and the actionable card right below.
         if (pendingRoutineList && this.buildRoutineListSmartCardAttachment) {
           const att = this.buildRoutineListSmartCardAttachment({
+          ...(side ? { dataTables: side.tables, fullText: withoutDisclosure(result.text) } : {}),
             filter: pendingRoutineList.filter,
             totals: pendingRoutineList.totals,
             routines: pendingRoutineList.routines,
@@ -2549,6 +2556,10 @@ function aiLabelEntities(chipDue: boolean): ReturnType<typeof aiLabelEntity>[] {
  *   text (Adaptive Cards can't be chunked), same attribution. The AI label is
  *   attached to the first message when due.
  */
+  /** Side-channel tables drawn natively under the answer text (spec §5.13). */
+  readonly dataTables?: readonly SideChannelTable[];
+  /** With `dataTables`: the whole text, tables rendered as markdown: what the long-answer path posts. */
+  readonly fullText?: string;
 async function sendAnswer(
   context: TurnContext,
   answer: SemanticAnswer,
@@ -2600,7 +2611,8 @@ async function sendAnswer(
   const answerForCard =
     resolvedText.length === 0 && hasAttachments ? 'Hier das angeforderte Diagramm:' : resolvedText;
 
-  if (answerForCard.length + contributionsLength(contributions) <= TEAMS_MAX_MESSAGE_CHARS) {
+  const dataLength = delivery.dataTables ? sideChannelLength(delivery.dataTables) : 0;
+  if (answerForCard.length + contributionsLength(contributions) + dataLength <= TEAMS_MAX_MESSAGE_CHARS) {
     const details = isSystemNotice ? undefined : buildAnswerDetails(answer);
     const card = buildAnswerCard({
       answer: answerForCard,
@@ -2631,10 +2643,11 @@ async function sendAnswer(
     return;
   }
 
+      ...(delivery.dataTables ? { dataTables: delivery.dataTables } : {}),
   const disclosure = delivery.plainTextDisclosure?.trim();
   const body = isSystemNotice
     ? systemNoticeAsText(resolvedText)
-    : [resolvedText, contributionsAsText(contributions, answer.speaker)]
+    : [delivery.fullText ?? resolvedText, contributionsAsText(contributions, answer.speaker)]
         .filter((part) => part.length > 0)
         .join('\n\n');
   const withDisclosure =
