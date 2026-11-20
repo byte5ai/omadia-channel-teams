@@ -261,7 +261,10 @@ export class TeamsConversationMessages {
 
   /** The message this one answers, when that says something: a quoted
    *  message, or `replyToId` unless it is only the root of the channel
-   *  thread the conversation IS (every message of a thread carries that). */
+   *  thread the conversation IS (every message of a thread carries that).
+   *  Also what the events report as `replyToMessageId`: the kernel matches a
+   *  typed reply to an open question by it, and a root that is not the
+   *  question would switch its one-open-question fallback off. */
   private replyReference(activity: InboundActivity): string | undefined {
     const quote = readQuoteInfo(activity);
     if (!quote.replyToMessageId) return undefined;
@@ -273,12 +276,13 @@ export class TeamsConversationMessages {
   /** A new human message (mentioned or not). */
   emitCreated(activity: InboundActivity): boolean {
     const quote = readQuoteInfo(activity);
+    const replyTo = this.replyReference(activity);
     return this.emit(activity, {
       kind: 'created',
       messageId: inboundMessageId(activity),
       revision: 0,
       text: plainMessageText(activity.text),
-      ...(quote.replyToMessageId ? { replyToMessageId: quote.replyToMessageId } : {}),
+      ...(replyTo ? { replyToMessageId: replyTo } : {}),
       ...(quote.quoted ? { quoted: true } : {}),
       ...(quote.forwarded ? { forwarded: true } : {}),
     });
@@ -288,12 +292,13 @@ export class TeamsConversationMessages {
    *  undelete, which restores the text under a new revision. */
   emitEdited(activity: InboundActivity): boolean {
     const quote = readQuoteInfo(activity);
+    const replyTo = this.replyReference(activity);
     return this.emit(activity, {
       kind: 'edited',
       messageId: activity.id,
       revision: this.nextRevision(activity),
       text: plainMessageText(activity.text),
-      ...(quote.replyToMessageId ? { replyToMessageId: quote.replyToMessageId } : {}),
+      ...(replyTo ? { replyToMessageId: replyTo } : {}),
       ...(quote.quoted ? { quoted: true } : {}),
       ...(quote.forwarded ? { forwarded: true } : {}),
     });

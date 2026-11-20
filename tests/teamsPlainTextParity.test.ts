@@ -16,9 +16,11 @@ import {
   ANNA,
   BERT,
   cardExecuteActivity,
+  channelThreadId,
   GROUP_CHAT_ID,
   messageActivity,
   MIRA,
+  quotedReplyActivity,
   SimulatedConnector,
   SimulatedKernel,
   simulatedBot,
@@ -30,16 +32,19 @@ import {
  * text, next to the Adaptive Card Teams renders where it can. Choosing an agent
  * in plain text is driven in `teamsManagementLayer.test.ts`.
  *
- * What the channel owes the plain-text path (the kernel's engine does the
- * rest: it asks `supports.card` before it posts a card, falls back to
- * `renderCardAsText` when the channel cannot render the card, and reads a
- * typed reply with `parseCardReply`):
- *   - declare honestly which cards it renders, and refuse (nothing posted)
- *     what it does not;
- *   - deliver the rendered text exactly as it was written;
- *   - hand a typed message of the chat to the engine as it was typed, so
- *     `parseCardReply` reads it and yields the same typed answer a card
- *     click would carry.
+ * Since kernel #2086 the KERNEL does the plain-text work: `sendToConversation`
+ * posts a card or poll the channel does not show natively as numbered text
+ * (`renderCardAsText`) and keeps its question open, and a matching typed
+ * reply becomes the typed `card_answer`. This plugin renders and parses no
+ * ballot itself; `parseCardReply` below stands in for the kernel's reading.
+ * What the channel owes that path:
+ *   - declare honestly which cards it renders, so the kernel sends the rest
+ *     as text (and refuse, with nothing posted, a card it was handed anyway);
+ *   - deliver the text exactly as written, and report the Teams activity id
+ *     as its `messageId`;
+ *   - hand a typed message of the chat to the engine as it was typed, with
+ *     `replyToMessageId` only for a message the person really answered and
+ *     `addressedToBot` for a mention (see the last block).
  */
 
 const OPTIONS = [
@@ -184,5 +189,86 @@ describe('criterion 30: a contribution to a facilitation is plain text in Teams'
     const text = await type(h, 'Ich schlage vor, den Termin auf Mittwoch zu legen – dann sind alle da.');
 
     assert.equal(text, 'Ich schlage vor, den Termin auf Mittwoch zu legen – dann sind alle da.');
+  });
+});
+
+/**
+ * The kernel turns a typed reply into the `card_answer` of an open question it
+ * posted as text (kernel #2086): by `replyToMessageId` when the event names the
+ * message it answers, else, for a message that addresses the bot, when exactly
+ * one question is open. What the channel owes that: the id it reports for a
+ * sent text is the Teams activity id, `replyToMessageId` names a message only
+ * when the person really answered one, and `addressedToBot` is set for a
+ * mention. A wrong `replyToMessageId` is worse than none: it switches the
+ * fallback off.
+ */
+describe('the kernel reads a typed reply to a text ballot (#2086)', () => {
+  const sendBallot = async (h: ReturnType<typeof harness>, conversationId = GROUP_CHAT_ID) => {
+    const outcome = await h.provider.sendToConversation(conversationId, { text: renderCardAsText(COUNT) }, { asChannelKey: MIRA.key });
+    assert.equal(outcome.outcome, 'delivered');
+    return outcome as { messageId?: string };
+  };
+
+  it('the id reported for a sent text is the id of the Teams activity', async () => {
+    const h = harness();
+
+    const outcome = await sendBallot(h);
+
+    assert.ok(outcome.messageId);
+    assert.equal(outcome.messageId, h.connector.sent.at(-1)?.id);
+  });
+
+  it('a quoted reply to the ballot names that message, and the person is the author', async () => {
+    const h = harness();
+    const { messageId } = await sendBallot(h);
+
+    await h.sim.deliver(
+      quotedReplyActivity({ bot: MIRA, from: BERT, text: '12', quotedMessageId: messageId ?? '', quotedAuthor: { id: MIRA.key, aadObjectId: '', name: MIRA.name }, quotedText: 'Wie viele Plätze brauchen wir?' }),
+    );
+
+    const event = h.kernel.events.at(-1);
+    assert.equal(event?.replyToMessageId, messageId);
+    assert.equal(event?.quoted, true);
+    assert.equal(event?.text, '12');
+    assert.equal(event?.author.id, BERT.aadObjectId);
+  });
+
+  it('a mention is addressedToBot; a plain message in the chat is not', async () => {
+    const h = harness();
+
+    await h.sim.deliver(messageActivity({ bot: MIRA, from: BERT, text: '12', mention: true }));
+    await h.sim.deliver(messageActivity({ bot: MIRA, from: BERT, text: '13' }));
+
+    assert.deepEqual(h.kernel.events.map((e) => e.addressedToBot === true), [true, false]);
+  });
+
+  it('a message in a channel thread carries no replyToMessageId just because every message of the thread has the root as replyToId', async () => {
+    const h = harness();
+    const rootId = '1731930000100';
+    const conversationId = channelThreadId(rootId);
+    h.kernel.subscribe(conversationId, MIRA);
+
+    await h.sim.deliver({
+      ...messageActivity({ bot: MIRA, from: BERT, text: '12', mention: true, conversationType: 'channel', conversationId }),
+      replyToId: rootId,
+    });
+
+    const event = h.kernel.events.at(-1);
+    assert.equal(event?.replyToMessageId, undefined, 'the root of the thread is not the question: the kernel would not try its one-open-question fallback');
+    assert.equal(event?.addressedToBot, true);
+  });
+
+  it('a real reply in a channel thread (a quote of another message) still names that message', async () => {
+    const h = harness();
+    const rootId = '1731930000100';
+    const conversationId = channelThreadId(rootId);
+    h.kernel.subscribe(conversationId, MIRA);
+
+    await h.sim.deliver({
+      ...quotedReplyActivity({ bot: MIRA, from: BERT, text: '12', conversationType: 'channel', conversationId, quotedMessageId: '1731930000200', quotedAuthor: { id: MIRA.key, aadObjectId: '', name: MIRA.name }, quotedText: 'Frage' }),
+      replyToId: rootId,
+    });
+
+    assert.equal(h.kernel.events.at(-1)?.replyToMessageId, '1731930000200');
   });
 });
