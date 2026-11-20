@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.41.0
+
+Agents as colleagues (byte5ai/omadia#2042, issue #42, spec 2042 §3 INV-3/4/5/7, §5.3,
+§5.4, §5.8, §5.14). Needs kernel #2045, #2047, #2086 and #2087 (channel SDK of the S6
+branch); the new fields are read defensively, so an older kernel renders what it always
+rendered, minus the removed chips.
+
+- **Minimal answer card.** A normal answer is the text, plus the discreet "✨ AI-generated"
+  chip where the kernel's disclosure setting asks for it. Gone from the card body: the
+  verifier badge, the "🗄 Originaldaten aus dem System" chip, the "🔎 Konsultiert" footer,
+  the "💬 Direkte Antwort von" chip, "🔽 Kürzer / 🔼 Mehr Details", "💡 Nächste Varianten"
+  (buttons stay only for options the agent itself proposed, without the header), the
+  "🔄 Fresh Check" button, and the three toggle buttons Tool-Trace, Memory-Auswirkung and
+  Privacy Guard.
+- **ONE collapsed "Details" element** (`answer_details`), drawn from the channel SDK's
+  single projection `buildAnswerDetails(answer)`: verification, system data, colleagues who
+  contributed, privacy counters, memory use, plus the specialists the run trace shows. No
+  projection (a plain answer) means no element and no button. The full privacy receipt,
+  the memory-impact section and the tool trace are no longer drawn: the projection holds
+  counts only, and the trace was never passed to the card by the live path.
+- **Contributions** (`SemanticAnswer.contributions`): "Jonas (konsultiert von Mira)" with
+  Jonas's text exactly as delivered, below Mira's own text; a failed contribution reads
+  "… – fehlgeschlagen" and shows its failure line. Never shortened, also not on an
+  oversized card; on the long-answer path the same attribution in plain text.
+- **System notices** (`speaker: system`): a card under the heading "System", no AI chip,
+  no AI label, no details, no buttons; never under an agent's name without that heading.
+  Teams shows the agent natively (its own bot), so there is no name line.
+- **Decoration registry.** Every card element (chip, details, proposed options, decision,
+  consent and poll cards) is attached through the channel SDK's `admitDecorations`; an
+  element the registry does not declare for `teams` is dropped, fail-closed.
+- **AI disclosure frequency (#2087).** The chip, and now also the activity-level "AI
+  generated" label of a turn answer, appear only when `aiDisclosure.markers.chip` is true
+  (absent `markers` = `channel_default` = every card). With the operator's `off` (no
+  `aiDisclosure`) neither is drawn; with `per_conversation` and nothing due, neither is.
+  Proactive posts, routine deliveries and polls are unchanged: they carry no disclosure
+  settings to follow.
+- **Pace** (spec 2042 §5.8): the agent call runs through the SDK's `runPacedTurn`. Typing
+  from the start, renewed every 5 s; ONE short acknowledgement after 8 s; no progress
+  chatter.
+- **Direct Line is gone**: the buttons, the `direct_line` submit handler, the `#<token>`
+  rewrite and the `delegatedAnswer`/`directLineSession` rendering. Teams addresses an
+  agent through its own bot; typed text, `/agent <name>` included, is handed to the kernel
+  as it is (in a group chat behind the existing "[Name]: " speaker attribution).
+- **The seven `teams_card_*` setup fields are removed** (`teams_card_tool_trace`,
+  `_memory_disclosure`, `_privacy_receipt`, `_fresh_check`, `_follow_ups`, `_direct_line`,
+  `_verbosity_steps`): the buttons they switched do not exist any more. A saved
+  configuration that still holds them is not read; the values are ignored. `teams_native_ai_label`
+  is unchanged. Manifest guide, README and docs updated.
+- **A click on a button of a card posted by an earlier version** (fresh check, size steps)
+  answers with one line ("Diese Schaltfläche gibt es nicht mehr …") instead of "Ich habe
+  keinen Text …", and starts no turn.
+- Not verified in a Teams client: how the details element, the contribution block and
+  the system heading look. Simulated transport only.
+
 ## 0.40.2
 
 - **A question card whose close never arrived closes itself** (rollout pass 6,
