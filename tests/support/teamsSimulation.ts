@@ -337,6 +337,17 @@ export class SimulatedKernel {
   /** `false` models a kernel before channel-sdk 0.3.5: it offers
    *  `isAllMessagesSubscribed` and no `conversationDelivery`. */
   offersDeliveryModes = true;
+  /**
+   * `reportConversationMessage` (#2086): absent on a kernel before 28da9b54a
+   * (`undefined`); otherwise what the kernel answers about a reported message:
+   * consumed as the typed answer to an open question, not consumed, never
+   * answering in time, or failing.
+   */
+  reportMode: 'consume' | 'pass' | 'hang' | 'throw' | undefined = undefined;
+  /** How long the bot waits for the verdict in tests (the real one is 1.5 s). */
+  reportTimeoutMs = 40;
+  /** Every event handed to `reportConversationMessage`. */
+  readonly reported: ConversationMessageEvent[] = [];
 
   /** `mode`: what the kernel's `conversationDelivery` answers for this bot
    *  in this conversation (#2089). `addressed` is a process in follow-up. */
@@ -498,7 +509,18 @@ export function simulatedBot(
       emit: (event) => {
         kernel.events.push(event);
       },
-    }),
+      ...(kernel.reportMode
+        ? {
+            report: async (event: ConversationMessageEvent) => {
+              kernel.reported.push(event);
+              kernel.events.push(event);
+              if (kernel.reportMode === 'throw') throw new Error('kernel unavailable');
+              if (kernel.reportMode === 'hang') return new Promise<{ answeredCard: boolean }>(() => {});
+              return { answeredCard: kernel.reportMode === 'consume' };
+            },
+          }
+        : {}),
+    }, kernel.reportTimeoutMs),
   );
   if (group?.meetingSessions) bot.attachMeetingSessions(group.meetingSessions);
   const deliver = async (activity: Partial<Activity>): Promise<void> => {

@@ -698,6 +698,9 @@ export type FacilitatorDeliveryOutcome =
 /** The CoreApi members this plugin feature-detects for #2043. */
 export interface NativeFacilitatorCoreApi {
   emitConversationMessage?(event: ConversationMessageEvent): void;
+  /** #2086 — `emitConversationMessage` that says whether the kernel consumed the
+   *  message as the typed answer to an open question. Absent on an older kernel. */
+  reportConversationMessage?(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }>;
   /** Synchronous and kernel-cached; `false` for anything not positively
    *  subscribed. Absent means the mention gate always applies. */
   isAllMessagesSubscribed?(channelType: string, conversationId: string, channelKey: string): boolean;

@@ -33,7 +33,7 @@ import { registerTeamsSendProviders, stampChannel } from './teamsKernelRegistrat
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
 import type { TurnAgentDecision } from './agentForTurn.js';
-import type { NativeFacilitatorCoreApi } from './kernel-types.js';
+import type { ConversationMessageEvent, NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
 /**
@@ -718,6 +718,7 @@ export async function activate(
   // mention gate for everybody.
   const facilitatorCore: NativeFacilitatorCoreApi = core;
   const emitConversationMessage = facilitatorCore.emitConversationMessage?.bind(facilitatorCore);
+  const reportConversationMessage = facilitatorCore.reportConversationMessage?.bind(facilitatorCore);
   const isAllMessagesSubscribed = facilitatorCore.isAllMessagesSubscribed?.bind(facilitatorCore);
   // #2089 — all / addressed / none per bot and conversation (channel-sdk
   // 0.3.5). Without it the adapter knows `all` and `none` only, and a
@@ -736,6 +737,11 @@ export async function activate(
           : {}),
         // The catalog id is authoritative here — the bot cannot know it.
         emit: (event) => emitConversationMessage(stampChannel(event, ctx.agentId)),
+        // #2086 — a message this adapter answers with a turn of its own: the
+        // kernel says whether it consumed it as an answer to an open question.
+        ...(reportConversationMessage
+          ? { report: (event: ConversationMessageEvent) => reportConversationMessage(stampChannel(event, ctx.agentId)) }
+          : {}),
       }),
     );
   }

@@ -1247,16 +1247,29 @@ export class TeamsBot extends TeamsActivityHandler {
     // turn's one answer below, or the engine's own post.
     if (delivery === 'addressed') {
       const reason = isCardAction ? 'card' : this.conversationMessages?.addressedReason(context.activity);
-      const isRecorded =
-        reason === undefined
-          ? false
-          : isCardAction
-            ? this.conversationMessages?.emitCardAnswer(context.activity) === true
-            : this.conversationMessages?.emitCreated(context.activity) === true;
+      let isRecorded = false;
+      let isAnsweredCard = false;
+      if (reason !== undefined && isCardAction) {
+        isRecorded = this.conversationMessages?.emitCardAnswer(context.activity) === true;
+      } else if (reason !== undefined) {
+        // The turn below also answers this message, so the kernel is asked
+        // (briefly) whether it took it as the typed answer to an open question.
+        const reported = await this.conversationMessages?.reportCreated(context.activity);
+        isRecorded = reported?.recorded === true;
+        isAnsweredCard = reported?.answeredCard === true;
+      }
       if (isRecorded) {
         console.error(
           `[teams] recorded for the engine (addressed: ${reason ?? '-'}) conv=${context.activity.conversation?.id ?? '-'} type=${conversationType}`,
         );
+      }
+      // The answer to an open question is the kernel's: no turn, no pace
+      // acknowledgement, no reply of an agent to "2".
+      if (isAnsweredCard) {
+        console.error(
+          `[teams] answered an open question, no turn conv=${context.activity.conversation?.id ?? '-'} type=${conversationType}`,
+        );
+        return;
       }
     }
     // A poll click is an answer for the engine, never a question for the

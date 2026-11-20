@@ -61,12 +61,36 @@ export interface TeamsConversationMessageSink {
    *  `all` where `isAllMessagesSubscribed` says yes, and `none` otherwise. */
   conversationDelivery?(conversationId: string, channelKey: string): TeamsDeliveryMode;
   emit(event: ConversationMessageEvent): void;
+  /**
+   * #2086 (kernel 28da9b54a) — `emit` for a message the adapter would answer
+   * with a turn of its own: the kernel says whether it consumed the message as
+   * the typed answer to an open question. Absent on an older kernel: the
+   * message is emitted and the turn runs as before.
+   */
+  report?(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }>;
+}
+
+/** How long a turn waits for the kernel's verdict on a message. A slow kernel never delays an answer. */
+export const REPORT_TIMEOUT_MS = 1_500;
+
+/** What `reportCreated` found out about one message. */
+export interface TeamsReportOutcome {
+  /** The kernel was handed the message. */
+  readonly recorded: boolean;
+  /** The kernel consumed it as the typed answer to an open question: no turn. */
+  readonly answeredCard: boolean;
 }
 
 /** Why a message counts as addressed to the bot, for the log line. */
 export type TeamsAddressedReason = 'mention' | 'direct' | 'reply' | 'card' | 'reaction';
 
 type InboundActivity = Partial<Activity>;
+
+/** What one emitted event is made of beyond what every event carries. */
+type EventPart = Pick<ConversationMessageEvent, 'kind' | 'revision'> &
+  Partial<Pick<ConversationMessageEvent, 'text' | 'replyToMessageId' | 'quoted' | 'forwarded' | 'reaction' | 'cardAnswer'>> & {
+    messageId: string | undefined;
+  };
 
 /** The normalized `28:<appId>` key of the bot an activity was addressed to. */
 export function receivingBotKey(activity: InboundActivity): string | undefined {
@@ -221,7 +245,10 @@ export class TeamsConversationMessages {
    *  this in-memory count starts again after a restart. */
   private readonly revisions = new Map<string, number>();
 
-  constructor(private readonly sink: TeamsConversationMessageSink) {}
+  constructor(
+    private readonly sink: TeamsConversationMessageSink,
+    private readonly reportTimeoutMs: number = REPORT_TIMEOUT_MS,
+  ) {}
 
   /** What the kernel is handed of this conversation for the bot the
    *  activity was sent to. `none` for anything not positively stated. */
@@ -286,6 +313,49 @@ export class TeamsConversationMessages {
       ...(quote.quoted ? { quoted: true } : {}),
       ...(quote.forwarded ? { forwarded: true } : {}),
     });
+  }
+
+  /**
+   * A new human message that this adapter ALSO answers with a turn of its own
+   * (a mention, the bot's own 1:1): handed to the kernel like
+   * {@link emitCreated}, but the kernel's verdict is awaited, briefly, so a
+   * reply that answered an open question ("2") does not start a turn as well.
+   * Unknown is "not answered": a missing `report`, a timeout and a failure all
+   * let the turn run, and nothing here throws.
+   */
+  async reportCreated(activity: InboundActivity): Promise<TeamsReportOutcome> {
+    const report = this.sink.report;
+    if (!report) return { recorded: this.emitCreated(activity), answeredCard: false };
+    const quote = readQuoteInfo(activity);
+    const replyTo = this.replyReference(activity);
+    const event = this.buildEvent(activity, {
+      kind: 'created',
+      messageId: inboundMessageId(activity),
+      revision: 0,
+      text: plainMessageText(activity.text),
+      ...(replyTo ? { replyToMessageId: replyTo } : {}),
+      ...(quote.quoted ? { quoted: true } : {}),
+      ...(quote.forwarded ? { forwarded: true } : {}),
+    });
+    if (!event) return { recorded: false, answeredCard: false };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const verdict = await Promise.race([
+        report.call(this.sink, event),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), this.reportTimeoutMs);
+        }),
+      ]);
+      if (verdict === undefined) {
+        console.error(`[teams] kernel verdict on a message not in ${String(this.reportTimeoutMs)} ms — the turn runs`);
+      }
+      return { recorded: true, answeredCard: verdict?.answeredCard === true };
+    } catch (err) {
+      console.error('[teams] reporting a message to the kernel failed — the turn runs:', err instanceof Error ? err.message : err);
+      return { recorded: true, answeredCard: false };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   /** A platform edit (`messageUpdate`, `eventType: editMessage`); also an
@@ -392,16 +462,23 @@ export class TeamsConversationMessages {
     return next;
   }
 
-  private emit(
-    activity: InboundActivity,
-    part: Pick<ConversationMessageEvent, 'kind' | 'revision'> &
-      Partial<Pick<ConversationMessageEvent, 'text' | 'replyToMessageId' | 'quoted' | 'forwarded' | 'reaction' | 'cardAnswer'>> & {
-        messageId: string | undefined;
-      },
-  ): boolean {
+  private emit(activity: InboundActivity, part: EventPart): boolean {
+    try {
+      const event = this.buildEvent(activity, part);
+      if (!event) return false;
+      this.sink.emit(event);
+      return true;
+    } catch (err) {
+      console.error('[teams] message event emit failed:', err instanceof Error ? err.message : err);
+      return false;
+    }
+  }
+
+  /** The event for this activity, or `undefined` when nothing is handed over (no delivery, not addressed, no author). */
+  private buildEvent(activity: InboundActivity, part: EventPart): ConversationMessageEvent | undefined {
     try {
       const mode = this.delivery(activity);
-      if (mode === 'none') return false;
+      if (mode === 'none') return undefined;
       const isMessage = part.kind === 'created' || part.kind === 'edited';
       const reason: TeamsAddressedReason | undefined = isMessage
         ? this.addressedReason(activity)
@@ -411,16 +488,16 @@ export class TeamsConversationMessages {
             ? 'reaction'
             : undefined;
       // `addressed`: a deletion names no addressee and is not handed over.
-      if (mode === 'addressed' && reason === undefined) return false;
+      if (mode === 'addressed' && reason === undefined) return undefined;
       const addressedToBot = isMessage && (reason === 'mention' || reason === 'direct');
       const conversationId = activity.conversation?.id;
       const botKey = receivingBotKey(activity);
       const author = platformAuthor(activity);
       const { messageId, ...rest } = part;
-      if (!conversationId || !botKey || !author || !messageId) return false;
+      if (!conversationId || !botKey || !author || !messageId) return undefined;
       const conversationType = toSdkConversationType(activity.conversation?.conversationType);
       const tenantId = tenantOf(activity);
-      this.sink.emit({
+      return {
         channelId: CHANNEL_ID_PLACEHOLDER,
         channelType: CHANNEL_TYPE,
         conversationId,
@@ -433,11 +510,10 @@ export class TeamsConversationMessages {
         ...(addressedToBot ? { addressedToBot: true } : {}),
         occurredAt: occurredAt(activity),
         rawEvent: activity,
-      });
-      return true;
+      };
     } catch (err) {
       console.error('[teams] message event emit failed:', err instanceof Error ? err.message : err);
-      return false;
+      return undefined;
     }
   }
 }
