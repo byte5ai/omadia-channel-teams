@@ -42,11 +42,14 @@ import { buildClosedCardActivity } from './teamsQuestionCardSweep.js';
 import { questionCardProblem, TEAMS_CARD_CAPABILITY } from './teamsQuestionCardSpec.js';
 import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import type { TeamsRosterProvider, TeamsRosterRead } from './teamsRoster.js';
+import { putTeamsReaction, TEAMS_REACTION_TYPES, TeamsReactionError, type TeamsReactionFetch } from './teamsReactions.js';
 import type {
   ChatParticipant,
   QuestionCard,
   CardUpdate,
   CardUpdateOutcome,
+  ConversationReaction,
+  ConversationReactionOutcome,
   RosterRequestOptions,
   TeamsConversationRoster,
   FacilitatorDeliveryOutcome,
@@ -574,6 +577,9 @@ function conversationCapabilities(hasRoster: boolean, hasCards: boolean, declare
     aiLabel: declaresAiLabel && PROACTIVE_POSTS_CARRY_AI_LABEL,
     // Question cards: the kinds really rendered, and `updateCard`.
     ...(hasCards ? { card: TEAMS_CARD_CAPABILITY } : {}),
+    // `react`: the bot's own thumbs-up through the Bot Connector (spec 2043
+    // §5.14), as exactly the requested bot.
+    reactions: true,
   };
 }
 
@@ -781,6 +787,8 @@ export function createTeamsConversationSendAdapter(deps: {
    *  `supports.aiLabel`. Default: not declared. */
   nativeAiLabel?: boolean;
   retry?: RetryOptions;
+  /** The HTTP client of `react`; global `fetch` by default. */
+  reactionFetch?: TeamsReactionFetch;
   // The declared return type is a SUPERSET of the SDK interface, for the same
   // reason the send method takes a rest tuple: this plugin ships independently
   // and is compiled against whatever `@omadia/channel-sdk` is installed, which
@@ -796,6 +804,12 @@ export function createTeamsConversationSendAdapter(deps: {
     update: CardUpdate,
     opts: { asChannelKey: string },
   ): Promise<CardUpdateOutcome>;
+  react(
+    conversationId: string,
+    messageId: string,
+    reaction: ConversationReaction,
+    opts: { asChannelKey: string },
+  ): Promise<ConversationReactionOutcome>;
 } {
   return {
     channelType: 'teams',
@@ -1090,6 +1104,62 @@ export function createTeamsConversationSendAdapter(deps: {
         });
       }
       return { outcome: 'updated' };
+    },
+
+    /**
+     * spec 2043 §5.14 — the bot's own reaction on a message of the
+     * conversation: the facilitator acknowledges a contribution without an
+     * echo. `messageId` is the activity id this plugin reported in the
+     * message event (`inboundMessageId`), `conversationId` the conversation
+     * id of that event. Sent as exactly the bot `opts.asChannelKey` names,
+     * through that bot's reference and credentials, or not at all.
+     */
+    async react(conversationId, messageId, reaction, opts): Promise<ConversationReactionOutcome> {
+      const botAppId = parseTeamsBotKey(opts?.asChannelKey ?? '');
+      if (!botAppId) {
+        return {
+          outcome: 'unreachable',
+          code: 'not_permitted',
+          message: `'${String(opts?.asChannelKey)}' is not a Teams bot identity key (expected '${TEAMS_BOT_KEY_PREFIX}<appId>')`,
+        };
+      }
+      const reactionType = Object.hasOwn(TEAMS_REACTION_TYPES, reaction) ? TEAMS_REACTION_TYPES[reaction] : undefined;
+      if (!reactionType) {
+        return { outcome: 'unreachable', code: 'channel_error', message: `the reaction '${String(reaction)}' has no Teams form` };
+      }
+      if (typeof messageId !== 'string' || messageId.length === 0) {
+        return { outcome: 'unreachable', code: 'channel_error', message: 'the id of the message to react to is missing' };
+      }
+      if (isBotKeyPrefixedConversationId(conversationId)) {
+        reportBotKeyPrefixedConversationId(conversationId, 'reaction');
+        return { outcome: 'unreachable', code: 'no_binding', message: botKeyPrefixedConversationMessage(conversationId) };
+      }
+      const cached = await deps.refs.getOrLoad(conversationId, botAppId).catch(() => undefined);
+      const ownerAppId = cached?.ref.bot?.id ? parseTeamsBotKey(cached.ref.bot.id) : undefined;
+      if (!cached || (ownerAppId && ownerAppId !== botAppId)) {
+        return {
+          outcome: 'unreachable',
+          code: 'no_binding',
+          message: `bot '${botAppId}' has no Teams conversation reference for '${conversationId}'`,
+        };
+      }
+      const fetchImpl = deps.reactionFetch ?? (globalThis.fetch as TeamsReactionFetch);
+      try {
+        await deps.sendProactive(
+          cached.ref,
+          async (turnContext) => {
+            await retryTransient(
+              () => putTeamsReaction(turnContext, { botAppId, conversationId, messageId, reactionType }, fetchImpl),
+              deps.retry,
+            );
+          },
+          { botAppId },
+        );
+        return { outcome: 'reacted' };
+      } catch (err) {
+        const code = err instanceof TeamsReactionError ? err.code : 'channel_error';
+        return { outcome: 'unreachable', code, message: err instanceof Error ? err.message : String(err) };
+      }
     },
 
     // Best-effort by contract, and silent by design: an activity indicator that

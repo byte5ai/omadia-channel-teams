@@ -833,6 +833,9 @@ export interface SentActivity {
  * opened 1:1, with the bot it went out as. `failDirect` makes the next 1:1
  * to a user fail the way Teams does.
  */
+/** `adapter.ConnectorClientKey` of the simulated proactive turns. */
+export const CONNECTOR_CLIENT_KEY = Symbol('ConnectorClient');
+
 export class SimulatedConnector {
   readonly sent: SentActivity[] = [];
   /** Every `PUT …/activities/{id}`: a posted message replaced. */
@@ -870,8 +873,22 @@ export class SimulatedConnector {
   }
 
   private context(asBot: string, conversationId: string): TurnContext {
+    // As CloudAdapter: the Bot Connector client of the turn's own bot, whose
+    // credentials sign a raw request (a reaction) with that bot's token.
+    const appId = asBot.startsWith('28:') ? asBot.slice(3) : asBot;
+    const connectorClient = {
+      credentials: {
+        appId,
+        signRequest: async (webResource: { headers: { set(name: string, value: string): void } }) => {
+          webResource.headers.set('Authorization', `Bearer token-of-${appId}`);
+          return webResource;
+        },
+      },
+    };
     return {
       activity: { conversation: { id: conversationId }, recipient: { id: asBot }, serviceUrl: SERVICE_URL },
+      adapter: { ConnectorClientKey: CONNECTOR_CLIENT_KEY },
+      turnState: new Map<unknown, unknown>([[CONNECTOR_CLIENT_KEY, connectorClient]]),
       sendActivity: async (activity: Record<string, unknown>) => {
         const blocked = this.sendFailures.get(conversationId);
         if (blocked) throw blocked;

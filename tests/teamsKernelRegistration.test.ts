@@ -72,7 +72,7 @@ describe('declared send capabilities on the registered providers', () => {
     assert.ok(conversation);
     assert.equal(conversation.channelId, CATALOG_ID);
     assert.equal(conversation.provider['channelType'], 'teams');
-    assert.deepEqual(conversation.provider['supports'], { asChannelKey: true, mentions: true, poll: true, aiLabel: false });
+    assert.deepEqual(conversation.provider['supports'], { asChannelKey: true, mentions: true, poll: true, aiLabel: false, reactions: true });
   });
 
   it('wired as the plugin wires it, the conversation provider declares question cards and can update them', () => {
@@ -92,8 +92,10 @@ describe('declared send capabilities on the registered providers', () => {
         maxQuestions: 5,
         update: true,
       },
+      reactions: true,
     });
     assert.equal(typeof conversation.provider['updateCard'], 'function');
+    assert.equal(typeof conversation.provider['react'], 'function');
   });
 
   it('the targeted send provider declares own identity', () => {
@@ -140,6 +142,7 @@ describe('declared send capabilities on the registered providers', () => {
       mentions: false,
       poll: true,
       aiLabel: false,
+      reactions: true,
     });
   });
 });

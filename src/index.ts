@@ -281,6 +281,9 @@ export {
   threadRootMessageId,
 } from './teamsConversationIds.js';
 
+// spec 2043 §5.14 — the bot's own reaction on a message (Bot Connector).
+export { TEAMS_REACTION_TYPES, teamsReactionUrl, type TeamsReactionFetch } from './teamsReactions.js';
+
 // AI marking of deliveries outside a chat turn (routines, approvals).
 export { buildRoutineDeliveryActivity, createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
 export { PROACTIVE_POSTS_CARRY_AI_LABEL } from './teamsOutboundMessage.js';

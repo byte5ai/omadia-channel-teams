@@ -94,6 +94,15 @@ Microsoft 365 integration), which needs
 `…ForTeam.All` counterparts). The per-agent bot registrations need no Graph
 permission.
 
+A facilitator acknowledges a contribution with a thumbs-up instead of an echo.
+The reaction is set by the facilitator's own bot through the Bot Connector
+([agent reactions](https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/agent-reactions))
+and needs no additional permission, RSC grant or outbound host: the bot's own
+token and the declared Bot Connector hosts (`smba.trafficmanager.net`,
+`*.botframework.com`) suffice. Teams allows two reaction changes per second per
+bot; a rate-limited reaction is retried and otherwise reported, never posted as
+text.
+
 Private reminders are sent by the facilitator's own bot. A person who never
 installed that bot's app, or blocked it, gets none; the group then gets a
 neutral reminder. See [`docs/teams-meeting-apis.md`](./docs/teams-meeting-apis.md)
