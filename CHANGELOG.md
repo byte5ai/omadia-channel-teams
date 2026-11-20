@@ -3,9 +3,43 @@
 ## 0.41.0
 
 Agents as colleagues (byte5ai/omadia#2042, issue #42, spec 2042 §3 INV-3/4/5/7, §5.3,
-§5.4, §5.8, §5.14). Needs kernel #2045, #2047, #2086 and #2087 (channel SDK of the S6
-branch); the new fields are read defensively, so an older kernel renders what it always
-rendered, minus the removed chips.
+§5.4, §5.8, §5.14). Needs kernel #2045, #2047, #2055, #2086 and #2087 (channel SDK of the
+S6 branch): `compat.core` is the placeholder `>=1.74.0 <2.0`, the release version is set
+by the parent session. The routing contract below has no fallback for an older kernel.
+
+- **Management-layer routing (#2055).** `channelResolver.resolve()` answers `bound` or
+  `reject`; the `'fallback'` decision is gone. `chatAgent` is set on `reject` too: it
+  carries out `/agent` and answers a refusal with the `system` notice, which Teams posts as
+  a card under the heading "System" (never as an agent's answer, no AI chip, no label).
+  Both probed keys (the bot's `28:<appId>` and the conversation) are asked; an exclusive
+  hit of the bot, also an exclusive `reject`, outranks everything (`pickTurnDecision`),
+  then the conversation's binding, then the bot's, then the refusal. A sender no agent
+  serves stores and starts nothing: no attachment download, topic detection, routine
+  capture, history entry, typing indicator or workflow event. Fail-closed with the fixed
+  text "Diesem Chat ist kein Agent zugeordnet …" when the platform gave neither an agent
+  nor a notice, or the resolver threw.
+- **`/agent <name>`, `/agent`, `/agents` reach the kernel as the whole message.** The
+  management layer recognises a command only when it is the whole message, so the group
+  chat's `[Name]: ` attribution (#330) no longer stands in front of it, and topic
+  detection no longer reads it as a break. The confirmation or list is a `system` card and
+  is not written to the conversation history.
+- **One principal form.** The sender goes to `resolve()` as `channelUserPrincipal`:
+  `user:<email>` once Graph (roster as fallback) verified the address, else
+  `user:teams-aad:<id>`, lowercase. `TurnOrigin.principal` stays the Entra object id the
+  facilitation engine matches participants by. The notice language is the activity's
+  locale (`de-DE` → `de`). The lookup runs only for a message that passes the mention gate.
+- **Speaker before the answer.** `resolve().speaker` names the agent that will answer. The
+  pace acknowledgement is the SDK template under that speaker: on the agent's own bot
+  (exclusive) the bot is the speaker; where one bot serves several agents (a binding, a
+  selection) the SDK's `speakerLine` puts "Mira:" in front of the acknowledgement and over
+  the first answer after the speaker changed (INV-4), never in a one-agent conversation. An
+  answer the kernel left without a speaker is stamped with the announced one.
+- **Removed:** the `'fallback'` decision, `pickChatAgentForTurn` (now `pickTurnDecision`),
+  the `TEAMS_NATIVE_IDENTITY` constant (the decision is per turn now).
+- **Plain-text parity (criterion 30)** is covered by tests: a card Teams does not render is
+  refused with nothing posted (so the engine posts `renderCardAsText`), the rendered text is
+  delivered exactly as written, and a typed reply reaches the engine as typed and parses
+  with `parseCardReply` to the same typed answer a card click carries.
 
 - **Minimal answer card.** A normal answer is the text, plus the discreet "✨ AI-generated"
   chip where the kernel's disclosure setting asks for it. Gone from the card body: the
@@ -26,7 +60,7 @@ rendered, minus the removed chips.
   oversized card; on the long-answer path the same attribution in plain text.
 - **System notices** (`speaker: system`): a card under the heading "System", no AI chip,
   no AI label, no details, no buttons; never under an agent's name without that heading.
-  Teams shows the agent natively (its own bot), so there is no name line.
+  Teams shows the agent natively (its own bot), so there is no name line there.
 - **Decoration registry.** Every card element (chip, details, proposed options, decision,
   consent and poll cards) is attached through the channel SDK's `admitDecorations`; an
   element the registry does not declare for `teams` is dropped, fail-closed.
@@ -42,7 +76,7 @@ rendered, minus the removed chips.
 - **Direct Line is gone**: the buttons, the `direct_line` submit handler, the `#<token>`
   rewrite and the `delegatedAnswer`/`directLineSession` rendering. Teams addresses an
   agent through its own bot; typed text, `/agent <name>` included, is handed to the kernel
-  as it is (in a group chat behind the existing "[Name]: " speaker attribution).
+  as it is (a command as the whole message, see above).
 - **The seven `teams_card_*` setup fields are removed** (`teams_card_tool_trace`,
   `_memory_disclosure`, `_privacy_receipt`, `_fresh_check`, `_follow_ups`, `_direct_line`,
   `_verbosity_steps`): the buttons they switched do not exist any more. A saved

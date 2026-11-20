@@ -27,7 +27,10 @@ roster + @mention resolution, HMAC-signed attachment persistence, and the
 | Rendering | Adaptive Cards: minimal answer cards (text, discreet AI chip when the kernel asks for it, colleagues' contributions attributed to them, one collapsed "Details" element), `system` notices under their own heading, approve/reject cards, decision and choice cards. Every decoration is declared in the channel SDK's decoration registry; buttons exist only for options the agent proposes, decisions, sign-in and polls |
 | Roster | Mention + roster resolution (`teamsRoster.ts`, `teamsMentions.ts`) |
 | Attachments | HMAC-signed proxy at `/attachments/<key>`, persisted via `teamsAttachmentStore.ts` |
-| Delegation | Every user turn is handed to the kernel's agent runtime (`chatAgent@^1` service) |
+| Delegation | Every user turn is handed to the kernel's agent runtime: per turn the `channelResolver` decides `bound` (an agent answers) or `reject` (the management layer answers with a `system` notice; there is no fallback agent). The channel only passes text through |
+| Addressing | An agent is addressed through its own bot. `/agent <name>` (select), `/agent` (clear the selection) and `/agents` (list) are plain text the kernel's management layer carries out and answers as `system`; the channel hands over the whole message, in a group chat too (no `[Name]:` attribution in front of a command) |
+| Sender | The routing principal is `user:<email>` once Graph verified the address, else `user:teams-aad:<id>` |
+| Pace | Typing from the start; ONE acknowledgement after 8 s under the answering agent's speaker (its own bot, or with a name line where one bot serves several agents) |
 | Events | Emits `teams.message.posted` / `teams.mention` on the deny-by-default event catalog |
 | Shared credentials | Reuses the Azure AD app registration owned by [`@omadia/integration-microsoft365`](https://github.com/byte5ai/omadia-m365-connector) — install that first |
 
