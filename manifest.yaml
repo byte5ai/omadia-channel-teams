@@ -17,13 +17,13 @@ identity:
     - "communication"
 
 compat:
-  # Placeholder floor: the plugin-api of the S6 kernel (1.76.0 on landing, the
+  # Placeholder floor: the plugin-api of the S6 kernel (1.75.0 on landing, the
   # parent session confirms the number before publishing). It carries the
   # management layer's routing contract (spec 2042 §5.3, #2055) and the channel
   # SDK parts this plugin imports as values (pace, speaker line, decoration
   # registry, answer details, resolveChannelRoute). A host below it cannot load
   # the plugin: the named imports fail at link time.
-  core: ">=1.76.0 <2.0"
+  core: ">=1.75.0 <2.0"
   node: ">=20"
 
 lifecycle:

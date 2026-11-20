@@ -4,7 +4,7 @@
 
 Agents as colleagues (byte5ai/omadia#2042, issue #42, spec 2042 §3 INV-3/4/5/7, §5.3,
 §5.4, §5.8, §5.14). Needs kernel #2045, #2047, #2055, #2086 and #2087 (channel SDK of the
-S6 branch): `compat.core` is the placeholder `>=1.76.0 <2.0` (the plugin-api of the S6 kernel; the parent session confirms the number before publishing), the release version is set
+S6 branch): `compat.core` is the placeholder `>=1.75.0 <2.0` (the plugin-api of the S6 kernel; the parent session confirms the number before publishing), the release version is set
 by the parent session. The routing contract below has no fallback for an older kernel.
 
 - **Management-layer routing (#2055).** `channelResolver.resolve()` answers `bound` or
