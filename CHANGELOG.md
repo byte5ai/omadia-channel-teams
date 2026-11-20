@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.42.0
+
+- **Requires plugin-api 1.82.0** (`compat.core: ">=1.82.0 <2.0"`): the reaction contract
+  this release implements.
 
 - **Bot reactions (spec 2043 §5.14, omadia #2061, ADR 0027).** The conversation send
   provider implements `react` and declares `supports.reactions: true`
