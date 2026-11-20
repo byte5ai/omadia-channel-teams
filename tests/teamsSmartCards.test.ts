@@ -29,8 +29,8 @@ function body(card: ReturnType<typeof buildAnswerCard>): unknown[] {
 
 /**
  * Follow-up actions now live inside a body-level ActionSet (not the card's
- * `actions[]`), so they stay visually separated from Tool-Trace /
- * Fresh-Check. This helper flattens them back out for assertions.
+ * `actions[]`), so they stay visually separated from the Details button.
+ * This helper flattens them back out for assertions.
  */
 function followUpActions(card: ReturnType<typeof buildAnswerCard>): Action[] {
   const result: Action[] = [];
@@ -232,16 +232,15 @@ describe('buildAnswerCard — follow-up options', () => {
   it('follow-ups sit in body ActionSet, NOT in card actions[]', () => {
     const card = buildAnswerCard({
       answer: 'Antwort',
-      originalUserMessage: 'Originalfrage',
-      showFreshCheck: true,
+      details: { consulted: [], specialistsInvoked: [], systemData: true, memoryUsed: false },
       followUpOptions: [
         { label: 'A', prompt: 'Frage A' },
         { label: 'B', prompt: 'Frage B' },
       ],
     });
-    // Fresh-Check lives in card actions[]
+    // The Details button lives in card actions[]
     const cardActionTitles = actions(card).map((a) => a.title ?? '');
-    assert.ok(cardActionTitles.some((t) => t.includes('Fresh Check')));
+    assert.deepEqual(cardActionTitles, ['Details']);
     // Follow-Ups must NOT leak into card actions[]
     const followUpsInCardActions = actions(card).filter(
       (a) => a.data?.type === FOLLOW_UP_VALUE_TYPE,
@@ -253,7 +252,7 @@ describe('buildAnswerCard — follow-up options', () => {
     assert.equal(followUps[0]!.title, 'A');
   });
 
-  it('renders a Nächste Varianten header before the ActionSet', () => {
+  it('renders no "Nächste Varianten" header: the buttons stand alone under the answer', () => {
     const card = buildAnswerCard({
       answer: 'Antwort',
       followUpOptions: [
@@ -261,13 +260,7 @@ describe('buildAnswerCard — follow-up options', () => {
         { label: 'B', prompt: 'Frage B' },
       ],
     });
-    const texts = body(card)
-      .filter((i): i is { type: string; text?: string } => {
-        if (typeof i !== 'object' || i === null) return false;
-        return (i as { type?: unknown }).type === 'TextBlock';
-      })
-      .map((i) => i.text ?? '');
-    assert.ok(texts.some((t) => t.includes('Nächste Varianten')));
+    assert.ok(!JSON.stringify(card.content).includes('Nächste Varianten'));
   });
 
   it('no ActionSet when no follow-ups', () => {

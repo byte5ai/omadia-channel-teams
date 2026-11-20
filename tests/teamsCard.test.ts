@@ -1,75 +1,83 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import {
-  aiLabelEntity,
-  buildAnswerCard,
-  buildDirectLineOnlyCard,
-  parseVerbosityStepValue,
-  stripFoldedAiDisclosure,
-  SYSTEM_DATA_CHIP,
-  verbosityNeighbour,
-} from '@omadia/channel-teams';
-import type { RunTracePayload } from '@omadia/orchestrator';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-const sampleTrace: RunTracePayload = {
-  scope: 'teams-test',
-  userId: 'u1',
-  startedAt: '2026-04-19T10:00:00.000Z',
-  finishedAt: '2026-04-19T10:00:08.400Z',
-  durationMs: 8400,
-  status: 'success',
-  iterations: 2,
-  orchestratorToolCalls: [
-    {
-      callId: 'orch-1',
-      toolName: 'query_knowledge_graph',
-      durationMs: 30,
-      isError: false,
-      agentContext: 'orchestrator',
-    },
-  ],
-  agentInvocations: [
-    {
-      index: 0,
-      agentName: 'query_odoo_hr',
-      durationMs: 4200,
-      subIterations: 3,
-      status: 'success',
-      toolCalls: [
-        {
-          callId: 's-1',
-          toolName: 'odoo_execute',
-          durationMs: 420,
-          isError: false,
-          agentContext: 'query_odoo_hr',
-        },
-        {
-          callId: 's-2',
-          toolName: 'odoo_execute',
-          durationMs: 180,
-          isError: false,
-          agentContext: 'query_odoo_hr',
-        },
-      ],
-    },
-    {
-      index: 1,
-      agentName: 'query_confluence_playbook',
-      durationMs: 2100,
-      subIterations: 1,
-      status: 'error',
-      toolCalls: [
-        {
-          callId: 's-3',
-          toolName: 'confluence_search',
-          durationMs: 1800,
-          isError: true,
-          agentContext: 'query_confluence_playbook',
-        },
-      ],
-    },
-  ],
+import {
+  aiChipDue,
+  aiLabelEntity,
+  AI_MARKER_CHIP,
+  ANSWER_DETAILS_CONTAINER_ID,
+  admitTeamsDecorations,
+  buildAnswerCard,
+  buildAnswerDetailsElements,
+  buildChoiceAskCard,
+  buildFollowUpsOnlyCard,
+  contributionLabel,
+  stripFoldedAiDisclosure,
+  SYSTEM_NOTICE_LABEL,
+  TEAMS_DECORATION_IDS,
+} from '@omadia/channel-teams';
+import {
+  buildAnswerDetails,
+  decideDisclosureMarkers,
+  DECORATION_REGISTRY,
+  InMemoryDisclosureMarkerStore,
+  isDecorationAllowed,
+  REMOVED_DECORATIONS,
+  type AiDisclosure,
+  type AiDisclosureFrequency,
+  type Contribution,
+  type SemanticAnswer,
+  type Speaker,
+} from '@omadia/channel-sdk';
+
+/**
+ * byte5ai/omadia-channel-teams#42 — agents as colleagues (spec 2042 §3 INV-3/4/5,
+ * §5.4, §5.14, criteria 5, 29, 31): a minimal answer card, contributions
+ * attributed to the consulted agent, `system` notices that never speak as an
+ * agent, ONE collapsed details element, every decoration through the registry.
+ */
+
+type El = { type?: string; id?: string; text?: string; title?: string; items?: El[]; actions?: El[]; body?: El[]; targetElements?: string[]; isVisible?: boolean; color?: string; style?: string };
+type Content = { body: El[]; actions?: El[]; msteams?: Record<string, unknown> };
+
+function contentOf(card: ReturnType<typeof buildAnswerCard>): Content {
+  return card.content as Content;
+}
+
+/** Every element of a card, depth first, actions of ActionSets and the card included. */
+function walk(content: Content): El[] {
+  const out: El[] = [];
+  const visit = (el: El): void => {
+    out.push(el);
+    for (const child of [...(el.items ?? []), ...(el.actions ?? [])]) visit(child);
+  };
+  for (const el of content.body) visit(el);
+  for (const action of content.actions ?? []) visit(action);
+  return out;
+}
+
+const MIRA: Speaker = { kind: 'agent', agentId: 'a-mira', slug: 'mira', displayName: 'Mira' };
+const JONAS: Speaker = { kind: 'agent', agentId: 'a-jonas', slug: 'jonas', displayName: 'Jonas' };
+const BRIEFING = 'Gern: **Kernpunkte** der Woche.\n\n- Umsatz stabil\n- Zwei Risiken';
+
+const delivered: Contribution = {
+  id: 'c1',
+  speaker: { kind: 'agent', agentId: 'a-jonas', slug: 'jonas', displayName: 'Jonas' },
+  text: BRIEFING,
+  status: 'delivered',
 };
+const failed: Contribution = {
+  id: 'c2',
+  speaker: { kind: 'agent', agentId: 'a-theo', slug: 'theo', displayName: 'Theo' },
+  text: 'Theo konnte nicht antworten: Zeitüberschreitung.',
+  status: 'failed',
+};
+
+function disclosure(frequency: AiDisclosureFrequency, markers: { textLine: boolean; chip: boolean }): AiDisclosure {
+  return { text: 'KI-Hinweis.', level: 'standard', locale: 'de', source: 'default', frequency, markers };
+}
 
 describe('aiLabelEntity', () => {
   it('returns the AIGeneratedContent schema.org entity Teams expects', () => {
@@ -79,319 +87,281 @@ describe('aiLabelEntity', () => {
   });
 });
 
-describe('buildAnswerCard', () => {
-  it('returns an Adaptive Card attachment with the answer text', () => {
-    const att = buildAnswerCard({ answer: 'Das ist die Antwort.' });
-    assert.equal(att.contentType, 'application/vnd.microsoft.card.adaptive');
-    const json = JSON.stringify(att.content);
-    assert.match(json, /Das ist die Antwort\./);
-    assert.match(json, /AI-generated/);
+describe('a normal answer: the text and the AI disclosure, nothing else (criterion 29)', () => {
+  it('snapshot: chip plus text, no buttons, no footer, no details', () => {
+    const card = buildAnswerCard({ answer: 'Die Antwort ist 42.', aiMarker: true });
+    assert.deepEqual(contentOf(card).body, [
+      {
+        type: 'Container',
+        id: 'ai_disclosure_chip',
+        spacing: 'None',
+        items: [{ type: 'TextBlock', text: AI_MARKER_CHIP, size: 'Small', weight: 'Bolder', color: 'Accent', wrap: true }],
+      },
+      { type: 'TextBlock', text: 'Die Antwort ist 42.', wrap: true },
+    ]);
+    assert.equal(contentOf(card).actions, undefined);
   });
 
-  it('includes a ToggleVisibility action when a run trace is present', () => {
-    const att = buildAnswerCard({
-      answer: 'OK',
-      runTrace: sampleTrace,
+  it('snapshot: with the chip not due the card is the text alone', () => {
+    const card = buildAnswerCard({ answer: 'Die Antwort ist 42.', aiMarker: false });
+    assert.deepEqual(contentOf(card).body, [{ type: 'TextBlock', text: 'Die Antwort ist 42.', wrap: true }]);
+    assert.equal(contentOf(card).actions, undefined);
+  });
+
+  it('a caller without kernel data keeps the card of old: the chip is drawn', () => {
+    assert.ok(JSON.stringify(buildAnswerCard({ answer: 'x' }).content).includes(AI_MARKER_CHIP));
+  });
+});
+
+describe('AI disclosure frequency at the card renderer (#2087): all four modes', () => {
+  const store = new InMemoryDisclosureMarkerStore();
+  const chipOf = (aiDisclosure: AiDisclosure | undefined): boolean =>
+    JSON.stringify(buildAnswerCard({ answer: 'Antwort', aiMarker: aiChipDue(aiDisclosure) }).content).includes(AI_MARKER_CHIP);
+  const decide = (frequency: AiDisclosureFrequency, scope: string, agentId: string, firstTurnOfScope: boolean, now: number) =>
+    decideDisclosureMarkers({ frequency, firstTurnOfScope, scope, agentId, now, store });
+
+  it('channel_default: a chip on every card, also after the first answer of the conversation', () => {
+    assert.equal(chipOf(disclosure('channel_default', decide('channel_default', 'c-1', 'a-mira', true, 0))), true);
+    assert.equal(chipOf(disclosure('channel_default', decide('channel_default', 'c-1', 'a-mira', false, 1))), true);
+  });
+
+  it('per_answer: a chip on every card', () => {
+    assert.equal(chipOf(disclosure('per_answer', decide('per_answer', 'c-2', 'a-mira', true, 0))), true);
+    assert.equal(chipOf(disclosure('per_answer', decide('per_answer', 'c-2', 'a-mira', false, 1))), true);
+  });
+
+  it('per_conversation: the chip when due, then not, then again for another agent and after a pause', () => {
+    const minute = 60_000;
+    assert.equal(chipOf(disclosure('per_conversation', decide('per_conversation', 'c-3', 'a-mira', true, 0))), true);
+    assert.equal(chipOf(disclosure('per_conversation', decide('per_conversation', 'c-3', 'a-mira', false, minute))), false);
+    assert.equal(chipOf(disclosure('per_conversation', decide('per_conversation', 'c-3', 'a-jonas', false, 2 * minute))), true);
+    assert.equal(chipOf(disclosure('per_conversation', decide('per_conversation', 'c-3', 'a-jonas', false, 3 * minute))), false);
+    assert.equal(chipOf(disclosure('per_conversation', decide('per_conversation', 'c-3', 'a-jonas', false, 200 * minute))), true);
+  });
+
+  it('off: the operator turned the disclosure off, the kernel supplies none, no chip', () => {
+    assert.equal(chipOf(undefined), false);
+  });
+
+  it('a disclosure from a kernel without markers behaves like channel_default', () => {
+    const { markers: _omitted, ...withoutMarkers } = disclosure('channel_default', { textLine: true, chip: true });
+    assert.equal(chipOf(withoutMarkers), true);
+  });
+});
+
+describe('consultation block (spec 2042 §5.4, INV-5)', () => {
+  it('snapshot: A\'s text stays A\'s, B\'s block is attributed to B and carries B\'s text unchanged', () => {
+    const card = buildAnswerCard({
+      answer: 'Ich habe Jonas gefragt, hier seine Einschätzung.',
+      aiMarker: false,
+      speaker: MIRA,
+      contributions: [delivered],
     });
-    const content = att.content as { actions?: unknown[]; body: unknown[] };
-    assert.ok(Array.isArray(content.actions) && content.actions.length > 0);
-    const action = content.actions[0] as { type: string; targetElements: string[] };
-    assert.equal(action.type, 'Action.ToggleVisibility');
-    assert.deepEqual(action.targetElements, ['trace-container']);
+    assert.deepEqual(contentOf(card).body, [
+      { type: 'TextBlock', text: 'Ich habe Jonas gefragt, hier seine Einschätzung.', wrap: true },
+      {
+        type: 'Container',
+        id: 'contribution-c1',
+        style: 'emphasis',
+        spacing: 'Medium',
+        separator: true,
+        items: [
+          { type: 'TextBlock', text: 'Jonas (konsultiert von Mira)', weight: 'Bolder', size: 'Small', color: 'Accent', wrap: true },
+          { type: 'TextBlock', text: BRIEFING, wrap: true, spacing: 'Small' },
+        ],
+      },
+    ]);
   });
 
-  it('embeds every agent name and sub-tool in the trace container at full level', () => {
-    const att = buildAnswerCard({ answer: 'OK', runTrace: sampleTrace });
-    const json = JSON.stringify(att.content);
-    assert.match(json, /query_odoo_hr/);
-    assert.match(json, /query_confluence_playbook/);
-    assert.match(json, /odoo_execute/);
-    assert.match(json, /confluence_search/);
+  it('a failed contribution is shown as failed, with its failure line, never dropped', () => {
+    const card = buildAnswerCard({ answer: 'Mein Teil.', aiMarker: false, speaker: MIRA, contributions: [delivered, failed] });
+    const block = walk(contentOf(card)).find((el) => el.id === 'contribution-c2');
+    assert.ok(block, 'the failed contribution is on the card');
+    assert.equal(block.items?.[0]?.text, 'Theo (konsultiert von Mira) – fehlgeschlagen');
+    assert.equal(block.items?.[0]?.color, 'Attention');
+    assert.equal(block.items?.[1]?.text, failed.text);
   });
 
-  it('degrades gracefully on oversized traces — card stays under the Teams cap', () => {
-    // Synthesise a trace with thousands of sub-calls.
-    const huge: RunTracePayload = {
-      ...sampleTrace,
-      agentInvocations: [
-        {
-          ...sampleTrace.agentInvocations[0]!,
-          toolCalls: Array.from({ length: 2000 }, (_, i) => ({
-            callId: `s-${String(i)}`,
-            toolName: 'odoo_execute',
-            durationMs: 100,
-            isError: false,
-            agentContext: 'query_odoo_hr',
-          })),
-        },
+  it('keeps the kernel\'s order and names the consulted agent even without a speaker on the answer', () => {
+    assert.equal(contributionLabel(delivered, undefined), 'Jonas (konsultiert)');
+    assert.equal(contributionLabel(delivered, { kind: 'system' }), 'Jonas (konsultiert)');
+    const card = buildAnswerCard({ answer: 'x', aiMarker: false, contributions: [failed, delivered] });
+    const ids = walk(contentOf(card)).filter((el) => el.id?.startsWith('contribution-')).map((el) => el.id);
+    assert.deepEqual(ids, ['contribution-c2', 'contribution-c1']);
+  });
+
+  it('never shortens a contribution: an oversized answer is cut, the colleague\'s block is not', () => {
+    const card = buildAnswerCard({
+      answer: 'A'.repeat(40_000),
+      aiMarker: false,
+      speaker: MIRA,
+      contributions: [delivered],
+    });
+    assert.ok(Buffer.byteLength(JSON.stringify(card.content), 'utf8') <= 28_000, 'under the Teams cap');
+    assert.ok(JSON.stringify(card.content).includes(JSON.stringify(BRIEFING).slice(1, -1)));
+    assert.ok(contentOf(card).body.some((el) => el.text?.endsWith('…')), 'the speaking agent\'s own text was cut');
+  });
+});
+
+describe('system notice (INV-3, INV-7): never an agent speaking', () => {
+  const NOTICE = 'Mira ist deaktiviert und kann gerade nicht antworten.';
+
+  it('snapshot: its own heading, the notice text, no chip, no details, no buttons', () => {
+    const card = buildAnswerCard({
+      answer: 'Mira ist deaktiviert',
+      aiMarker: true,
+      speaker: { kind: 'system' },
+      systemNotice: { code: 'agent_disabled', text: NOTICE, locale: 'de' },
+      followUpOptions: [{ label: 'A', prompt: 'B' }],
+    });
+    assert.deepEqual(contentOf(card).body, [
+      {
+        type: 'Container',
+        id: 'system-notice',
+        style: 'warning',
+        items: [
+          { type: 'TextBlock', text: SYSTEM_NOTICE_LABEL, weight: 'Bolder', size: 'Small', isSubtle: true, wrap: true },
+          { type: 'TextBlock', text: NOTICE, wrap: true, spacing: 'Small' },
+        ],
+      },
+    ]);
+    assert.equal(contentOf(card).actions, undefined);
+    assert.ok(!JSON.stringify(card.content).includes(AI_MARKER_CHIP), 'a template of the management layer is not AI output');
+  });
+});
+
+describe('decision card stays where the agent lets the user choose', () => {
+  it('a choice card keeps its option buttons', () => {
+    const card = buildChoiceAskCard({
+      question: 'Welche Variante?',
+      options: [
+        { label: 'Kurz', value: 'kurz' },
+        { label: 'Lang', value: 'lang' },
       ],
-    };
-    const att = buildAnswerCard({ answer: 'OK', runTrace: huge });
-    const serialized = JSON.stringify(att.content);
-    assert.ok(
-      Buffer.byteLength(serialized, 'utf8') < 28_000,
-      `card size ${String(Buffer.byteLength(serialized, 'utf8'))} exceeds Teams cap`,
-    );
-  });
-
-  it('omits the trace section entirely when no trace is passed', () => {
-    const att = buildAnswerCard({ answer: 'nur antwort' });
-    const content = att.content as { actions?: unknown[] };
-    assert.equal(content.actions, undefined);
-  });
-
-  // -------------------------------------------------------------------------
-  // OB-81 · Palaia capture-disclosure section
-  // -------------------------------------------------------------------------
-
-  it('renders a ToggleVisibility action for capture-disclosure parallel to the trace', () => {
-    const att = buildAnswerCard({
-      answer: 'OK',
-      captureDisclosure: {
-        persisted: true,
-        reasons: ['scorer-skipped:level=minimal', 'privacy-strip:1'],
-        entryType: 'memory',
-        visibility: 'team',
-        significance: null,
-        embedded: true,
-        privacyBlocksStripped: 1,
-        hintTagsProcessed: 0,
-      },
     });
-    const content = att.content as { actions?: unknown[]; body: unknown[] };
-    assert.ok(Array.isArray(content.actions));
-    const disclosureAction = (content.actions ?? []).find(
-      (a) =>
-        (a as { targetElements?: string[] }).targetElements?.[0] ===
-        'capture-disclosure-container',
-    );
-    assert.ok(
-      disclosureAction !== undefined,
-      'expected a ToggleVisibility action targeting capture-disclosure-container',
-    );
-    const json = JSON.stringify(att.content);
-    assert.match(json, /Memory-Auswirkung/);
-    assert.match(json, /persisted/);
-    // The summary should also surface the entry type for at-a-glance scan.
-    assert.match(json, /memory/);
+    const content = card.content as { actions?: El[] };
+    assert.deepEqual(content.actions?.map((a) => a.title), ['Kurz', 'Lang']);
   });
 
-  it('renders the disclosure body with significance + reason markers', () => {
-    const att = buildAnswerCard({
-      answer: 'OK',
-      captureDisclosure: {
-        persisted: false,
-        reasons: ['dropped:significance<threshold'],
-        entryType: null,
-        visibility: null,
-        significance: 0.08,
-        embedded: false,
-        privacyBlocksStripped: 0,
-        hintTagsProcessed: 0,
-      },
-    });
-    const json = JSON.stringify(att.content);
-    assert.match(json, /verworfen/);
-    assert.match(json, /0\.08/);
-    assert.match(json, /dropped:significance<threshold/);
-  });
-
-  it('omits the disclosure section entirely when captureDisclosure is undefined', () => {
-    const att = buildAnswerCard({ answer: 'plain' });
-    const json = JSON.stringify(att.content);
-    assert.doesNotMatch(json, /capture-disclosure-container/);
-    assert.doesNotMatch(json, /Memory-Auswirkung/);
-  });
-
-  it('drops disclosure (but keeps answer) when card grows past the Teams cap', () => {
-    const longAnswer = 'x'.repeat(25_000);
-    const att = buildAnswerCard({
-      answer: longAnswer,
-      captureDisclosure: {
-        persisted: true,
-        reasons: ['ok'],
-        entryType: 'memory',
-        visibility: 'team',
-        significance: 0.9,
-        embedded: true,
-        privacyBlocksStripped: 0,
-        hintTagsProcessed: 0,
-      },
-    });
-    const serialized = JSON.stringify(att.content);
-    assert.ok(
-      Buffer.byteLength(serialized, 'utf8') < 28_000,
-      `card size ${String(Buffer.byteLength(serialized, 'utf8'))} exceeds Teams cap`,
+  it('proposed options become buttons under the answer; without them there is no button row', () => {
+    const withOptions = buildAnswerCard({ answer: 'x', aiMarker: false, followUpOptions: [{ label: 'Weiter', prompt: 'Mach weiter' }] });
+    assert.deepEqual(
+      walk(contentOf(withOptions)).filter((el) => el.type === 'Action.Submit').map((el) => el.title),
+      ['Weiter'],
     );
-    assert.doesNotMatch(serialized, /capture-disclosure-container/);
+    assert.equal(buildFollowUpsOnlyCard([])?.content, undefined);
+    assert.equal(walk(contentOf(buildAnswerCard({ answer: 'x', aiMarker: false }))).filter((el) => el.type?.startsWith('Action')).length, 0);
   });
 });
 
-describe('buildAnswerCard — Fresh-Check gate (memoryUsed)', () => {
-  it('renders NO Fresh-Check button when showFreshCheck is not set', () => {
-    const att = buildAnswerCard({
-      answer: 'pong',
-      originalUserMessage: 'ping',
-    });
-    assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
-  });
+describe('ONE collapsed details element (spec 2042 §5.14, decoration answer_details)', () => {
+  const answer: SemanticAnswer = {
+    text: 'Antwort',
+    speaker: MIRA,
+    verifier: { status: 'verified' },
+    contributions: [delivered, failed],
+    answerSource: 'privacy-render',
+    maskedValues: ['4.200 EUR'],
+    privacyReceipt: { datasetsInterned: 2, fieldsMasked: 3, fieldsCleartext: 0, verbsExecuted: [], pseudonymProjectionUsed: false } as unknown as SemanticAnswer['privacyReceipt'],
+    memoryUsed: true,
+    agentsConsulted: [{ label: 'Strategist', status: 'success', toolCalls: 2 }],
+  };
 
-  it('renders the Fresh-Check button when memory influenced the answer', () => {
-    const att = buildAnswerCard({
-      answer: 'Antwort aus Memory',
-      originalUserMessage: 'Frage',
-      showFreshCheck: true,
-    });
-    assert.match(JSON.stringify(att.content), /Fresh Check/);
-  });
-
-  it('never renders Fresh-Check without an originalUserMessage', () => {
-    const att = buildAnswerCard({ answer: 'ok', showFreshCheck: true });
-    assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
-  });
-});
-
-/** The texts of the chip row (first body container) of an answer card. */
-function chipTexts(content: unknown): string[] {
-  const body = (content as { body: Array<{ items?: Array<{ text?: string }> }> }).body;
-  return (body[0]?.items ?? []).map((i) => i.text ?? '');
-}
-
-describe('buildAnswerCard — "Originaldaten aus dem System" chip (Privacy Shield render)', () => {
-  it('shows the chip next to the AI marker when the server rendered the answer', () => {
-    const att = buildAnswerCard({ answer: '| Name | Betrag |', systemData: true });
-    assert.deepEqual(chipTexts(att.content), ['✨ AI-generated', SYSTEM_DATA_CHIP]);
-  });
-
-  it('sits after the verifier chip, which still judges the prose', () => {
-    const att = buildAnswerCard({
-      answer: 'Hier die offenen Posten:',
-      systemData: true,
-      verifier: { status: 'verified' },
-    });
-    assert.deepEqual(chipTexts(att.content), ['✨ AI-generated', '✓ Antwort geprüft', SYSTEM_DATA_CHIP]);
-  });
-
-  it('is absent for an ordinary model answer', () => {
-    for (const input of [{ answer: 'pong' }, { answer: 'pong', systemData: false }]) {
-      const att = buildAnswerCard(input);
-      assert.deepEqual(chipTexts(att.content), ['✨ AI-generated']);
+  it('is built from the SDK projection: one hidden container, one toggle button', () => {
+    const details = buildAnswerDetails(answer);
+    const card = buildAnswerCard({ answer: 'Antwort', aiMarker: false, details });
+    const container = walk(contentOf(card)).find((el) => el.id === ANSWER_DETAILS_CONTAINER_ID);
+    assert.ok(container);
+    assert.equal(container.isVisible, false, 'collapsed until the viewer expands it');
+    assert.deepEqual(contentOf(card).actions, [
+      { type: 'Action.ToggleVisibility', title: 'Details', targetElements: [ANSWER_DETAILS_CONTAINER_ID] },
+    ]);
+    const text = JSON.stringify(container);
+    for (const expected of ['Alle Angaben geprüft', 'Quellsystem', 'Jonas hat beigetragen', 'Theo hat nicht antworten können', '3 Felder wurden maskiert', 'Frühere Gespräche', 'Eingesetzt: Strategist']) {
+      assert.ok(text.includes(expected), expected);
     }
   });
 
-  it('survives the size tiers that drop the trace', () => {
-    const att = buildAnswerCard({
-      answer: 'x'.repeat(20_000),
-      runTrace: sampleTrace,
-      systemData: true,
-    });
-    assert.ok(chipTexts(att.content).includes(SYSTEM_DATA_CHIP));
+  it('a plain answer has no details projection and therefore no element at all', () => {
+    assert.equal(buildAnswerDetails({ text: 'Hallo' }), undefined);
+    assert.equal(buildAnswerDetailsElements(undefined), undefined);
+    const card = buildAnswerCard({ answer: 'Hallo', aiMarker: false, details: buildAnswerDetails({ text: 'Hallo' }) });
+    assert.equal(walk(contentOf(card)).some((el) => el.id === ANSWER_DETAILS_CONTAINER_ID), false);
+    assert.equal(contentOf(card).actions, undefined);
   });
 });
 
-/** The `Action.Submit` entries of a card, by their `data.type`. */
-function submitActions(content: unknown, type: string): Array<Record<string, unknown>> {
-  const actions = (content as { actions?: Array<Record<string, unknown>> }).actions ?? [];
-  return actions.filter((a) => (a['data'] as { type?: string } | undefined)?.type === type);
-}
+describe('every decoration goes through the registry (criteria 29, 31)', () => {
+  const fullAnswer: SemanticAnswer = {
+    text: 'Antwort',
+    speaker: MIRA,
+    verifier: { status: 'partial' },
+    contributions: [delivered],
+    answerSource: 'privacy-render',
+    memoryUsed: true,
+    agentsConsulted: [{ label: 'Strategist', status: 'success' }],
+  };
 
-describe('buildAnswerCard — answer-size steps ("Kürzer" / "Mehr Details")', () => {
-  it('offers both neighbours from the middle of the scale, carrying the question', () => {
-    const att = buildAnswerCard({
-      answer: 'Antwort',
-      originalUserMessage: 'Wie viele offene Rechnungen gibt es?',
-      answerVerbosity: { effective: 'standard', source: 'configured' },
-    });
-    const steps = submitActions(att.content, 'verbosity_step');
-    assert.deepEqual(
-      steps.map((a) => [a['title'], (a['data'] as { level: string }).level]),
-      [
-        ['🔽 Kürzer', 'brief'],
-        ['🔼 Mehr Details', 'detailed'],
-      ],
+  function loadedCard(): Content {
+    return contentOf(
+      buildAnswerCard({
+        answer: 'Antwort',
+        aiMarker: true,
+        speaker: MIRA,
+        details: buildAnswerDetails(fullAnswer),
+        contributions: [delivered],
+        followUpOptions: [{ label: 'Weiter', prompt: 'Mach weiter' }],
+      }),
     );
-    for (const a of steps) {
-      const parsed = parseVerbosityStepValue(a['data']);
-      assert.ok(parsed, 'button payload must round-trip through the parser');
-      assert.equal(parsed.originalMessage, 'Wie viele offene Rechnungen gibt es?');
+  }
+
+  it('every decoration id the Teams card code uses is declared for teams and none is a removed one', () => {
+    for (const id of Object.values(TEAMS_DECORATION_IDS)) {
+      assert.ok(isDecorationAllowed(id, 'teams'), `${id} is declared for teams`);
+      assert.ok(!(REMOVED_DECORATIONS as readonly string[]).includes(id), `${id} is not a removed decoration`);
+    }
+    assert.ok(DECORATION_REGISTRY.length >= Object.values(TEAMS_DECORATION_IDS).length);
+  });
+
+  it('the gate drops what the registry does not declare for teams, removed ones included', () => {
+    const refused: string[] = [];
+    const admitted = admitTeamsDecorations(
+      ['ai_disclosure_chip', 'answer_details', 'verifier_badge', 'direct_line_buttons', 'verbosity_buttons', 'consulted_footer', 'made_up_chip'],
+      (refusal) => refused.push(refusal.id),
+    );
+    assert.deepEqual([...admitted].sort(), ['ai_disclosure_chip', 'answer_details']);
+    assert.deepEqual(refused.sort(), ['consulted_footer', 'direct_line_buttons', 'made_up_chip', 'verbosity_buttons', 'verifier_badge']);
+  });
+
+  it('a fully loaded card holds no undeclared element: only the chip, the colleague, details and proposed buttons', () => {
+    const card = loadedCard();
+    const ids = walk(card).map((el) => el.id).filter((id): id is string => id !== undefined);
+    for (const id of ids) {
+      const known = isDecorationAllowed(id, 'teams') || id.startsWith('contribution-');
+      assert.ok(known, `element id '${id}' is declared`);
+    }
+    // The only buttons: the Details toggle and what the agent proposed.
+    const buttons = walk(card).filter((el) => el.type?.startsWith('Action.')).map((el) => `${el.type}:${el.title}`);
+    assert.deepEqual(buttons.sort(), ['Action.Submit:Weiter', 'Action.ToggleVisibility:Details']);
+  });
+
+  it('what the removed decorations showed appears nowhere outside the details element', () => {
+    const card = loadedCard();
+    const outside = JSON.stringify({
+      ...card,
+      body: card.body.filter((el) => el.id !== ANSWER_DETAILS_CONTAINER_ID),
+    });
+    for (const gone of ['Konsultiert:', 'Direkte Antwort', 'Kürzer', 'Mehr Details', 'Direkt mit', 'Fresh Check', 'Nächste Varianten', 'Originaldaten', 'Antwort geprüft', 'Teilweise bestätigt', '🔎', '💬', '🗄']) {
+      assert.ok(!outside.includes(gone), `'${gone}' must not be on the card body`);
     }
   });
 
-  it('leaves out the button at the end of the scale instead of disabling it', () => {
-    const atTop = buildAnswerCard({
-      answer: 'Antwort',
-      originalUserMessage: 'Frage',
-      answerVerbosity: { effective: 'max', source: 'turn' },
-    });
-    assert.deepEqual(
-      submitActions(atTop.content, 'verbosity_step').map((a) => a['title']),
-      ['🔽 Kürzer'],
-    );
-    const atBottom = buildAnswerCard({
-      answer: 'Antwort',
-      originalUserMessage: 'Frage',
-      answerVerbosity: { effective: 'tldr', source: 'turn' },
-    });
-    assert.deepEqual(
-      submitActions(atBottom.content, 'verbosity_step').map((a) => a['title']),
-      ['🔼 Mehr Details'],
-    );
-  });
-
-  it('renders no size buttons without a level (older kernel) or without the question', () => {
-    const noLevel = buildAnswerCard({ answer: 'ok', originalUserMessage: 'Frage' });
-    assert.equal(submitActions(noLevel.content, 'verbosity_step').length, 0);
-    const noQuestion = buildAnswerCard({
-      answer: 'ok',
-      answerVerbosity: { effective: 'brief', source: 'configured' },
-    });
-    assert.equal(submitActions(noQuestion.content, 'verbosity_step').length, 0);
-  });
-
-  it('is independent of the Fresh-Check gate', () => {
-    const att = buildAnswerCard({
-      answer: 'ok',
-      originalUserMessage: 'Frage',
-      answerVerbosity: { effective: 'brief', source: 'configured' },
-      // showFreshCheck deliberately unset
-    });
-    assert.equal(submitActions(att.content, 'verbosity_step').length, 2);
-    assert.doesNotMatch(JSON.stringify(att.content), /Fresh Check/);
-  });
-
-  it('the parser rejects a level outside the scale and a missing question', () => {
-    assert.equal(
-      parseVerbosityStepValue({ type: 'verbosity_step', level: 'verbose', originalMessage: 'x' }),
-      undefined,
-    );
-    assert.equal(
-      parseVerbosityStepValue({ type: 'verbosity_step', level: 'max', originalMessage: '' }),
-      undefined,
-    );
-    assert.equal(parseVerbosityStepValue({ type: 'fresh_check', originalMessage: 'x' }), undefined);
-  });
-
-  it('survives the long-answer fallback on the slim card — "Kürzer" after "Mehr Details"', () => {
-    // A >25 KB answer loses the full card; the slim card must still carry
-    // the steps, or a user one click up has no way back down.
-    const slim = buildDirectLineOnlyCard({
-      originalUserMessage: 'Frage',
-      answerVerbosity: { effective: 'max', source: 'turn' },
-    });
-    assert.ok(slim, 'slim card must render for the size steps alone');
-    assert.deepEqual(
-      submitActions(slim.content, 'verbosity_step').map((a) => a['title']),
-      ['🔽 Kürzer'],
-    );
-    // Nothing to surface at all → still no card.
-    assert.equal(buildDirectLineOnlyCard({ originalUserMessage: 'Frage' }), undefined);
-  });
-
-  it('verbosityNeighbour walks the closed scale and stops at its ends', () => {
-    assert.equal(verbosityNeighbour('standard', 'shorter'), 'brief');
-    assert.equal(verbosityNeighbour('standard', 'longer'), 'detailed');
-    assert.equal(verbosityNeighbour('tldr', 'shorter'), undefined);
-    assert.equal(verbosityNeighbour('max', 'longer'), undefined);
+  it('no source file mentions a Direct Line any more (UI and handler are gone)', () => {
+    const srcDir = join(process.cwd(), 'src');
+    const offenders = readdirSync(srcDir)
+      .filter((name) => name.endsWith('.ts'))
+      .filter((name) => /direct.?line/i.test(readFileSync(join(srcDir, name), 'utf8')));
+    assert.deepEqual(offenders, []);
   });
 });
 

@@ -31,7 +31,6 @@
 // label and the sentence. That is accepted: marked twice is a blemish,
 // not marked at all is a disclosure failure.
 
-import { parseBooleanSetting } from './teamsCardFeatures.js';
 
 /** Setup key: "the platform label was seen in our Teams client". */
 export const NATIVE_AI_LABEL_CONFIG_KEY = 'teams_native_ai_label';
@@ -65,4 +64,21 @@ export function logOutgoingActivity(path: 'turn' | 'proactive' | 'direct' | 'upd
     json = '"(not serialisable)"';
   }
   console.error(`[teams] outgoing path=${path} activity=${json}`);
+}
+
+/**
+ * Read a boolean setup value the way the kernel hands it over: a real boolean
+ * when the install registry stored it, or the strings `"true"` / `"false"`
+ * (the setup form and `booleanSetupDefault` both speak that dialect).
+ * Anything else (`undefined`, `null`, `""`, `"1"`, `"yes"`) is not a boolean
+ * and yields the fallback, so a typo can never silently flip a switch.
+ */
+export function parseBooleanSetting(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return fallback;
 }

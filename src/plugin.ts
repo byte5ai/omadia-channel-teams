@@ -65,10 +65,6 @@ import { PgTeamsMeetingStateStore } from './teamsMeetingStateStore.js';
 import { PgTeamsQuestionCardStore } from './teamsQuestionCardStore.js';
 import { createOverdueCardSweep, OVERDUE_SWEEP_INTERVAL_MS } from './teamsQuestionCardSweep.js';
 import { createTeamsRoutineDelivery } from './teamsRoutineDelivery.js';
-import {
-  disabledTeamsCardFeatures,
-  resolveTeamsCardFeatures,
-} from './teamsCardFeatures.js';
 import { TeamsRosterProvider } from './teamsRoster.js';
 import {
   createTeamsRosterAdapter,
@@ -645,18 +641,6 @@ export async function activate(
     }
   }
 
-  // Operator switches for the optional answer-card buttons (`teams_card_*`
-  // boolean setup fields). Resolved once here — the kernel re-activates the
-  // plugin when its config is saved. Log names only, never config values.
-  const cardFeatures = resolveTeamsCardFeatures((key) => ctx.config.get(key));
-  const disabledCardFeatures = disabledTeamsCardFeatures(cardFeatures);
-  if (disabledCardFeatures.length > 0) {
-    core.log(
-      'info',
-      `Teams answer-card features disabled by config: ${disabledCardFeatures.join(', ')}`,
-    );
-  }
-
   const bot = new TeamsBot(
     chatAgent,
     conversationHistoryStore,
@@ -676,7 +660,6 @@ export async function activate(
     resolveConductorAwait,
     groupPrimitives,
     autoInvite,
-    cardFeatures,
   );
 
   if (resolveChatAgentForActivity) {

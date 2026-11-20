@@ -14,7 +14,9 @@ import {
   isNoReply,
   logNoReplyDrop,
   makePrincipal,
+  buildAnswerDetails,
   parseSessionScope,
+  runPacedTurn,
   unsharedConversationScope,
 } from '@omadia/channel-sdk';
 import type {
@@ -59,36 +61,28 @@ export const NO_AGENT_FOR_CONVERSATION_TEXT =
   'Diesem Chat ist kein Agent zugeordnet. Bitte wende dich an deinen Administrator.';
 import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
-import type { PrivacyReceipt } from '@omadia/plugin-api';
-import { readAnswerVerbosity } from './kernel-types.js';
 import type { TeamsTurnOrigin } from './kernel-types.js';
 import type {
-  CaptureDisclosure,
   ChatAgent,
-  AgentConsultation,
-  AnswerVerbosityInfo,
-  AnswerVerbosityLevel,
   ConversationHistoryStore,
-  DelegatedAnswer,
   FollowUpOption,
   OutgoingAttachment,
   OutgoingChoiceCard,
   OutgoingSlotPicker,
-  RunTracePayload,
+  SemanticAnswer,
   TopicDetector,
   TurnContextModule,
-  VerifierBadge,
 } from './kernel-types.js';
 import type {
   PersistedAttachment,
   TeamsAttachmentStore,
 } from './teamsAttachmentStore.js';
 import {
+  aiChipDue,
   aiLabelEntity,
   buildAgentAppsResultCard,
   buildAnswerCard,
   buildChoiceAskCard,
-  buildDirectLineOnlyCard,
   buildFollowUpsOnlyCard,
   buildSlotPickerCard,
   buildTopicAskCard,
@@ -96,25 +90,20 @@ import {
   parseApprovalValue,
   parseBookSlotValue,
   parseChoiceAskValue,
-  parseDirectLineValue,
   parseFollowUpValue,
-  parseFreshCheckValue,
-  parseVerbosityStepValue,
   parseRoutineCardActionValue,
   parseRoutineListFilterValue,
   parseTopicDecisionValue,
   stripFoldedAiDisclosure,
   type ApprovalValue,
 } from './teamsCard.js';
-import {
-  DEFAULT_TEAMS_CARD_FEATURES,
-  type TeamsCardFeatures,
-} from './teamsCardFeatures.js';
 import type {
   InstallAgentAppsRequest,
   TeamsAgentInstallResult,
 } from './teamsAgentInstaller.js';
 import { buildRecalledContextCard } from './teamsRecall.js';
+import { contributionsAsText, contributionsLength, systemNoticeAsText } from './teamsAnswerParts.js';
+import { TEAMS_PACE_PROFILE, teamsPaceHooks } from './teamsPace.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
 import {
@@ -127,9 +116,6 @@ import {
 // margin and split on paragraph boundaries so tables aren't cut in half.
 const TEAMS_MAX_MESSAGE_CHARS = 25_000;
 
-// Frequency of typing indicators during long-running orchestrator calls. The Teams
-// client dims the "typing" animation after ~10 s of silence, so we refresh faster.
-const TYPING_INTERVAL_MS = 5_000;
 /**
  * Member-scoped memory — how old a cached roster may be when the kernel reads
  * it as the room's audience. Membership events invalidate the cache; this
@@ -610,13 +596,6 @@ export class TeamsBot extends TeamsActivityHandler {
      * itself never talks to Graph for installs.
      */
     private readonly autoInvite?: TeamsAutoInviteDeps,
-    /**
-     * Operator switches for the optional answer-card buttons (`teams_card_*`
-     * setup fields, resolved once in plugin.ts via
-     * `resolveTeamsCardFeatures`). Absent → every switch on, i.e. the card
-     * renders exactly as before the switches existed.
-     */
-    private readonly cardFeatures: TeamsCardFeatures = DEFAULT_TEAMS_CARD_FEATURES,
   ) {
     super();
 
@@ -1229,22 +1208,6 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
 
-    // "🔄 Fresh Check" — user clicked the button on a previous answer card
-    // to re-run the same question while bypassing memory + context block.
-    const freshCheck = parseFreshCheckValue(context.activity.value);
-    if (freshCheck) {
-      await this.handleFreshCheck(context, sessionScope, userId, freshCheck.originalMessage);
-      return;
-    }
-
-    // "🔽 Kürzer" / "🔼 Mehr Details" — re-ask the same question one step
-    // down / up the answer-size scale, for this turn only.
-    const verbosityStep = parseVerbosityStepValue(context.activity.value);
-    if (verbosityStep) {
-      await this.handleVerbosityStep(context, sessionScope, userId, verbosityStep);
-      return;
-    }
-
     // `ask_user_choice` option click — blocking clarification resolved.
     // The chosen `value` is injected as the next user turn so the LLM can
     // re-run with the disambiguated input.
@@ -1382,16 +1345,10 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
 
-    // #332 — a "💬 Direkt mit <Agent>" button click carries no text, only a
-    // submit value. Synthesize the Direct-Line directive (`#<token> <message>`)
-    // as the user message so it flows through the normal turn (history,
-    // privacy, persistence) and the core dispatcher routes it straight to the
-    // named specialist. Bypasses extractUserMessage's mention-strip — the
-    // directive is already clean.
-    const directLineSubmit = parseDirectLineValue(context.activity.value);
-    const rawUserMessage = directLineSubmit
-      ? `#${directLineSubmit.token} ${directLineSubmit.originalMessage}`
-      : extractUserMessage(context);
+    // Typed text is handed to the kernel as it is, `/agent <name>` included:
+    // the kernel (not this channel) reads it as an ordinary message (spec 2042
+    // §5.3). Teams addresses an agent through its own bot.
+    const rawUserMessage = extractUserMessage(context);
 
     // Magic-code intercept for the bypass sign-in flow. When the user pastes
     // the 6-digit code from the BF token-service page into the chat, Bot
@@ -1425,6 +1382,13 @@ export class TeamsBot extends TeamsActivityHandler {
     // let the orchestrator see the attachment-hint and decide how to
     // react (usually: store as brand asset + short acknowledgement).
     if (rawUserMessage.length === 0 && persistedAttachments.length === 0) {
+      // A click on a button of a card posted by an earlier version (answer-size
+      // steps, fresh check, a specialist shortcut): the button is gone, the click is not
+      // a question.
+      if (isRetiredCardAction(context.activity.value)) {
+        await context.sendActivity(RETIRED_CARD_ACTION_TEXT);
+        return;
+      }
       await context.sendActivity(
         'Ich habe keinen Text in deiner Nachricht gefunden. Schreib mir ruhig eine Frage — z. B. "Wer sind unsere umsatzstärksten Kunden?".',
       );
@@ -1822,65 +1786,6 @@ export class TeamsBot extends TeamsActivityHandler {
   }
 
   /**
-   * User clicked the "🔄 Fresh Check" button on a previous answer card.
-   * Re-runs the original question while bypassing the memory-read
-   * convention AND the FTS context block — the orchestrator is told
-   * explicitly to treat the turn as isolated. We intentionally do NOT
-   * pass `priorTurns` so the in-memory conversation history can't
-   * re-contaminate the turn either.
-   */
-  private async handleFreshCheck(
-    context: TurnContext,
-    sessionScope: string,
-    userId: string | undefined,
-    originalMessage: string,
-  ): Promise<void> {
-    const conversationId = context.activity.conversation?.id ?? 'unknown';
-    console.error(
-      `[teams] fresh-check conv=${conversationId} msg="${truncate(originalMessage, 80)}"`,
-    );
-    // Empty priorTurns array — the point of fresh-check is strict isolation.
-    const priorTurns: ReturnType<ConversationHistoryStore['get']> = [];
-    await this.runOrchestratorTurn(context, {
-      conversationId,
-      sessionScope,
-      userId,
-      userMessage: originalMessage,
-      priorTurns,
-      freshCheck: true,
-    });
-  }
-
-  /**
-   * User clicked "🔽 Kürzer" / "🔼 Mehr Details" on an answer card: the same
-   * question again, one step down / up the answer-size scale, for this turn
-   * only. History is kept (unlike Fresh Check — the point here is size, not
-   * isolation) and the pending-choice slot is cleared like for a follow-up.
-   * Detached, like every card click: the Teams client gives a submit ~15 s.
-   */
-  private async handleVerbosityStep(
-    context: TurnContext,
-    sessionScope: string,
-    userId: string | undefined,
-    step: { level: AnswerVerbosityLevel; originalMessage: string },
-  ): Promise<void> {
-    const conversationId = context.activity.conversation?.id ?? 'unknown';
-    console.error(
-      `[teams] verbosity-step conv=${conversationId} level=${step.level} msg="${truncate(step.originalMessage, 80)}"`,
-    );
-    this.history.clearPending(sessionScope);
-    const priorTurns = this.history.get(sessionScope);
-    await this.runOrchestratorTurnDetached(context, {
-      conversationId,
-      sessionScope,
-      userId,
-      userMessage: step.originalMessage,
-      priorTurns,
-      answerVerbosity: step.level,
-    });
-  }
-
-  /**
    * User clicked one of the option buttons on an `ask_user_choice` card.
    * The chosen `value` is sent as the next user turn with the full chat
    * history preserved — the LLM then has the disambiguated input and can
@@ -2070,8 +1975,6 @@ export class TeamsBot extends TeamsActivityHandler {
       userId: string | undefined;
       userMessage: string;
       priorTurns: ReturnType<ConversationHistoryStore['get']>;
-      freshCheck?: boolean;
-      answerVerbosity?: AnswerVerbosityLevel;
     },
   ): Promise<void> {
     if (!this.proactiveSend) {
@@ -2112,10 +2015,6 @@ export class TeamsBot extends TeamsActivityHandler {
       userId: string | undefined;
       userMessage: string;
       priorTurns: ReturnType<ConversationHistoryStore['get']>;
-      /** When true, the orchestrator skips context retrieval + memory read. */
-      freshCheck?: boolean;
-      /** Answer-size pick for this turn only ("Kürzer" / "Mehr Details"). */
-      answerVerbosity?: AnswerVerbosityLevel;
       /** Pre-extracted on the ORIGINAL inbound turn for detached card clicks —
        *  a proactive continuation cannot read the user token itself. */
       presetSsoAssertion?: string;
@@ -2148,12 +2047,11 @@ export class TeamsBot extends TeamsActivityHandler {
       this.rosterProvider && isGroupConversation ? this.rosterProvider : undefined;
 
     const run = async (): Promise<void> => {
-      const stopTyping = startTypingLoop(context);
       const ssoAssertion =
         input.presetSsoAssertion ??
         (this.ssoConnectionName ? await extractSsoAssertion(context, this.ssoConnectionName) : undefined);
       console.log(
-        `[teams] turn start conv=${input.conversationId} user=${input.userId ?? 'anon'} history=${String(input.priorTurns.length)} freshCheck=${String(Boolean(input.freshCheck))} roster=${rosterProvider ? 'on' : 'off'} sso=${ssoAssertion ? 'yes' : 'no'}`,
+        `[teams] turn start conv=${input.conversationId} user=${input.userId ?? 'anon'} history=${String(input.priorTurns.length)} roster=${rosterProvider ? 'on' : 'off'} sso=${ssoAssertion ? 'yes' : 'no'}`,
       );
       try {
         const userTimeZone =
@@ -2215,17 +2113,24 @@ export class TeamsBot extends TeamsActivityHandler {
         const origin =
           input.origin ??
           teamsTurnOrigin(context.activity, input.sessionScope, input.userId);
-        const result = await chatAgent.chat({
-          userMessage: attributedMessage,
-          sessionScope: input.sessionScope,
-          ...(input.userId ? { userId: input.userId } : {}),
-          ...(input.priorTurns.length > 0 ? { priorTurns: input.priorTurns } : {}),
-          ...(input.freshCheck ? { freshCheck: true } : {}),
-          ...(input.answerVerbosity ? { answerVerbosity: input.answerVerbosity } : {}),
-          ...(ssoAssertion ? { ssoAssertion } : {}),
-          userTimeZone,
-          origin,
-        });
+        // Pace (spec 2042 §5.8): typing from the start of the work, renewed;
+        // ONE short acknowledgement when it clearly takes longer than a normal
+        // answer; no progress chatter. The timing is the SDK's.
+        const paced = await runPacedTurn(
+          () =>
+            chatAgent.chat({
+            userMessage: attributedMessage,
+            sessionScope: input.sessionScope,
+            ...(input.userId ? { userId: input.userId } : {}),
+            ...(input.priorTurns.length > 0 ? { priorTurns: input.priorTurns } : {}),
+              ...(ssoAssertion ? { ssoAssertion } : {}),
+              userTimeZone,
+              origin,
+            }),
+          TEAMS_PACE_PROFILE,
+          teamsPaceHooks(context),
+        );
+        const result = paced.result;
         // Post-S+7.5: ChatAgent.chat returns the SDK's SemanticAnswer. We
         // narrow the discriminated `interactive` union into the legacy
         // pendingUserChoice / pendingSlotCard slots the Teams renderer
@@ -2261,7 +2166,13 @@ export class TeamsBot extends TeamsActivityHandler {
         // around a text that is not there, so none of it is posted.
         const hasAttachments =
           ((result as { attachments?: readonly unknown[] }).attachments?.length ?? 0) > 0;
-        if (isEmptyAnswerText(result.text, result.aiDisclosure?.text) && !result.interactive && !hasAttachments) {
+        const hasContributions = (result.contributions?.length ?? 0) > 0;
+        if (
+          isEmptyAnswerText(result.text, result.aiDisclosure?.text) &&
+          !result.interactive &&
+          !hasAttachments &&
+          !hasContributions
+        ) {
           console.error(
             `[teams] empty answer not posted conv=${input.conversationId.slice(0, 24)}…`,
           );
@@ -2276,56 +2187,33 @@ export class TeamsBot extends TeamsActivityHandler {
             await context.sendActivity(MessageFactory.attachment(recallCard));
           }
         }
-        // AI-Act marking (#643/#644): the kernel folds the disclosure
-        // sentence into `text` for wire-only channels. Teams marks the
-        // answer itself (✨ AI-generated card chip + activity-level AI
-        // label entity), so the folded sentence would double-mark — strip
-        // it, keeping any operator-authored addendum.
-        const answerText = stripFoldedAiDisclosure(
-          result.text,
-          result.aiDisclosure?.text,
-        );
-        // Read once: the level this answer was generated under drives the
-        // "🔽 Kürzer" / "🔼 Mehr Details" buttons on the card.
-        const answerVerbosity = readAnswerVerbosity(result);
-        await sendAnswer(
-          context,
-          answerText,
-          undefined,
-          result.attachments,
-          result.verifier,
-          input.userMessage,
+        // AI marking (#643/#644, #2087): the kernel folds the disclosure
+        // sentence into `text` for wire-only channels. Teams marks the answer
+        // itself (✨ AI-generated card chip + activity-level AI label entity)
+        // whenever the kernel's frequency setting asks for a visible marker on
+        // this answer, so the folded sentence would double-mark: strip it,
+        // keeping any operator-authored addendum. A `system` notice is a
+        // template of the management layer, not AI output: no marker.
+        const isSystemNotice = result.speaker?.kind === 'system';
+        const chipDue = !isSystemNotice && aiChipDue(result.aiDisclosure);
+        const answerText = isSystemNotice
+          ? (result.systemNotice?.text ?? result.text)
+          : chipDue
+            ? stripFoldedAiDisclosure(result.text, result.aiDisclosure?.text)
+            : result.text;
+        await sendAnswer(context, result, answerText, {
           rosterProvider,
           pendingChoice,
-          result.followUps,
           pendingSlots,
-          result.oauthConsentPending ? this.ssoConnectionName : undefined,
-          result.captureDisclosure,
-          result.privacyReceipt,
-          result.maskedValues,
-          {
-            ...(result.agentsConsulted
-              ? { agentsConsulted: result.agentsConsulted }
-              : {}),
-            ...(result.delegatedAnswer
-              ? { delegatedAnswer: result.delegatedAnswer }
-              : {}),
-            ...(result.memoryUsed ? { memoryUsed: true } : {}),
-            ...(answerVerbosity ? { answerVerbosity } : {}),
-            ...(result.answerSource === 'privacy-render' ? { systemData: true } : {}),
-            cardFeatures: this.cardFeatures,
-            // D24 — an answer too long for a card goes out as plain text,
-            // where no chip of ours is shown. Unless the platform label was
-            // confirmed, the disclosure sentence goes back onto that text.
-            ...(!this.nativeAiLabel && result.aiDisclosure?.text
-              ? { plainTextDisclosure: result.aiDisclosure.text }
-              : {}),
-            // The card's chip stands in for the kernel's disclosure sentence.
-            // No disclosure from the kernel (the operator turned it off):
-            // no chip. The channel never marks what the kernel did not.
-            isAiDisclosed: result.aiDisclosure !== undefined,
-          },
-        );
+          consentConnectionName: result.oauthConsentPending ? this.ssoConnectionName : undefined,
+          chipDue,
+          // D24 — an answer too long for a card goes out as plain text,
+          // where no chip of ours is shown. Unless the platform label was
+          // confirmed, the disclosure sentence goes back onto that text.
+          ...(chipDue && !this.nativeAiLabel && result.aiDisclosure?.text
+            ? { plainTextDisclosure: result.aiDisclosure.text }
+            : {}),
+        });
 
         // Routine-list smart card (sidecar). Rendered AFTER the agent's
         // prose answer so the user sees the narration first ("Hier sind
@@ -2364,8 +2252,6 @@ export class TeamsBot extends TeamsActivityHandler {
         await context.sendActivity(
           `Entschuldigung, beim Verarbeiten deiner Anfrage ist ein Fehler aufgetreten: ${detail}. Versuch es gleich nochmal oder stell die Frage anders.`,
         );
-      } finally {
-        stopTyping();
       }
     };
 
@@ -2416,6 +2302,20 @@ function truncate(value: string, max: number): string {
   return `${single.slice(0, max - 1)}…`;
 }
 
+/** What a user sees after clicking a button that no card carries any more. */
+export const RETIRED_CARD_ACTION_TEXT =
+  'Diese Schaltfläche gibt es nicht mehr. Schreib mir einfach, was du brauchst.';
+
+/**
+ * A card submit that no handler above claimed: a structured `value` with a
+ * `type` and no text. Reaching this point with one means the card is older
+ * than the buttons it still shows.
+ */
+function isRetiredCardAction(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  return typeof (value as { type?: unknown }).type === 'string';
+}
+
 function extractUserMessage(context: TurnContext): string {
   const cleaned = TurnContext.removeRecipientMention(context.activity) ?? '';
   // Teams sends message body twice (plain text + html attachment) for @mentions;
@@ -2424,86 +2324,64 @@ function extractUserMessage(context: TurnContext): string {
   return cleaned.replace(/\s+/g, ' ').trim();
 }
 
-function startTypingLoop(context: TurnContext): () => void {
-  const sendTyping = (): void => {
-    context.sendActivity({ type: ActivityTypes.Typing }).catch((err) => {
-      console.warn('[teams] typing send failed:', err instanceof Error ? err.message : err);
-    });
-  };
-  sendTyping();
-  const handle = setInterval(sendTyping, TYPING_INTERVAL_MS);
-  return () => clearInterval(handle);
+/** What `sendAnswer` needs besides the answer itself. */
+interface AnswerDelivery {
+  readonly rosterProvider: TeamsRosterProvider | undefined;
+  readonly pendingChoice: OutgoingChoiceCard | undefined;
+  readonly pendingSlots: OutgoingSlotPicker | undefined;
+  readonly consentConnectionName: string | undefined;
+  /** The kernel's disclosure settings ask for a visible marker on this answer. */
+  readonly chipDue: boolean;
+  /** The disclosure sentence, appended when the answer goes out as plain text. */
+  readonly plainTextDisclosure?: string;
+}
+
+/** The activity-level AI label, only where a visible marker is due. */
+function aiLabelEntities(chipDue: boolean): ReturnType<typeof aiLabelEntity>[] {
+  return chipDue ? [aiLabelEntity()] : [];
 }
 
 /**
- * Sends the final turn reply:
- * - Short-answer path (≤ TEAMS_MAX_MESSAGE_CHARS): one Adaptive Card with the
- *   AI label, the answer and — if present — a collapsed tool-trace section.
- *   ToggleVisibility keeps the trace user-local so a group chat stays quiet.
- * - Long-answer fallback: paragraph-split plain text (Adaptive Cards can't
- *   be chunked). AI-label entity is attached to the first message.
+ * Sends the final turn reply (spec 2042 §5.14: minimal output):
+ * - Short-answer path: one Adaptive Card with the answer text, the AI chip
+ *   when due, the colleagues' contributions attributed to them, ONE collapsed
+ *   "Details" element and buttons only for options the agent proposed. A
+ *   `system` notice is a card of its own kind.
+ * - Long-answer fallback (> TEAMS_MAX_MESSAGE_CHARS): paragraph-split plain
+ *   text (Adaptive Cards can't be chunked), same attribution. The AI label is
+ *   attached to the first message when due.
  */
 async function sendAnswer(
   context: TurnContext,
+  answer: SemanticAnswer,
   text: string,
-  runTrace: RunTracePayload | undefined,
-  attachments: OutgoingAttachment[] | undefined,
-  verifier: VerifierBadge | undefined,
-  originalUserMessage: string | undefined,
-  rosterProvider: TeamsRosterProvider | undefined,
-  pendingUserChoice: OutgoingChoiceCard | undefined,
-  followUpOptions: FollowUpOption[] | undefined,
-  pendingSlotCard: OutgoingSlotPicker | undefined,
-  consentConnectionName: string | undefined,
-  captureDisclosure: CaptureDisclosure | undefined,
-  privacyReceipt: PrivacyReceipt | undefined,
-  maskedValues: readonly string[] | undefined,
-  // #332 — harness-built agent transparency (footer + dynamic Direct-Line
-  // buttons) and the Direct Line attributed-answer marker. `memoryUsed`
-  // rides along as the Fresh-Check gate: the button renders only when the
-  // kernel reported that memory actually influenced this answer.
-  directLine?: {
-    agentsConsulted?: readonly AgentConsultation[];
-    delegatedAnswer?: DelegatedAnswer;
-    memoryUsed?: boolean;
-    /** The level the answer was generated under → "Kürzer"/"Mehr Details". */
-    answerVerbosity?: AnswerVerbosityInfo;
-    /** Privacy Shield rendered the answer → "Originaldaten" chip. */
-    systemData?: boolean;
-    /** Operator switches for the optional buttons; absent → all on. */
-    cardFeatures?: TeamsCardFeatures;
-    /** The instance's disclosure sentence, appended when the answer is sent
-     *  as plain text instead of a card (the card carries its own chip). */
-    plainTextDisclosure?: string;
-    /** `false`: the kernel supplied no AI disclosure for this answer, so the
-     *  card draws no "✨ AI-generated" chip. Absent: the chip is drawn. */
-    isAiDisclosed?: boolean;
-  },
+  delivery: AnswerDelivery,
 ): Promise<void> {
-  const cardFeatures = directLine?.cardFeatures ?? DEFAULT_TEAMS_CARD_FEATURES;
-  // Blocking clarification — render a standalone Choice-Card instead of
-  // an answer. The follow-up / fresh-check actions aren't meaningful here
-  // since there's no concrete answer yet; attachments are ignored because
-  // the orchestrator dropped them in this branch (see drainFollowUps).
-  if (pendingUserChoice) {
+  const { rosterProvider, pendingChoice, pendingSlots, consentConnectionName, chipDue } = delivery;
+  const attachments = answer.attachments;
+  const followUpOptions = answer.followUps;
+  const contributions = answer.contributions;
+  const isSystemNotice = answer.speaker?.kind === 'system';
+  // Blocking clarification: a standalone choice card instead of an answer.
+  // Attachments are ignored: the orchestrator dropped them in this branch.
+  if (pendingChoice) {
     const card = buildChoiceAskCard({
-      question: pendingUserChoice.question,
-      ...(pendingUserChoice.rationale
-        ? { rationale: pendingUserChoice.rationale }
-        : {}),
-      options: pendingUserChoice.options,
+      question: pendingChoice.question,
+      ...(pendingChoice.rationale ? { rationale: pendingChoice.rationale } : {}),
+      options: pendingChoice.options,
     });
     const activity = MessageFactory.attachment(card);
-    activity.entities = [...(activity.entities ?? []), aiLabelEntity()];
+    activity.entities = [...(activity.entities ?? []), ...aiLabelEntities(chipDue)];
     await context.sendActivity(activity);
     return;
   }
 
   const trimmed = text.trim();
   const hasAttachments = (attachments?.length ?? 0) > 0;
-  // Images are the whole point when diagrams come back — always use the
+  const hasContributions = (contributions?.length ?? 0) > 0;
+  // Images are the whole point when diagrams come back: always use the
   // Adaptive-Card path even if the accompanying text is empty.
-  if (trimmed.length === 0 && !hasAttachments) {
+  if (trimmed.length === 0 && !hasAttachments && !hasContributions) {
     await context.sendActivity('Es ist keine Antwort zurückgekommen. Bitte versuch es erneut.');
     return;
   }
@@ -2511,7 +2389,7 @@ async function sendAnswer(
   // Resolve `<at>Display Name</at>` tokens against the roster BEFORE the
   // card/plain-text branching. Resolved mentions get threaded into the
   // Adaptive Card's `msteams.entities` so Teams renders the blue @-pill
-  // directly inside the card — no separate plain-text activity on top.
+  // directly inside the card: no separate plain-text activity on top.
   // Unresolved names get stripped (typo never pings a random person).
   const mentionPrep = await prepareMentions(
     context,
@@ -2519,122 +2397,81 @@ async function sendAnswer(
     rosterProvider,
   );
   const resolvedText = mentionPrep.text;
-  const mentionEntities =
-    mentionPrep.kind === 'mentioned' ? mentionPrep.entities : [];
+  const mentionEntities = mentionPrep.kind === 'mentioned' ? mentionPrep.entities : [];
 
-  const answerForCard = resolvedText.length === 0 && hasAttachments
-    ? 'Hier das angeforderte Diagramm:'
-    : resolvedText;
+  const answerForCard =
+    resolvedText.length === 0 && hasAttachments ? 'Hier das angeforderte Diagramm:' : resolvedText;
 
-  if (answerForCard.length <= TEAMS_MAX_MESSAGE_CHARS) {
+  if (answerForCard.length + contributionsLength(contributions) <= TEAMS_MAX_MESSAGE_CHARS) {
+    const details = isSystemNotice ? undefined : buildAnswerDetails(answer);
     const card = buildAnswerCard({
       answer: answerForCard,
-      ...(runTrace ? { runTrace } : {}),
       ...(attachments ? { attachments } : {}),
-      ...(verifier ? { verifier } : {}),
-      ...(directLine?.systemData ? { systemData: true } : {}),
-      ...(directLine?.isAiDisclosed === false ? { aiMarker: false } : {}),
-      ...(originalUserMessage ? { originalUserMessage } : {}),
-      ...(directLine?.memoryUsed ? { showFreshCheck: true } : {}),
-      ...(directLine?.answerVerbosity
-        ? { answerVerbosity: directLine.answerVerbosity }
-        : {}),
+      aiMarker: chipDue,
+      ...(details ? { details } : {}),
       ...(mentionEntities.length > 0 ? { mentions: mentionEntities } : {}),
-      ...(followUpOptions && followUpOptions.length > 0
-        ? { followUpOptions }
+      ...(followUpOptions && followUpOptions.length > 0 ? { followUpOptions } : {}),
+      ...(answer.maskedValues && answer.maskedValues.length > 0
+        ? { maskedValues: answer.maskedValues }
         : {}),
-      ...(captureDisclosure ? { captureDisclosure } : {}),
-      ...(privacyReceipt ? { privacyReceipt } : {}),
-      ...(maskedValues && maskedValues.length > 0 ? { maskedValues } : {}),
-      ...(directLine?.agentsConsulted && directLine.agentsConsulted.length > 0
-        ? { agentsConsulted: directLine.agentsConsulted }
-        : {}),
-      ...(directLine?.delegatedAnswer
-        ? { delegatedAnswer: directLine.delegatedAnswer }
-        : {}),
-      features: cardFeatures,
+      ...(answer.speaker ? { speaker: answer.speaker } : {}),
+      ...(answer.systemNotice ? { systemNotice: answer.systemNotice } : {}),
+      ...(contributions ? { contributions } : {}),
     });
     const activity = MessageFactory.attachment(card);
-    // Activity-level entities: AI label + mention entities for Teams'
-    // notification pipeline. The card also carries the mentions via
-    // `msteams.entities` — that's what drives the in-card pill rendering.
+    // Activity-level entities: AI label (when due) + mention entities for
+    // Teams' notification pipeline. The card also carries the mentions via
+    // `msteams.entities`: that's what drives the in-card pill rendering.
     activity.entities = [
       ...(activity.entities ?? []),
       ...mentionEntities,
-      aiLabelEntity(),
+      ...aiLabelEntities(chipDue),
     ];
     await context.sendActivity(activity);
-    if (pendingSlotCard && pendingSlotCard.slots.length > 0) {
-      const slotCard = buildSlotPickerCard({
-        question: pendingSlotCard.question,
-        slots: pendingSlotCard.slots.map((s) => ({
-          slotId: s.slotId,
-          label: s.label,
-          confidence: s.confidence,
-        })),
-      });
-      await context.sendActivity(MessageFactory.attachment(slotCard));
-    }
-    if (consentConnectionName) {
-      const consentCard = await buildConsentSignInCard(context, consentConnectionName);
-      await context.sendActivity(MessageFactory.attachment(consentCard));
-    }
+    await sendSidecarCards(context, pendingSlots, consentConnectionName);
     return;
   }
 
-  const disclosure = directLine?.plainTextDisclosure?.trim();
-  const plainText = disclosure && !resolvedText.endsWith(disclosure) ? `${resolvedText}\n\n${disclosure}` : resolvedText;
+  const disclosure = delivery.plainTextDisclosure?.trim();
+  const body = isSystemNotice
+    ? systemNoticeAsText(resolvedText)
+    : [resolvedText, contributionsAsText(contributions, answer.speaker)]
+        .filter((part) => part.length > 0)
+        .join('\n\n');
+  const plainText =
+    disclosure && !body.endsWith(disclosure) ? `${body}\n\n${disclosure}` : body;
   const chunks = splitAtParagraphs(plainText, TEAMS_MAX_MESSAGE_CHARS);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     if (chunk === undefined) continue;
     const activity = MessageFactory.text(chunk);
-    // AI label + mentions on the first chunk only — Teams uses the first
+    // AI label + mentions on the first chunk only: Teams uses the first
     // message in a split as the canonical one for notifications and labels.
     if (i === 0) {
       activity.entities = [
         ...(activity.entities ?? []),
         ...mentionEntities,
-        aiLabelEntity(),
+        ...aiLabelEntities(chipDue),
       ];
     }
     await context.sendActivity(activity);
   }
 
-  // Long-answer fallback ate the card, so follow-up buttons need their own
-  // mini-card appended after the chunks. Rare path (>25 KB answers); worth
-  // the extra activity to keep refinements working.
-  // The operator's follow-ups switch is applied inside the builder
-  // (undefined → nothing to send), so card and fallback can never disagree.
+  // The long-answer fallback ate the card, so buttons the agent proposed need
+  // their own mini-card appended after the chunks. Rare path (>25 KB answers).
   if (followUpOptions && followUpOptions.length > 0) {
-    const card = buildFollowUpsOnlyCard(followUpOptions, cardFeatures);
+    const card = buildFollowUpsOnlyCard(followUpOptions);
     if (card) await context.sendActivity(MessageFactory.attachment(card));
   }
-  // #332 — same fallback for the agent-transparency footer + Direct-Line
-  // buttons; otherwise the trust affordance silently vanishes on long answers.
-  // The answer-size steps ride on the same slim card: a >25 KB answer is the
-  // one most likely generated at `detailed`/`max`, so this is where the user
-  // needs "🔽 Kürzer" most.
-  if (
-    directLine?.agentsConsulted?.length ||
-    directLine?.delegatedAnswer ||
-    directLine?.answerVerbosity
-  ) {
-    const dlCard = buildDirectLineOnlyCard({
-      ...(directLine.agentsConsulted
-        ? { agentsConsulted: directLine.agentsConsulted }
-        : {}),
-      ...(directLine.delegatedAnswer
-        ? { delegatedAnswer: directLine.delegatedAnswer }
-        : {}),
-      ...(directLine.answerVerbosity
-        ? { answerVerbosity: directLine.answerVerbosity }
-        : {}),
-      ...(originalUserMessage ? { originalUserMessage } : {}),
-      features: cardFeatures,
-    });
-    if (dlCard) await context.sendActivity(MessageFactory.attachment(dlCard));
-  }
+  await sendSidecarCards(context, pendingSlots, consentConnectionName);
+}
+
+/** The slot picker and the consent sign-in card that follow an answer. */
+async function sendSidecarCards(
+  context: TurnContext,
+  pendingSlotCard: OutgoingSlotPicker | undefined,
+  consentConnectionName: string | undefined,
+): Promise<void> {
   if (pendingSlotCard && pendingSlotCard.slots.length > 0) {
     const slotCard = buildSlotPickerCard({
       question: pendingSlotCard.question,
