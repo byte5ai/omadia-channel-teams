@@ -49,6 +49,14 @@ by the parent session. The routing contract below has no fallback for an older k
   in the accent colour) under the text without the data rendering; the long-answer path posts
   the full text, tables included, once. The conversation history never holds the rows (it
   reaches a model). Without the fields the answer renders from `text` as before.
+- **Typed ballot replies are the kernel's (#2086).** A card or poll Teams does not show
+  natively goes out as numbered text from the kernel, and a matching typed reply becomes the
+  `card_answer` there; this plugin renders and parses no ballot. Fix for it: the `created` and
+  `edited` events no longer report the root of a channel thread as `replyToMessageId` (every
+  message of a thread carries it as `replyToId`); that value made the kernel look for a question
+  on the root and switched its one-open-question fallback off. A quoted reply still names the
+  quoted message. The reported `messageId` of a sent text is the Teams activity id, and a mention
+  is `addressedToBot` (both tested).
 - **Removed:** the `'fallback'` decision, `pickChatAgentForTurn` (now `pickTurnDecision`),
   the `TEAMS_NATIVE_IDENTITY` constant (the decision is per turn now).
 - **Plain-text parity (criterion 30)** is covered by tests: a card Teams does not render is
