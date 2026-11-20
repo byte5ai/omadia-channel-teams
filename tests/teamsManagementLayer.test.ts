@@ -284,6 +284,21 @@ describe('the sender principal is the one form of every channel', () => {
     for (const call of sim.resolveCalls) assert.equal(call.locale, 'de');
   });
 
+  it('passes en for an English activity locale, and nothing for a language the notices do not know', async () => {
+    const run = async (locale: string) => {
+      const sim = simulatedBot(new SimulatedKernel(), {
+        captureConversationReference: () => {},
+        emitMembershipEvent: () => {},
+        resolve: () => ({ ...resolveBound(), chatAgent: sim.agent }),
+      });
+      await sim.deliver({ ...messageActivity({ bot: MIRA, from: ANNA, text: 'hello', mention: true }), locale });
+      return sim.resolveCalls.map((call) => call.locale);
+    };
+
+    assert.deepEqual([...new Set(await run('en-US'))], ['en']);
+    assert.deepEqual([...new Set(await run('fr-FR'))], [undefined]);
+  });
+
   it('is not asked for a message nobody addressed (no Graph lookup for a dropped message)', async () => {
     const sim = simulatedBot(new SimulatedKernel(), {
       captureConversationReference: () => {},
@@ -421,5 +436,51 @@ describe('the speaker is known before the answer', () => {
     await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'frage', mention: true }));
 
     assert.ok(JSON.stringify(posted(sim.sent)[0]).includes('Jonas (konsultiert von Mira)'));
+  });
+});
+
+describe('/agent is stored under the narrowest key and the singleton never answers behind a registry', () => {
+  it('a bot-wide catch-all answers text, but /agent reaches the conversation\'s management layer', async () => {
+    const answeredBy: string[] = [];
+    const agentFor = (name: string) => ({
+      chat: async (input: { userMessage: string }) => {
+        answeredBy.push(`${name}:${input.userMessage}`);
+        return { text: 'ok', speaker: MIRA_SPEAKER };
+      },
+    });
+    const sim = simulatedBot(new SimulatedKernel(), {
+      captureConversationReference: () => {},
+      emitMembershipEvent: () => {},
+      resolve: (input) =>
+        input.channelKey.startsWith('28:')
+          ? { decision: 'bound', chatAgent: agentFor('bot'), speaker: MIRA_SPEAKER }
+          : { decision: 'reject', chatAgent: agentFor('conversation'), notice: NOTICE },
+    });
+
+    await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: '/agent Jonas', mention: true }));
+    await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true }));
+
+    assert.deepEqual(answeredBy, ['conversation:/agent Jonas', 'bot:[Anna Köhler]: hallo']);
+  });
+
+  it('a bound decision without any ChatAgent is refused, not answered by the host\'s singleton', async () => {
+    const sim = simulatedBot(new SimulatedKernel(), {
+      captureConversationReference: () => {},
+      emitMembershipEvent: () => {},
+      resolve: () => ({ decision: 'bound', notice: undefined }),
+    });
+
+    await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true }));
+
+    assert.deepEqual(sim.sent, [NO_AGENT_FOR_CONVERSATION_TEXT]);
+    assert.deepEqual(sim.turns, [], 'the singleton agent did not run');
+  });
+
+  it('without the resolver service (a host with one agent) the singleton answers', async () => {
+    const sim = simulatedBot(new SimulatedKernel(), { captureConversationReference: () => {}, emitMembershipEvent: () => {} });
+
+    await sim.deliver(messageActivity({ bot: MIRA, from: ANNA, text: 'hallo', mention: true }));
+
+    assert.deepEqual(sim.turns, ['[Anna Köhler]: hallo']);
   });
 });

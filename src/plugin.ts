@@ -14,6 +14,7 @@ import {
   InMemoryConversationHistoryStore,
   isNoReply,
   logNoReplyDrop,
+  resolveChannelRoute,
   type ChannelBindingResolver,
   type ChannelHandle,
   type ChannelKeyDirectory,
@@ -567,10 +568,12 @@ export async function activate(
         principal?: string;
         locale?: string;
       }): TurnAgentDecision => {
-        const result = channelResolver.resolve(input.channelType, input.channelKey, {
+        const result = resolveChannelRoute(ctx, input.channelType, input.channelKey, {
           ...(input.principal ? { principal: input.principal } : {}),
           ...(input.locale ? { locale: input.locale } : {}),
         });
+        // Published at activation, gone later: nothing to answer with.
+        if (!result) return { decision: 'reject' };
         return {
           decision: result.decision,
           ...(result.chatAgent ? { chatAgent: result.chatAgent } : {}),
@@ -671,7 +674,7 @@ export async function activate(
   } else {
     core.log(
       'info',
-      'channelResolver@1 not published — Teams routes all turns to default chatAgent',
+      'channelResolver@1 not published — no agent registry: the host\'s single chatAgent answers every turn',
     );
   }
   if (ssoConnectionName) {

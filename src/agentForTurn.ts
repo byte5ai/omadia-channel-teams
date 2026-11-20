@@ -45,6 +45,19 @@ export interface TurnAgentDecision {
   readonly speaker?: AgentSpeaker;
 }
 
+/** The decision of a turn plus the ChatAgent that carries out `/agent` for it. */
+export interface PickedTurnDecision extends TurnAgentDecision {
+  /**
+   * The management layer under the NARROWEST key of the turn. A selection
+   * hangs on the `channelKey` of the resolve call plus the principal (S1), so
+   * `/agent` must reach the ChatAgent of the conversation, not the one of a
+   * bot-wide catch-all binding that happened to win the routing: otherwise the
+   * choice would be stored for every chat of that bot. For an exclusive hit
+   * (the bot IS the agent) it is the bot's own.
+   */
+  readonly selectionAgent?: ChatAgent;
+}
+
 export interface PickTurnDecisionInput {
   /** `activity.conversation.id` — the chat the message arrived in. */
   readonly conversationId?: string;
@@ -66,19 +79,25 @@ export interface PickTurnDecisionInput {
  *
  * Returns `undefined` only when there is no key to ask about.
  */
-export function pickTurnDecision(input: PickTurnDecisionInput): TurnAgentDecision | undefined {
+export function pickTurnDecision(input: PickTurnDecisionInput): PickedTurnDecision | undefined {
   const { conversationId, botKey, resolve } = input;
 
   // The bot key is probed FIRST because only it can be exclusive — but a
   // non-exclusive hit here is still ranked below the conversation, so
   // probing order and precedence order deliberately differ.
   const bot = botKey ? resolve(botKey) : undefined;
-  if (bot?.exclusive === true) return bot;
+  if (bot?.exclusive === true) return { ...bot, ...(bot.chatAgent ? { selectionAgent: bot.chatAgent } : {}) };
 
   const conversation =
     conversationId && conversationId !== botKey ? resolve(conversationId) : undefined;
+  const selectionAgent = conversation?.chatAgent ?? bot?.chatAgent;
+  const withSelection = (decision: TurnAgentDecision): PickedTurnDecision => ({
+    ...decision,
+    ...(selectionAgent ? { selectionAgent } : {}),
+  });
 
-  if (conversation?.decision === 'bound') return conversation;
-  if (bot?.decision === 'bound') return bot;
-  return conversation ?? bot;
+  if (conversation?.decision === 'bound') return withSelection(conversation);
+  if (bot?.decision === 'bound') return withSelection(bot);
+  const refusal = conversation ?? bot;
+  return refusal ? withSelection(refusal) : undefined;
 }

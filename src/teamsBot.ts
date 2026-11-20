@@ -50,6 +50,8 @@ interface TurnAgentResolution {
   readonly decision?: TurnAgentDecision['decision'];
   /** The management layer in front of the agent; set on `reject` too. */
   readonly chatAgent?: ChatAgent;
+  /** The management layer under the narrowest key (the conversation): `/agent` goes to this one. */
+  readonly selectionAgent?: ChatAgent;
   /** With `reject`: the `system` notice for the sender. */
   readonly notice?: SystemNotice;
   /** With `bound`: the agent that will answer, known before the answer. */
@@ -123,9 +125,9 @@ import type {
 import { buildRecalledContextCard } from './teamsRecall.js';
 import { contributionsAsText, contributionsLength, systemNoticeAsText } from './teamsAnswerParts.js';
 import { TEAMS_PACE_PROFILE, teamsPaceHooks } from './teamsPace.js';
+import { readSideChannelData, sideChannelLength, type SideChannelTable } from './teamsSideChannelData.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
-import { readSideChannelData, sideChannelLength, type SideChannelTable } from './teamsSideChannelData.js';
 import {
   resolveMentions,
   stripMentionTokens,
@@ -1123,7 +1125,9 @@ export class TeamsBot extends TeamsActivityHandler {
       rawRecipientId !== undefined ? parseTeamsBotKey(rawRecipientId) : undefined;
     const recipientId =
       recipientAppId !== undefined ? teamsBotKey(recipientAppId) : rawRecipientId;
-    if (!conversationId && !recipientId) return {};
+    // A wired resolver with nothing to ask about serves nothing: refused, never
+    // the instance's singleton (`chatAgent@1` is a refuser behind a registry).
+    if (!conversationId && !recipientId) return { refused: true };
     const resolveForActivity = this.resolveChatAgentForActivity;
     // Local to this call — nothing about this turn touches the instance.
     let identityBotKey: string | undefined;
@@ -1160,6 +1164,7 @@ export class TeamsBot extends TeamsActivityHandler {
       return {
         decision: picked.decision,
         ...(picked.chatAgent ? { chatAgent: picked.chatAgent } : {}),
+        ...(picked.selectionAgent ? { selectionAgent: picked.selectionAgent } : {}),
         ...(picked.notice ? { notice: picked.notice } : {}),
         ...(picked.speaker ? { speaker: picked.speaker } : {}),
         ...(identityBotKey ? { identityBotKey } : {}),
@@ -2266,7 +2271,19 @@ export class TeamsBot extends TeamsActivityHandler {
             console.error('[teams] routines turn-context capture failed:', refErr);
           }
         }
-        const chatAgent = resolved.chatAgent ?? this.defaultOrchestrator;
+        // The singleton answers only a host WITHOUT the resolver service (one
+        // agent, one bot). With the resolver every turn has the ChatAgent the
+        // routing returned (resolveChatAgentForTurn refuses a turn without
+        // one), and a `/agent` command goes to the one under the narrowest key.
+        const routedAgent =
+          resolved.selectionAgent && isAgentCommandText(input.userMessage)
+            ? resolved.selectionAgent
+            : resolved.chatAgent;
+        if (!routedAgent && this.resolveChatAgentForActivity) {
+          await context.sendActivity(NO_AGENT_FOR_CONVERSATION_TEXT);
+          return;
+        }
+        const chatAgent = routedAgent ?? this.defaultOrchestrator;
         // #330 field report — the attributed form is what the agent sees AND
         // what lands in history; sendAnswer keeps the raw text for mention
         // resolution. See attributeGroupMessage for the why. `/agent` and
@@ -2384,6 +2401,13 @@ export class TeamsBot extends TeamsActivityHandler {
         // template of the management layer, not AI output: no marker.
         const isSystemNotice = result.speaker?.kind === 'system';
         const chipDue = !isSystemNotice && aiChipDue(result.aiDisclosure);
+        // Side-channel data (spec §5.13): the rows are drawn natively and the
+        // answer shows the text WITHOUT their markdown rendering. Without the
+        // fields `text` is the one source, tables included, as before. Neither
+        // the history (it reaches a model) nor the card text carries the rows.
+        const side = isSystemNotice ? undefined : readSideChannelData(result);
+        const withoutDisclosure = (text: string): string =>
+          chipDue ? stripFoldedAiDisclosure(text, result.aiDisclosure?.text) : text;
         const answerText = isSystemNotice
           ? (result.systemNotice?.text ?? result.text)
           : withoutDisclosure(side ? side.textWithoutData : result.text);
@@ -2393,19 +2417,13 @@ export class TeamsBot extends TeamsActivityHandler {
         await sendAnswer(context, result, answerText, {
           rosterProvider,
           ...(nameLine ? { speakerLine: nameLine } : {}),
+          ...(side ? { dataTables: side.tables, fullText: withoutDisclosure(result.text) } : {}),
           pendingChoice,
           pendingSlots,
           consentConnectionName: result.oauthConsentPending ? this.ssoConnectionName : undefined,
           chipDue,
           // D24 — an answer too long for a card goes out as plain text,
           // where no chip of ours is shown. Unless the platform label was
-        // Side-channel data (spec §5.13): the rows are drawn natively and the
-        // answer shows the text WITHOUT their markdown rendering. Without the
-        // fields `text` is the one source, tables included, as before. Neither
-        // the history (it reaches a model) nor the card text carries the rows.
-        const side = isSystemNotice ? undefined : readSideChannelData(result);
-        const withoutDisclosure = (text: string): string =>
-          chipDue ? stripFoldedAiDisclosure(text, result.aiDisclosure?.text) : text;
           // confirmed, the disclosure sentence goes back onto that text.
           ...(chipDue && !this.nativeAiLabel && result.aiDisclosure?.text
             ? { plainTextDisclosure: result.aiDisclosure.text }
@@ -2417,7 +2435,6 @@ export class TeamsBot extends TeamsActivityHandler {
         // deine 3 Routinen") and the actionable card right below.
         if (pendingRoutineList && this.buildRoutineListSmartCardAttachment) {
           const att = this.buildRoutineListSmartCardAttachment({
-          ...(side ? { dataTables: side.tables, fullText: withoutDisclosure(result.text) } : {}),
             filter: pendingRoutineList.filter,
             totals: pendingRoutineList.totals,
             routines: pendingRoutineList.routines,
@@ -2539,6 +2556,10 @@ interface AnswerDelivery {
   readonly plainTextDisclosure?: string;
   /** "Mira:", where one bot serves several agents and the speaker would be unclear (INV-4). */
   readonly speakerLine?: string;
+  /** Side-channel tables drawn natively under the answer text (spec §5.13). */
+  readonly dataTables?: readonly SideChannelTable[];
+  /** With `dataTables`: the whole text, tables rendered as markdown: what the long-answer path posts. */
+  readonly fullText?: string;
 }
 
 /** The activity-level AI label, only where a visible marker is due. */
@@ -2556,10 +2577,6 @@ function aiLabelEntities(chipDue: boolean): ReturnType<typeof aiLabelEntity>[] {
  *   text (Adaptive Cards can't be chunked), same attribution. The AI label is
  *   attached to the first message when due.
  */
-  /** Side-channel tables drawn natively under the answer text (spec §5.13). */
-  readonly dataTables?: readonly SideChannelTable[];
-  /** With `dataTables`: the whole text, tables rendered as markdown: what the long-answer path posts. */
-  readonly fullText?: string;
 async function sendAnswer(
   context: TurnContext,
   answer: SemanticAnswer,
@@ -2626,6 +2643,7 @@ async function sendAnswer(
         : {}),
       ...(answer.speaker ? { speaker: answer.speaker } : {}),
       ...(delivery.speakerLine ? { speakerLine: delivery.speakerLine } : {}),
+      ...(delivery.dataTables ? { dataTables: delivery.dataTables } : {}),
       ...(answer.systemNotice ? { systemNotice: answer.systemNotice } : {}),
       ...(contributions ? { contributions } : {}),
     });
@@ -2643,7 +2661,6 @@ async function sendAnswer(
     return;
   }
 
-      ...(delivery.dataTables ? { dataTables: delivery.dataTables } : {}),
   const disclosure = delivery.plainTextDisclosure?.trim();
   const body = isSystemNotice
     ? systemNoticeAsText(resolvedText)

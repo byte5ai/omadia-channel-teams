@@ -77,7 +77,7 @@ describe('pickTurnDecision', () => {
 
     const picked = pickTurnDecision({ conversationId: GROUP, botKey: HR_BOT, resolve });
 
-    assert.equal(picked, refusal);
+    assert.deepEqual(picked, { ...refusal, selectionAgent: MANAGEMENT });
     assert.deepEqual(probes, [HR_BOT]);
   });
 
@@ -162,5 +162,36 @@ describe('pickTurnDecision', () => {
     const { resolve, probes } = resolverOver({});
     assert.equal(pickTurnDecision({ resolve }), undefined);
     assert.deepEqual(probes, []);
+  });
+
+  describe('the agent that carries out /agent (selection key: the narrowest key of the turn)', () => {
+    it('a bot-wide catch-all binding routes the turn but /agent goes to the conversation\'s management layer', () => {
+      const { resolve } = resolverOver({
+        [GROUP]: { decision: 'reject', chatAgent: CONVERSATION_MANAGEMENT, notice: NOTICE },
+        [HR_BOT]: { decision: 'bound', chatAgent: HR },
+      });
+
+      const picked = pickTurnDecision({ conversationId: GROUP, botKey: HR_BOT, resolve });
+
+      assert.equal(picked?.chatAgent, HR, 'the catch-all still answers ordinary text');
+      assert.equal(picked?.selectionAgent, CONVERSATION_MANAGEMENT, 'the selection is stored for this chat, not for every chat of the bot');
+    });
+
+    it('an exclusive bot stores under its own key: the bot is the only key there is', () => {
+      const { resolve } = resolverOver({
+        [HR_BOT]: { decision: 'bound', chatAgent: HR, exclusive: true },
+        [GROUP]: { decision: 'bound', chatAgent: MESSIAS },
+      });
+
+      assert.equal(pickTurnDecision({ conversationId: GROUP, botKey: HR_BOT, resolve })?.selectionAgent, HR);
+    });
+
+    it('a conversation binding is its own selection agent; a reject too', () => {
+      const bound = resolverOver({ [GROUP]: { decision: 'bound', chatAgent: MESSIAS } }).resolve;
+      const rejected = resolverOver({}).resolve;
+
+      assert.equal(pickTurnDecision({ conversationId: GROUP, botKey: HR_BOT, resolve: bound })?.selectionAgent, MESSIAS);
+      assert.equal(pickTurnDecision({ conversationId: GROUP, botKey: HR_BOT, resolve: rejected })?.selectionAgent, MANAGEMENT);
+    });
   });
 });
