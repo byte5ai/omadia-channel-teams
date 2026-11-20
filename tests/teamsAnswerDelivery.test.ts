@@ -125,9 +125,19 @@ describe('what the user typed reaches the kernel as it is', () => {
     assert.deepEqual(turns, ['/agent Jonas']);
   });
 
-  it('in a group chat the existing speaker attribution (#330) stands in front of it; the text itself is untouched', async () => {
+  it('in a group chat no speaker attribution (#330) stands in front of it: the management layer reads only the whole message', async () => {
     const { turns } = await deliverAnswer({ text: 'ok' }, '/agent Jonas');
-    assert.deepEqual(turns, ['[Anna Köhler]: /agent Jonas']);
+    assert.deepEqual(turns, ['/agent Jonas']);
+  });
+
+  it('`/agents` and a bare `/agent` in a group chat are passed through whole as well', async () => {
+    assert.deepEqual((await deliverAnswer({ text: 'ok' }, '/agents')).turns, ['/agents']);
+    assert.deepEqual((await deliverAnswer({ text: 'ok' }, '/agent')).turns, ['/agent']);
+  });
+
+  it('ordinary text in a group chat keeps the speaker attribution', async () => {
+    const { turns } = await deliverAnswer({ text: 'ok' }, 'wie ist der Stand?');
+    assert.deepEqual(turns, ['[Anna Köhler]: wie ist der Stand?']);
   });
 });
 

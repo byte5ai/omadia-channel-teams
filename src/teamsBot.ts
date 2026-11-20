@@ -10,13 +10,17 @@ import {
   type SigninStateVerificationQuery,
 } from 'botbuilder';
 import {
+  channelUserPrincipal,
   formatSessionScope,
+  InMemorySpeakerHistoryStore,
   isNoReply,
   logNoReplyDrop,
   makePrincipal,
   buildAnswerDetails,
+  parseAgentCommand,
   parseSessionScope,
   runPacedTurn,
+  speakerLine,
   unsharedConversationScope,
 } from '@omadia/channel-sdk';
 import type {
@@ -30,24 +34,34 @@ import { inboundMessageId, isBotMentioned, type TeamsConversationMessages } from
 import type { TeamsMeetingSessions } from './teamsMeetingSessions.js';
 import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { parsePollAnswerValue } from './teamsPollCard.js';
-import { pickChatAgentForTurn } from './agentForTurn.js';
+import { pickTurnDecision, type TurnAgentDecision } from './agentForTurn.js';
 
 /**
- * What resolving an activity yields: the agent that must answer it, and the
- * provisioned-bot key it resolved through (when it resolved through one).
+ * What resolving an activity yields: the platform's decision for the turn, and
+ * the provisioned-bot key it resolved through (when it resolved through one).
  *
  * Returned rather than stored, because several bots in one group chat receive
  * the SAME message and their turns overlap on this single instance — see the
  * note on `agentResolutionIsPerTurn`.
  */
 interface TurnAgentResolution {
+  /** `bound`: an agent answers. `reject`: the management layer answers with
+   *  {@link notice}. Absent: no resolver is wired (legacy single-agent install). */
+  readonly decision?: TurnAgentDecision['decision'];
+  /** The management layer in front of the agent; set on `reject` too. */
   readonly chatAgent?: ChatAgent;
+  /** With `reject`: the `system` notice for the sender. */
+  readonly notice?: SystemNotice;
+  /** With `bound`: the agent that will answer, known before the answer. */
+  readonly speaker?: AgentSpeaker;
   readonly identityBotKey?: string;
   /**
-   * byte5ai/omadia#1598 — the platform resolver is wired but serves no agent
-   * for this activity (it rejected, or it threw). The turn is refused: the
-   * `defaultOrchestrator` fallback is the kernel's legacy bundle, which has no
-   * per-agent plugin grants and would answer with every plugin's tools.
+   * byte5ai/omadia#1598 — the platform resolver is wired but gave nothing to
+   * answer with (it threw, or a platform without the management layer sent a
+   * `reject` with neither agent nor notice). The turn is refused with a fixed
+   * text: the `defaultOrchestrator` fallback is the kernel's legacy bundle,
+   * which has no per-agent plugin grants and would answer with every plugin's
+   * tools.
    */
   readonly refused?: true;
 }
@@ -59,10 +73,31 @@ export const POLL_NOT_ACTIVE_TEXT = 'Diese Abstimmung ist nicht mehr aktiv.';
 /** byte5ai/omadia#1598 — what a user sees when no agent serves the chat. */
 export const NO_AGENT_FOR_CONVERSATION_TEXT =
   'Diesem Chat ist kein Agent zugeordnet. Bitte wende dich an deinen Administrator.';
+
+/** The management layer's own speaker: a notice, never an agent's answer. */
+const SYSTEM_SPEAKER: Speaker = { kind: 'system' };
+
+/**
+ * `/agent <name>`, `/agent` and `/agents` as the SDK reads them: the whole
+ * message. The channel does not carry them out (the management layer behind
+ * the resolver's ChatAgent does); it only has to leave them the whole message,
+ * so no attribution stands in front of them and no topic detection reads them
+ * as a break.
+ */
+function isAgentCommandText(text: string): boolean {
+  return parseAgentCommand(text) !== undefined;
+}
+
+/** The notice language the management layer knows (`de`, `en`) from Teams' `activity.locale` (`de-DE`). */
+function noticeLocale(locale: string | undefined): 'de' | 'en' | undefined {
+  const language = locale?.trim().slice(0, 2).toLowerCase();
+  return language === 'de' || language === 'en' ? language : undefined;
+}
 import { parseTeamsBotKey, teamsBotKey } from './teamsBotIdentity.js';
 import type { TeamsProactiveSend } from './messagesRouter.js';
 import type { TeamsTurnOrigin } from './kernel-types.js';
 import type {
+  AgentSpeaker,
   ChatAgent,
   ConversationHistoryStore,
   FollowUpOption,
@@ -70,6 +105,8 @@ import type {
   OutgoingChoiceCard,
   OutgoingSlotPicker,
   SemanticAnswer,
+  Speaker,
+  SystemNotice,
   TopicDetector,
   TurnContextModule,
 } from './kernel-types.js';
@@ -328,6 +365,10 @@ export function teamsTurnOrigin(
       ? { kind: 'personal', userId }
       : parseSessionScope(sessionScope);
   const teamId = teamsContainerTeamId(activity.channelData);
+  // The Entra object id as a typed principal: what the facilitation engine
+  // matches participants by (message events carry the same id). NOT the
+  // routing principal of `/agent` and availability, which is
+  // `channelUserPrincipal` (`user:<email>` once verified): see `senderPrincipal`.
   const principal = userId ? makePrincipal('user', userId) : undefined;
   // #2043 — `channelConversationId` (channel-sdk 0.4.0): the conversation as
   // TEAMS names it (`activity.conversation.id`), byte for byte, never trimmed
@@ -526,26 +567,26 @@ export class TeamsBot extends TeamsActivityHandler {
      * contract.
      */
     /**
-     * Resolves a key to a ChatAgent. Returns `decision: 'bound'` when an
-     * explicit binding OR the agent's own provisioned identity matches the
-     * key — `'fallback'` means "nothing matched, the platform fallback
-     * Agent would answer", `'reject'` means "nothing matched and no
-     * fallback configured".
+     * Asks the management layer about one key (byte5ai/omadia#2055):
+     * `decision: 'bound'` when an explicit binding, a selection or the agent's
+     * own provisioned identity matches the key, `'reject'` when nothing does
+     * (or the agent is disabled, deleted or not available to the sender). There
+     * is no fallback agent. `chatAgent` is set on both: it handles `/agent` and
+     * answers a refusal with `notice` as `system`.
      *
      * `exclusive` marks the one case that outranks everything: the key IS
-     * this agent's provisioned bot. See {@link pickChatAgentForTurn} for the
-     * full precedence order — this callback answers about a single key and
-     * has no opinion about which key wins.
+     * this agent's provisioned bot. See {@link pickTurnDecision} for the full
+     * precedence order — this callback answers about a single key and has no
+     * opinion about which key wins. `principal` is the sender in the one form
+     * every channel uses (`channelUserPrincipal`), `locale` the notice language.
      */
     private readonly resolveChatAgentForActivity?: (input: {
       readonly channelType: 'teams';
       readonly channelKey: string;
       readonly conversationId: string;
-    }) => {
-      readonly decision: 'bound' | 'fallback' | 'reject';
-      readonly chatAgent?: ChatAgent;
-      readonly exclusive?: boolean;
-    },
+      readonly principal?: string;
+      readonly locale?: string;
+    }) => TurnAgentDecision,
     /**
      * Observer that records every inbound conversation so the
      * `/operator/channels` dashboard can list known Teams channels /
@@ -955,30 +996,116 @@ export class TeamsBot extends TeamsActivityHandler {
     return undefined;
   }
 
+  /** Which agents spoke in which conversation, so a name line appears only
+   *  where the speaker would be unclear (INV-4). Process-local. */
+  private readonly speakerHistory = new InMemorySpeakerHistoryStore();
+
+  /** The name line for `speaker` in this conversation, or `undefined` when none is due. */
+  private nameLineFor(
+    sessionScope: string,
+    speaker: Speaker | undefined,
+    isNativeIdentity: boolean,
+  ): string | undefined {
+    const history = this.speakerHistory.get(sessionScope);
+    return speakerLine(speaker, {
+      nativeIdentity: isNativeIdentity,
+      previousAgentIds: history?.agentIds ?? new Set<string>(),
+      ...(history?.lastAgentId ? { lastAgentId: history.lastAgentId } : {}),
+    });
+  }
+
   /**
-   * Resolve the ChatAgent for THIS turn based on the bot framework
-   * activity. Sets `this.currentChatAgent` so the helpers downstream
-   * (which all read it via `this.currentChatAgent ?? this.defaultOrchestrator`)
-   * see the same agent for the whole turn even if the resolver later
-   * changes (binding edit mid-turn). Called once at the top of
-   * handleMessage.
+   * Answers a turn no agent serves (#2055): the management layer's ChatAgent
+   * gets the text (it carries out `/agent`, `/agents` and otherwise answers
+   * with the refusal notice), and what comes back is posted as `system`. A
+   * platform that sent only the notice has it posted as it is. Nothing of the
+   * turn is stored: no history, no routine capture, no pace.
+   */
+  private async answerRejectedTurn(
+    context: TurnContext,
+    resolved: TurnAgentResolution,
+    input: {
+      conversationId: string;
+      sessionScope: string;
+      userId: string | undefined;
+      userMessage: string;
+      origin?: TurnOrigin;
+    },
+  ): Promise<void> {
+    try {
+      const notice = resolved.notice;
+      const answer: SemanticAnswer | undefined = resolved.chatAgent
+        ? await resolved.chatAgent.chat({
+            userMessage: input.userMessage,
+            sessionScope: input.sessionScope,
+            ...(input.userId ? { userId: input.userId } : {}),
+            userTimeZone:
+              (context.activity as { localTimezone?: string }).localTimezone ?? 'Europe/Berlin',
+            origin: input.origin ?? teamsTurnOrigin(context.activity, input.sessionScope, input.userId),
+          })
+        : notice
+          ? { text: notice.text, speaker: SYSTEM_SPEAKER, systemNotice: notice }
+          : undefined;
+      if (!answer) return;
+      // The management layer answers as `system` and nothing else: an agent's
+      // prose here would be an answer for a sender no agent serves.
+      const systemAnswer: SemanticAnswer =
+        answer.speaker?.kind === 'system'
+          ? answer
+          : { text: notice?.text ?? answer.text, speaker: SYSTEM_SPEAKER, ...(notice ? { systemNotice: notice } : {}) };
+      console.error(
+        `[teams] turn answered by the management layer conv=${input.conversationId.slice(0, 24)}… notice=${systemAnswer.systemNotice?.code ?? '-'}`,
+      );
+      await sendAnswer(context, systemAnswer, systemAnswer.systemNotice?.text ?? systemAnswer.text, {
+        rosterProvider: undefined,
+        pendingChoice: undefined,
+        pendingSlots: undefined,
+        consentConnectionName: undefined,
+        chipDue: false,
+      });
+    } catch (err) {
+      console.error('[teams] management-layer answer failed:', err instanceof Error ? err.message : err);
+      await context.sendActivity(NO_AGENT_FOR_CONVERSATION_TEXT);
+    }
+  }
+
+  /**
+   * The sender in the one principal form of every channel (spec 2042 §5.3):
+   * `user:<email>` when the address is verified (Graph by Entra object id,
+   * roster as fallback: {@link resolveBindingEmail}), else
+   * `user:teams-aad:<id>`. Selections, default-agent entries and availability
+   * are keyed by it. Deliberately NOT `TurnOrigin.principal`: that one is the
+   * Entra object id the facilitation engine matches participants by, and
+   * `turnPrincipal` would prefer it over the address.
+   */
+  private async senderPrincipal(context: TurnContext): Promise<string | undefined> {
+    const from = context.activity.from;
+    const userId = from?.aadObjectId ?? (typeof from?.id === 'string' ? from.id : undefined);
+    if (!userId) return undefined;
+    const email = await this.resolveBindingEmail(context, userId).catch(() => undefined);
+    return channelUserPrincipal({ kind: 'teams-aad', id: userId, ...(email ? { email } : {}) });
+  }
+
+  /**
+   * Resolve the management layer's decision for THIS turn from the bot
+   * framework activity. Returned, never stored on the instance: several bots
+   * in one group chat overlap on it (see `agentResolutionIsPerTurn`).
    *
    * TWO keys are probed, and probing order is deliberately NOT precedence
    * order. The bot identity (`activity.recipient.id`, `28:<bot-app-id>`) goes
    * first because it is the only key that can come back exclusive — a bot
    * the platform provisioned to BE one agent. Failing that, the conversation
-   * binding wins, then the bot-level catch-all, then the platform fallback.
-   * {@link pickChatAgentForTurn} owns that rule and its tests.
+   * binding wins, then the bot-level catch-all, then the refusal.
+   * {@link pickTurnDecision} owns that rule and its tests.
    *
    * Both keys are matched by exact string equality, so they are normalized
    * through `teamsBotKey()` — the same helper the `ChannelKeyDirectory`
    * contribution publishes with, so what the operator picked in
    * `/operator/channels` IS what the resolver matches at runtime.
    */
-  private resolveChatAgentForTurn(
-    activity: TurnContext['activity'],
-  ): TurnAgentResolution {
+  private async resolveChatAgentForTurn(context: TurnContext): Promise<TurnAgentResolution> {
     if (!this.resolveChatAgentForActivity) return {};
+    const activity = context.activity;
     const conversationId = activity.conversation?.id;
     // Normalize the bot-identity key through the canonical helper: the
     // directory publishes `teamsBotKey(appId)` (lowercase-normalized) and the
@@ -998,7 +1125,9 @@ export class TeamsBot extends TeamsActivityHandler {
     // Local to this call — nothing about this turn touches the instance.
     let identityBotKey: string | undefined;
     try {
-      const chatAgent = pickChatAgentForTurn({
+      const principal = await this.senderPrincipal(context);
+      const locale = noticeLocale(activity.locale);
+      const picked = pickTurnDecision({
         ...(conversationId ? { conversationId } : {}),
         ...(recipientId ? { botKey: recipientId } : {}),
         resolve: (channelKey) => {
@@ -1006,6 +1135,8 @@ export class TeamsBot extends TeamsActivityHandler {
             channelType: 'teams',
             channelKey,
             conversationId: conversationId ?? 'unknown',
+            ...(principal ? { principal } : {}),
+            ...(locale ? { locale } : {}),
           });
           // `exclusive` means the key IS this agent's own provisioned bot —
           // the platform's own word for "this deployment runs per-bot
@@ -1020,8 +1151,14 @@ export class TeamsBot extends TeamsActivityHandler {
           return decision;
         },
       });
+      // Nothing to answer with: neither the management layer's agent nor a
+      // notice to post. Fail closed with the fixed text.
+      if (!picked || (!picked.chatAgent && !picked.notice)) return { refused: true };
       return {
-        ...(chatAgent ? { chatAgent } : { refused: true as const }),
+        decision: picked.decision,
+        ...(picked.chatAgent ? { chatAgent: picked.chatAgent } : {}),
+        ...(picked.notice ? { notice: picked.notice } : {}),
+        ...(picked.speaker ? { speaker: picked.speaker } : {}),
         ...(identityBotKey ? { identityBotKey } : {}),
       };
     } catch (err) {
@@ -1059,10 +1196,6 @@ export class TeamsBot extends TeamsActivityHandler {
     // filter so operators can pre-bind a chat even if nobody has
     // @-mentioned the bot yet (a "Mention me later" pre-config flow).
     this.conversationObserver?.observe(context);
-    // Phase A+B follow-up — pick the ChatAgent for THIS turn before any
-    // chat work runs. Falls back to defaultOrchestrator on miss / error.
-    const turnAgent = this.resolveChatAgentForTurn(context.activity);
-
     // Mention-only policy: in any non-personal context (group chat,
     // channel thread, meeting chat) drop the turn unless the bot was
     // explicitly @mentioned. Otherwise the bot would chime in on every
@@ -1130,13 +1263,37 @@ export class TeamsBot extends TeamsActivityHandler {
       return;
     }
 
-    // byte5ai/omadia#1598 — no agent serves this chat: say so instead of
-    // answering with the grant-less default bundle.
+    // Pick the management layer's decision for THIS turn before any chat work
+    // runs: after the gates above (a message nobody addressed is dropped
+    // without a Graph lookup for its sender), before anything is stored.
+    const turnAgent = await this.resolveChatAgentForTurn(context);
+
+    // byte5ai/omadia#1598 — the platform serves nothing for this chat: say so
+    // instead of answering with the grant-less default bundle.
     if (turnAgent.refused) {
       console.error(
         `[teams] no agent for conv=${(context.activity.conversation?.id ?? '-').slice(0, 24)}… — turn refused`,
       );
       await context.sendActivity(NO_AGENT_FOR_CONVERSATION_TEXT);
+      return;
+    }
+
+    // #2055 — no agent answers this sender here (disabled, deleted, not
+    // available to them, nothing addressed an agent): the management layer
+    // answers, as `system`. Nothing of the message is stored or interpreted
+    // for a sender no agent serves: no attachment download, no topic
+    // detection, no event for workflows.
+    if (turnAgent.decision === 'reject') {
+      await this.runOrchestratorTurn(context, {
+        conversationId: context.activity.conversation?.id ?? 'unknown',
+        sessionScope: teamsSessionScope(context.activity, turnAgent.identityBotKey),
+        userId:
+          context.activity.from?.aadObjectId ??
+          (typeof context.activity.from?.id === 'string' ? context.activity.from.id : undefined),
+        userMessage: isCardAction ? '' : extractUserMessage(context),
+        priorTurns: [],
+        resolution: turnAgent,
+      });
       return;
     }
 
@@ -1410,7 +1567,9 @@ export class TeamsBot extends TeamsActivityHandler {
     // through to the previous behaviour.
     const priorTurns = this.history.get(sessionScope);
     let effectiveHistory = priorTurns;
-    if (this.topicDetector && priorTurns.length > 0) {
+    // `/agent` and `/agents` are the management layer's, not a topic: a
+    // command typed into a running conversation must not be read as a break.
+    if (this.topicDetector && priorTurns.length > 0 && !isAgentCommandText(userMessage)) {
       try {
         const verdict = await this.topicDetector.classify({
           userMessage,
@@ -1507,7 +1666,7 @@ export class TeamsBot extends TeamsActivityHandler {
       userId,
       userMessage,
       priorTurns: effectiveHistory,
-      ...(turnAgent.chatAgent ? { chatAgent: turnAgent.chatAgent } : {}),
+      resolution: turnAgent,
     });
   }
 
@@ -2022,21 +2181,40 @@ export class TeamsBot extends TeamsActivityHandler {
        *  proactive continuation's `from` is the bot, not the user. */
       presetSenderName?: string;
       /**
-       * The agent this turn resolved to, carried rather than looked up again.
+       * What this turn resolved to, carried rather than looked up again.
        *
-       * Absent means "no per-agent resolver answered for this activity", which
-       * is the same thing the instance field used to mean when it was
-       * `undefined` — the default orchestrator answers. What is NOT the same
-       * is another turn's agent arriving here, which is what a shared field
-       * allowed.
+       * Absent means "resolve here" (a card click or a detached turn that did
+       * not come through `handleMessage`). What is NOT acceptable is another
+       * turn's resolution arriving here, which is what a shared field allowed.
        */
-      chatAgent?: ChatAgent;
+      resolution?: TurnAgentResolution;
       /** W5 memory-ACL — context origin captured on the ORIGINAL inbound turn.
        *  Set only by `runOrchestratorTurnDetached`; the inline path derives it
        *  from the live activity below. */
       origin?: TurnOrigin;
     },
   ): Promise<void> {
+    // byte5ai/omadia#1598 — card clicks and detached turns resolve here, not
+    // in handleMessage, so the refusal has to hold here too: a wired resolver
+    // that serves nothing is never answered by the default orchestrator.
+    const resolved = input.resolution ?? (await this.resolveChatAgentForTurn(context));
+    if (resolved.refused) {
+      console.error(
+        `[teams] no agent for conv=${input.conversationId.slice(0, 24)}… — turn refused`,
+      );
+      await context.sendActivity(NO_AGENT_FOR_CONVERSATION_TEXT);
+      return;
+    }
+    // #2055 — no agent answers this sender: the management layer's ChatAgent
+    // answers (it also carries out `/agent`), or the notice is posted as it
+    // is. Always `system`, never an agent's answer. Decided before anything of
+    // the turn runs (SSO token, routine capture, roster): there is no agent to
+    // serve and no pace to keep.
+    if (resolved.decision === 'reject') {
+      await this.answerRejectedTurn(context, resolved, input);
+      return;
+    }
+
     // Scope-local binding so the ALS wrapper can forward the roster accessor
     // to the orchestrator (which surfaces `get_chat_participants` to Claude)
     // and sendAnswer (which resolves `<at>…</at>` tokens back into Mention
@@ -2085,27 +2263,19 @@ export class TeamsBot extends TeamsActivityHandler {
             console.error('[teams] routines turn-context capture failed:', refErr);
           }
         }
-        // byte5ai/omadia#1598 — card clicks and detached turns resolve here,
-        // not in handleMessage, so the refusal has to hold here too: a wired
-        // resolver that serves no agent is never answered by the default.
-        const resolved = input.chatAgent
-          ? { chatAgent: input.chatAgent }
-          : this.resolveChatAgentForTurn(context.activity);
-        if (!resolved.chatAgent && 'refused' in resolved && resolved.refused) {
-          console.error(
-            `[teams] no agent for conv=${input.conversationId.slice(0, 24)}… — turn refused`,
-          );
-          await context.sendActivity(NO_AGENT_FOR_CONVERSATION_TEXT);
-          return;
-        }
         const chatAgent = resolved.chatAgent ?? this.defaultOrchestrator;
         // #330 field report — the attributed form is what the agent sees AND
         // what lands in history; sendAnswer keeps the raw text for mention
-        // resolution. See attributeGroupMessage for the why.
-        const attributedMessage = attributeGroupMessage(input.userMessage, {
-          isGroup: isGroupConversation,
-          senderName: input.presetSenderName ?? context.activity.from?.name,
-        });
+        // resolution. See attributeGroupMessage for the why. `/agent` and
+        // `/agents` stay the whole message: the management layer recognises
+        // them only when they are (spec 2042 §5.3), so the attribution must
+        // not stand in front of them.
+        const attributedMessage = isAgentCommandText(input.userMessage)
+          ? input.userMessage
+          : attributeGroupMessage(input.userMessage, {
+              isGroup: isGroupConversation,
+              senderName: input.presetSenderName ?? context.activity.from?.name,
+            });
         // W5 memory-ACL (#870 §4) — state WHERE this turn came from so the
         // kernel can scope `/memories/` to this chat context. Additive: a
         // kernel that does not know the field ignores it, and one that does
@@ -2113,9 +2283,18 @@ export class TeamsBot extends TeamsActivityHandler {
         const origin =
           input.origin ??
           teamsTurnOrigin(context.activity, input.sessionScope, input.userId);
+        // The agent that answers is known before it answers (`speaker` of the
+        // routing decision). Where the bot IS that agent (its own provisioned
+        // identity) Teams shows the speaker natively; where one bot serves
+        // several agents (a binding, a selection) a name line says who speaks,
+        // exactly when the speaker would be unclear (INV-4, `speakerLine`).
+        const isNativeIdentity = resolved.identityBotKey !== undefined;
+        const ackLine = this.nameLineFor(input.sessionScope, resolved.speaker, isNativeIdentity);
+        const locale = noticeLocale(context.activity.locale);
         // Pace (spec 2042 §5.8): typing from the start of the work, renewed;
         // ONE short acknowledgement when it clearly takes longer than a normal
-        // answer; no progress chatter. The timing is the SDK's.
+        // answer, under the speaker of the agent (its bot, or with its name
+        // line); no progress chatter. The timing is the SDK's.
         const paced = await runPacedTurn(
           () =>
             chatAgent.chat({
@@ -2128,9 +2307,15 @@ export class TeamsBot extends TeamsActivityHandler {
               origin,
             }),
           TEAMS_PACE_PROFILE,
-          teamsPaceHooks(context),
+          teamsPaceHooks(context, ackLine),
+          locale ? { locale } : {},
         );
-        const result = paced.result;
+        // The speaker is stamped by the routing decision, never by the model:
+        // the answer's own wins, the one announced before the answer fills a
+        // kernel that left it out. Neither (a deployment without the resolver
+        // service) leaves the answer as it is: the bot is then the one agent.
+        const speaker = paced.result.speaker ?? resolved.speaker;
+        const result: SemanticAnswer = speaker ? { ...paced.result, speaker } : paced.result;
         // Post-S+7.5: ChatAgent.chat returns the SDK's SemanticAnswer. We
         // narrow the discriminated `interactive` union into the legacy
         // pendingUserChoice / pendingSlotCard slots the Teams renderer
@@ -2201,8 +2386,12 @@ export class TeamsBot extends TeamsActivityHandler {
           : chipDue
             ? stripFoldedAiDisclosure(result.text, result.aiDisclosure?.text)
             : result.text;
+        const nameLine = isSystemNotice
+          ? undefined
+          : this.nameLineFor(input.sessionScope, result.speaker, isNativeIdentity);
         await sendAnswer(context, result, answerText, {
           rosterProvider,
+          ...(nameLine ? { speakerLine: nameLine } : {}),
           pendingChoice,
           pendingSlots,
           consentConnectionName: result.oauthConsentPending ? this.ssoConnectionName : undefined,
@@ -2227,12 +2416,17 @@ export class TeamsBot extends TeamsActivityHandler {
           await context.sendActivity(MessageFactory.attachment(att));
         }
 
+        if (result.speaker?.kind === 'agent') {
+          this.speakerHistory.record(input.sessionScope, result.speaker.agentId);
+        }
+
         // History append skipped for blocking `ask_user_choice` turns —
         // the "answer" is just the clarification prompt, and appending it
         // would pollute the verbatim tail with a non-substantive turn.
         // Follow-up turns (suggest_follow_ups) DO get appended, since the
-        // answer is a real response.
-        if (!pendingChoice) {
+        // answer is a real response. A `system` notice (an `/agent`
+        // confirmation, a refusal) is not conversation content either.
+        if (!pendingChoice && !isSystemNotice) {
           this.history.append(input.sessionScope, {
             userMessage: input.userMessage,
             // Stripped variant — the disclosure sentence is channel chrome,
@@ -2334,6 +2528,8 @@ interface AnswerDelivery {
   readonly chipDue: boolean;
   /** The disclosure sentence, appended when the answer goes out as plain text. */
   readonly plainTextDisclosure?: string;
+  /** "Mira:", where one bot serves several agents and the speaker would be unclear (INV-4). */
+  readonly speakerLine?: string;
 }
 
 /** The activity-level AI label, only where a visible marker is due. */
@@ -2415,6 +2611,7 @@ async function sendAnswer(
         ? { maskedValues: answer.maskedValues }
         : {}),
       ...(answer.speaker ? { speaker: answer.speaker } : {}),
+      ...(delivery.speakerLine ? { speakerLine: delivery.speakerLine } : {}),
       ...(answer.systemNotice ? { systemNotice: answer.systemNotice } : {}),
       ...(contributions ? { contributions } : {}),
     });
@@ -2438,8 +2635,10 @@ async function sendAnswer(
     : [resolvedText, contributionsAsText(contributions, answer.speaker)]
         .filter((part) => part.length > 0)
         .join('\n\n');
-  const plainText =
+  const withDisclosure =
     disclosure && !body.endsWith(disclosure) ? `${body}\n\n${disclosure}` : body;
+  const plainText =
+    delivery.speakerLine && !isSystemNotice ? `${delivery.speakerLine}\n${withDisclosure}` : withDisclosure;
   const chunks = splitAtParagraphs(plainText, TEAMS_MAX_MESSAGE_CHARS);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];

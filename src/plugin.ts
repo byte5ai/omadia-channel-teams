@@ -31,6 +31,7 @@ import { readTeamsAppTemplateInfo } from './teamsAppTemplate.js';
 import { registerTeamsSendProviders, stampChannel } from './teamsKernelRegistration.js';
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
+import type { TurnAgentDecision } from './agentForTurn.js';
 import type { NativeFacilitatorCoreApi } from './kernel-types.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
@@ -555,27 +556,27 @@ export async function activate(
   const channelResolver = ctx.services.get<ChannelBindingResolver>(
     CHANNEL_RESOLVER_SERVICE,
   );
+  // The management layer's answer for one key (byte5ai/omadia#2055): `bound`
+  // or `reject`, never a fallback agent. `chatAgent` is set on `reject` too: it
+  // handles `/agent` and answers a refusal with the `system` notice. The
+  // sender (`principal`, from `turnPrincipal`) and the notice locale ride along.
   const resolveChatAgentForActivity = channelResolver
-    ? (input: { channelType: 'teams'; channelKey: string }): {
-        decision: 'bound' | 'fallback' | 'reject';
-        chatAgent?: ChatAgent;
-        exclusive?: boolean;
-      } => {
-        const decision = channelResolver.resolve(
-          input.channelType,
-          input.channelKey,
-        );
-        // `exclusive` is additive on the platform side and this plugin is
-        // built against whichever @omadia/channel-sdk the host tree ships,
-        // which may predate the field. Read it structurally so an older SDK
-        // typing degrades to "not exclusive" (the pre-existing behaviour)
-        // instead of failing the build.
-        const exclusive =
-          (decision as { exclusive?: boolean }).exclusive === true;
+    ? (input: {
+        channelType: 'teams';
+        channelKey: string;
+        principal?: string;
+        locale?: string;
+      }): TurnAgentDecision => {
+        const result = channelResolver.resolve(input.channelType, input.channelKey, {
+          ...(input.principal ? { principal: input.principal } : {}),
+          ...(input.locale ? { locale: input.locale } : {}),
+        });
         return {
-          decision: decision.decision,
-          ...(decision.chatAgent ? { chatAgent: decision.chatAgent } : {}),
-          ...(exclusive ? { exclusive: true } : {}),
+          decision: result.decision,
+          ...(result.chatAgent ? { chatAgent: result.chatAgent } : {}),
+          ...(result.exclusive === true ? { exclusive: true } : {}),
+          ...(result.notice ? { notice: result.notice } : {}),
+          ...(result.speaker ? { speaker: result.speaker } : {}),
         };
       }
     : undefined;

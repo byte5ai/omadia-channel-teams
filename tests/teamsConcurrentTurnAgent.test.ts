@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 // Pure precedence logic — the relative import is bundled by the test
 // transpiler and needs no built `dist/`, matching `agentForTurn.test.ts`.
-import { pickChatAgentForTurn } from '../src/agentForTurn.js';
+import { pickTurnDecision } from '../src/agentForTurn.js';
 
 /**
  * TWO BOTS, ONE INSTANCE, OVERLAPPING TURNS.
@@ -33,7 +33,7 @@ const MESSIAS_BOT = '28:19ad2729-f7d3-4099-9d2a-7da1230c9533';
 
 /** The platform's answer for each bot key, as `identityForChannel` gives it. */
 function resolverFor(): (key: string) => {
-  decision: 'bound' | 'fallback' | 'reject';
+  decision: 'bound' | 'reject';
   chatAgent?: { slug: string };
   exclusive?: boolean;
 } {
@@ -53,11 +53,11 @@ describe('two bots resolving in one process', () => {
   it('each bot key yields its OWN agent, whatever order they resolve in', () => {
     const resolve = resolverFor();
     const pick = (botKey: string) =>
-      pickChatAgentForTurn({
+      pickTurnDecision({
         conversationId: '19:group@thread.skype',
         botKey,
         resolve: resolve as never,
-      }) as unknown as { slug: string } | undefined;
+      })?.chatAgent as unknown as { slug: string } | undefined;
 
     // Karen first, then Messias.
     const a1 = pick(KAREN_BOT);
@@ -77,12 +77,12 @@ describe('two bots resolving in one process', () => {
     // first one's answer untouched. When the answer lived on the shared
     // instance, this is exactly what stopped being true.
     const resolve = resolverFor();
-    const karen = pickChatAgentForTurn({
+    const karen = pickTurnDecision({
       botKey: KAREN_BOT,
       resolve: resolve as never,
-    }) as unknown as { slug: string } | undefined;
+    })?.chatAgent as unknown as { slug: string } | undefined;
 
-    pickChatAgentForTurn({ botKey: MESSIAS_BOT, resolve: resolve as never });
+    pickTurnDecision({ botKey: MESSIAS_BOT, resolve: resolve as never });
 
     assert.equal(
       karen?.slug,

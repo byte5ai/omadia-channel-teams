@@ -15,14 +15,6 @@ import { admitDecorations, type DecorationRefusal } from '@omadia/channel-sdk';
 
 import { TEAMS_CHANNEL_TYPE } from './teamsKernelRegistration.js';
 
-
-/**
- * Teams shows one identity per agent (the agent's own bot: name and icon), so
- * an answer carries no name line (spec 2042 INV-4, §5.3). Documented here as a
- * constant because the SDK's plain-text renderers take it as an option.
- */
-export const TEAMS_NATIVE_IDENTITY = true;
-
 /** Every decoration id this channel attaches, declared once. */
 export const TEAMS_DECORATION_IDS = Object.freeze({
   aiChip: 'ai_disclosure_chip',

@@ -148,6 +148,12 @@ export interface BuildAnswerCardInput {
    * turns the card into a management-layer notice.
    */
   speaker?: Speaker;
+  /**
+   * "Mira:" — shown above the answer where one bot serves several agents and
+   * the speaker would be unclear (INV-4; the SDK's `speakerLine` decides).
+   * Never on a card of an agent's own bot, never on a `system` notice.
+   */
+  speakerLine?: string;
   /** #2045 — the notice text of a `system` speaker; defaults to `answer`. */
   systemNotice?: SystemNotice;
   /**
@@ -569,6 +575,9 @@ function assemble(
   parts: AdmittedParts,
 ): CardBody {
   const body: unknown[] = [
+    ...(input.speakerLine
+      ? [{ type: 'TextBlock', text: input.speakerLine, weight: 'Bolder', size: 'Small', wrap: true }]
+      : []),
     ...(parts.chip ? [aiChipContainer()] : []),
     // Answer. A v4 table renders as a native Adaptive-Card `Table` with
     // masked cells in the accent (violet) colour; prose / non-table answers

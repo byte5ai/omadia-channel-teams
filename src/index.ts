@@ -327,7 +327,6 @@ export {
 export {
   admitTeamsDecorations,
   TEAMS_DECORATION_IDS,
-  TEAMS_NATIVE_IDENTITY,
 } from './teamsDecorations.js';
 export {
   contributionLabel,

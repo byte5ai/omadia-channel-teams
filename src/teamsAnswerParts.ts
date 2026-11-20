@@ -4,8 +4,9 @@
  * notice.
  *
  * Teams shows the speaker of the whole message natively (the agent's own bot:
- * name and icon), so the card has no name line. Two things are different and
- * must never look like the bot speaking for itself:
+ * name and icon), so the card has no name line; only where one bot serves
+ * several agents does the card carry the SDK's name line (INV-4). Two things
+ * are different and must never look like the bot speaking for itself:
  *
  *  - A consulted agent B answers inside A's message. B's block is attributed
  *    to B ("B (konsultiert von A)") and carries B's text exactly as delivered; A's

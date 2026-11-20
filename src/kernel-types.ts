@@ -26,6 +26,7 @@ import type {
   AgentConsultation,
   AiDisclosure,
   Contribution,
+  AgentSpeaker,
   Speaker,
   SystemNotice,
   TurnOrigin,
@@ -47,6 +48,7 @@ export type {
   // #2045 / #2047 — who spoke, a management-layer notice, colleagues' contributions.
   AiDisclosure,
   Contribution,
+  AgentSpeaker,
   Speaker,
   SystemNotice,
 };

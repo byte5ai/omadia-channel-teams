@@ -22,14 +22,19 @@ export const TEAMS_PACE_PROFILE: ChannelPaceProfile = Object.freeze({
   typingIntervalMs: TEAMS_TYPING_INTERVAL_MS,
 });
 
-/** Typing and the one acknowledgement, posted through the turn's own context (the agent's bot). */
-export function teamsPaceHooks(context: TurnContext): PaceHooks {
+/**
+ * Typing and the one acknowledgement, posted through the turn's own context
+ * (the agent's bot). `speakerLine` ("Mira:") goes in front of the
+ * acknowledgement where one bot serves several agents and the speaker would be
+ * unclear; on an agent's own bot the bot's name already says it.
+ */
+export function teamsPaceHooks(context: TurnContext, speakerLine?: string): PaceHooks {
   return {
     sendTyping: async () => {
       await context.sendActivity({ type: ActivityTypes.Typing });
     },
     sendAck: async (text) => {
-      await context.sendActivity(text);
+      await context.sendActivity(speakerLine ? `${speakerLine} ${text}` : text);
     },
     onHookError: (hook, error) => {
       console.warn(`[teams] pace ${hook} failed:`, error instanceof Error ? error.message : error);
