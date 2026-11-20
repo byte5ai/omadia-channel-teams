@@ -34,6 +34,21 @@ by the parent session. The routing contract below has no fallback for an older k
   selection) the SDK's `speakerLine` puts "Mira:" in front of the acknowledgement and over
   the first answer after the speaker changed (INV-4), never in a one-agent conversation. An
   answer the kernel left without a speaker is stamped with the announced one.
+- **No singleton behind a registry.** `chatAgent@1` only answers a host WITHOUT the resolver
+  service (one agent, one bot): a wired resolver with nothing to ask about, or a decision
+  without a ChatAgent, is refused with the fixed text. `resolve()` goes through the SDK's
+  `resolveChannelRoute`. `chatAgent@^1` stays in `requires` for exactly that host.
+- **Selection key.** `/agent` is carried out by the management layer under the narrowest key
+  of the turn (the conversation; a channel thread is its own), plus the sender, as the kernel
+  stores selections (S1): not under the bot-wide catch-all binding that may have won the
+  routing. On an agent's own bot (exclusive) the bot key is the only key.
+- **Side channel for data (spec §5.13, criteria 25/35, kernel #2085).** `SemanticAnswer.data`
+  / `textWithoutData` are read structurally (feature-detect, S4 is not on every SDK). With both,
+  each table is a native Adaptive-Card `Table` (caption, at most 50 rows, a "… N weitere Zeilen"
+  line, fewer rows before the text is cut when the card would exceed Teams' size cap, masked cells
+  in the accent colour) under the text without the data rendering; the long-answer path posts
+  the full text, tables included, once. The conversation history never holds the rows (it
+  reaches a model). Without the fields the answer renders from `text` as before.
 - **Removed:** the `'fallback'` decision, `pickChatAgentForTurn` (now `pickTurnDecision`),
   the `TEAMS_NATIVE_IDENTITY` constant (the decision is per turn now).
 - **Plain-text parity (criterion 30)** is covered by tests: a card Teams does not render is

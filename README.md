@@ -29,7 +29,9 @@ roster + @mention resolution, HMAC-signed attachment persistence, and the
 | Attachments | HMAC-signed proxy at `/attachments/<key>`, persisted via `teamsAttachmentStore.ts` |
 | Delegation | Every user turn is handed to the kernel's agent runtime: per turn the `channelResolver` decides `bound` (an agent answers) or `reject` (the management layer answers with a `system` notice; there is no fallback agent). The channel only passes text through |
 | Addressing | An agent is addressed through its own bot. `/agent <name>` (select), `/agent` (clear the selection) and `/agents` (list) are plain text the kernel's management layer carries out and answers as `system`; the channel hands over the whole message, in a group chat too (no `[Name]:` attribution in front of a command) |
-| Sender | The routing principal is `user:<email>` once Graph verified the address, else `user:teams-aad:<id>` |
+| Selection key | `/agent` is stored per sender and the narrowest key of the turn: the conversation (a channel thread is its own conversation), not the bot-wide catch-all binding; on an agent's own bot (exclusive) the bot's key is the only key |
+| Data | `SemanticAnswer.data` (spec §5.13, kernel #2085) is drawn as native tables (at most 50 rows each, then a "weitere Zeilen" line) next to `textWithoutData`; an answer without the fields renders from `text` as before |
+| Sender | The routing principal is `user:<email>` once Graph verified the address, else `user:teams-aad:<id>`. `TurnOrigin.principal` stays the Entra object id on purpose: the facilitation engine matches participants by it, and `turnPrincipal` would prefer it over the address |
 | Pace | Typing from the start; ONE acknowledgement after 8 s under the answering agent's speaker (its own bot, or with a name line where one bot serves several agents) |
 | Events | Emits `teams.message.posted` / `teams.mention` on the deny-by-default event catalog |
 | Shared credentials | Reuses the Azure AD app registration owned by [`@omadia/integration-microsoft365`](https://github.com/byte5ai/omadia-m365-connector) — install that first |
