@@ -429,8 +429,8 @@ requires:
 #                                    with a log line, activation unaffected.
 #   - `topicDetector@1`            — history passes through undetected.
 #
-# NOT DEGRADABLE, BUT KERNEL-PUBLISHED — `anthropicClient@1`, `turnContext@1`
-# and `uiRouteCatalog@1` each make activate() throw when missing, so on the
+# NOT DEGRADABLE, BUT KERNEL-PUBLISHED — `turnContext@1` and
+# `uiRouteCatalog@1` each make activate() throw when missing, so on the
 # face of it they belong under `requires:`. They must not go there.
 # `resolveCapabilities` builds its provider index exclusively from other
 # plugins' `provides:` lists, and these three are published by the middleware
@@ -441,7 +441,6 @@ requires:
 # exact declaration the service gate asks for and leaves activate()'s own
 # explicit throw as the honest failure mode.
 optional_requires:
-  - "anthropicClient@1"
   - "channelDirectoryRegistry@1"
   - "channelResolver@1"
   - "conductorAwaitResolver@1"
