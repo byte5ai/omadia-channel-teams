@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Attachments in channel threads (live finding 2026-11-21).** The Graph fallback that
+  finds a message's files asked `/chats/{id}/messages/{id}` also for a channel thread
+  (`19:…@thread.tacv2;messageid=<root>`) and got 404 "Invalid ThreadId", for example at a
+  facilitation start in a channel. A channel message is now read under its team
+  (`channelData.team.aadGroupId`) through the Microsoft 365 connector's
+  `fetchChannelMessage` (connector release after 0.11.0); with an older connector or without
+  a team id the lookup is skipped and logged, Graph is not asked a wrong path. RSC
+  `ChannelMessage.Read.Group` is already in the app package.
+
 ## 0.42.0
 
 - **Requires plugin-api 1.82.0** (`compat.core: ">=1.82.0 <2.0"`): the reaction contract

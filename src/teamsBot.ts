@@ -1734,9 +1734,13 @@ export class TeamsBot extends TeamsActivityHandler {
       name: string;
     }> = [];
     if (this.attachmentStore && messageId && conversationId !== 'unknown') {
+      // A channel thread is read under its team (`channelData.team.aadGroupId`).
+      const teamAadGroupId = (activity.channelData as { team?: { aadGroupId?: unknown } } | undefined)?.team
+        ?.aadGroupId;
       graphSynthesised = await this.attachmentStore.discoverFromGraphMessage(
         conversationId,
         messageId,
+        typeof teamAadGroupId === 'string' ? teamAadGroupId : undefined,
       );
     }
 
