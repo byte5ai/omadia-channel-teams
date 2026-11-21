@@ -4,6 +4,7 @@ import type { Attachment } from 'botbuilder';
 import type { TigrisStore } from '@omadia/diagrams';
 import { signAttachmentUrl } from './attachmentSigning.js';
 import type { GraphClient } from '@omadia/integration-microsoft365';
+import { bareConversationId, isChannelConversationId, threadRootMessageId } from './teamsConversationIds.js';
 
 /**
  * Persists Teams message attachments to Tigris and indexes them in Neon
@@ -138,8 +139,9 @@ export class TeamsAttachmentStore {
    * untouched.
    */
   async discoverFromGraphMessage(
-    chatId: string,
+    conversationId: string,
     messageId: string,
+    teamAadGroupId?: string,
   ): Promise<Array<{ contentType: string; contentUrl: string; name: string }>> {
     if (!this.graphClient) return [];
     // Adaptive-card submits and some invoke activities carry synthetic IDs
@@ -147,11 +149,16 @@ export class TeamsAttachmentStore {
     // with HTTP 400. Skip them silently — these activities never have
     // uploadable attachments anyway (they are button clicks).
     if (/^[a-z]:/i.test(messageId)) return [];
-    try {
-      const { attachments } = await this.graphClient.fetchChatMessage(
-        chatId,
-        messageId,
+    const lookup = graphMessageLookup(this.graphClient, conversationId, messageId, teamAadGroupId);
+    if (lookup.kind === 'skip') {
+      this.log(
+        `[teams-attachments] graph-discover skip conv=${conversationId.slice(0, 40)} reason=${lookup.reason}`,
       );
+      return [];
+    }
+    const chatId = lookup.label;
+    try {
+      const { attachments } = await lookup.fetch();
       const out: Array<{ contentType: string; contentUrl: string; name: string }> =
         [];
       for (const att of attachments) {
@@ -556,4 +563,55 @@ function contentPreview(content: unknown): string {
     }
   }
   return '-';
+}
+
+/** The Microsoft 365 connector's channel route (since its `fetchChannelMessage`);
+ *  structural, so this plugin runs against older connector versions too. */
+interface ChannelMessageReader {
+  fetchChannelMessage?: (input: {
+    teamId: string;
+    channelId: string;
+    rootMessageId: string;
+    messageId: string;
+  }) => Promise<{ attachments: Array<{ contentType: string; contentUrl?: string; name: string }> }>;
+}
+
+type GraphMessageLookup =
+  | {
+      kind: 'fetch';
+      label: string;
+      fetch: () => Promise<{ attachments: Array<{ contentType: string; contentUrl?: string; name: string }> }>;
+    }
+  | { kind: 'skip'; reason: string };
+
+/**
+ * Which Graph route reads this message. A chat is `/chats/{id}/messages/{id}`;
+ * a team channel thread (`19:…@thread.tacv2;messageid=<root>`) is not a chat
+ * — that route answers 404 "Invalid ThreadId" (live 2026-11-21) — and is read
+ * under its team: `/teams/{aadGroupId}/channels/{channel}/messages/{root}`
+ * (replies below it). A channel message without a team id, or a connector
+ * without the channel route, is skipped instead of asking Graph a wrong path.
+ */
+export function graphMessageLookup(
+  client: GraphClient,
+  conversationId: string,
+  messageId: string,
+  teamAadGroupId: string | undefined,
+): GraphMessageLookup {
+  if (!isChannelConversationId(conversationId)) {
+    return { kind: 'fetch', label: conversationId, fetch: () => client.fetchChatMessage(conversationId, messageId) };
+  }
+  const channelId = bareConversationId(conversationId);
+  const rootMessageId = threadRootMessageId(conversationId) ?? messageId;
+  const team = teamAadGroupId?.trim();
+  if (!team) return { kind: 'skip', reason: 'channel message without team id' };
+  const channelLookup = (client as ChannelMessageReader).fetchChannelMessage;
+  if (typeof channelLookup !== 'function') {
+    return { kind: 'skip', reason: 'connector has no channel message lookup (update the Microsoft 365 connector)' };
+  }
+  return {
+    kind: 'fetch',
+    label: channelId,
+    fetch: () => channelLookup.call(client, { teamId: team, channelId, rootMessageId, messageId }),
+  };
 }

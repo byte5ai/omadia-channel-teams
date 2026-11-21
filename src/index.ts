@@ -57,6 +57,7 @@ export {
 } from './teamsBot.js';
 export {
   TeamsAttachmentStore,
+  graphMessageLookup,
   type TeamsAttachmentStoreOptions,
   type PersistedAttachment,
   type PersistTurnInput,
