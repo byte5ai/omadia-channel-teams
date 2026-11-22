@@ -100,7 +100,8 @@ export function buildPollCard(input: BuildPollCardInput): Attachment {
 
 /**
  * A multiple-answer poll as plain text: the question, the hint and the
- * numbered options, answered in writing. No buttons, so no click can stand
+ * options labelled with their ids (the letters a written ballot names),
+ * answered in writing. No buttons, so no click can stand
  * for a whole ballot.
  */
 export function buildPollText(input: BuildPollCardInput): string {
@@ -108,7 +109,7 @@ export function buildPollText(input: BuildPollCardInput): string {
   if (problem) throw new Error(`invalid poll: ${problem}`);
   const parts = [`**${input.question.trim()}**`];
   if (input.hint && input.hint.trim().length > 0) parts.push(input.hint.trim());
-  parts.push(input.options.map((option, index) => `${String(index + 1)}. ${option.label.trim()}`).join('\n'));
+  parts.push(input.options.map((option) => `${option.id}. ${option.label.trim()}`).join('\n'));
   return parts.join('\n\n');
 }
 

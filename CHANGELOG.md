@@ -30,7 +30,7 @@
   `multipleAnswers` read structurally, it is newer than the plugin-api 1.82 type). The poll
   card has one button per option and is single-answer: a click would replace a written
   multi-option ballot. A poll with `multipleAnswers: true` goes out as one text message
-  (question, hint, numbered options, `buildPollText`) that people answer in writing; its id is
+  (question, hint, options labelled with their ids such as `A. Thai`, `buildPollText`) that people answer in writing; its id is
   still reported as `cardMessageId`. Other polls keep the card.
 
 ## 0.42.0

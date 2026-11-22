@@ -202,7 +202,7 @@ describe('#43 sendToConversation as the own bot', () => {
       pollId: 'approval-1',
       question: 'Welche Punkte gebt ihr frei?',
       hint: 'Mehrere Antworten möglich.',
-      options: [{ id: 'a', label: 'Budget' }, { id: 'b', label: 'Zeitplan' }, { id: 'c', label: 'Team' }],
+      options: [{ id: 'A', label: 'Budget' }, { id: 'B', label: 'Zeitplan' }, { id: 'C', label: 'Team' }],
       multipleAnswers: true,
     };
 
@@ -213,7 +213,7 @@ describe('#43 sendToConversation as the own bot', () => {
     assert.equal('attachments' in activity, false, 'no card, so no click can replace a written ballot');
     assert.equal(
       activity['text'],
-      '**Welche Punkte gebt ihr frei?**\n\nMehrere Antworten möglich.\n\n1. Budget\n2. Zeitplan\n3. Team',
+      '**Welche Punkte gebt ihr frei?**\n\nMehrere Antworten möglich.\n\nA. Budget\nB. Zeitplan\nC. Team',
     );
     assert.deepEqual(outcome, { outcome: 'delivered', messageId: connector.sent[0]?.id, cardMessageId: connector.sent[0]?.id });
   });
