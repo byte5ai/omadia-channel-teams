@@ -11,6 +11,14 @@
   a team id the lookup is skipped and logged, Graph is not asked a wrong path. RSC
   `ChannelMessage.Read.Group` is already in the app package.
 
+- **Channel attachment lookup: a Graph 403 is "not permitted", not a failure.** The
+  connector reads channel messages with the deployment app's token; an app without
+  `ChannelMessage.Read.Group` in that team (for example a facilitator with its own bot app)
+  gets 403. That answer (`status: 403` / `code: 'not_permitted'`, the connector's
+  `GraphRequestError`) is now logged once with team and channel id, and that team's channel
+  lookups are skipped for an hour (`CHANNEL_LOOKUP_DENIAL_TTL_MS`), so each message does not
+  ask Graph and log again. Other errors are logged as before.
+
 ## 0.42.0
 
 - **Requires plugin-api 1.82.0** (`compat.core: ">=1.82.0 <2.0"`): the reaction contract
