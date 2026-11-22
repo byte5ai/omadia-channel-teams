@@ -19,7 +19,7 @@
   lookups are skipped for an hour (`CHANNEL_LOOKUP_DENIAL_TTL_MS`), so each message does not
   ask Graph and log again. Other errors are logged as before.
 
-- **`TurnOrigin.replyToMessageId` on 1:1 turns** (channel-sdk 0.3.10, kernel
+- **`TurnOrigin.replyToMessageId` on 1:1 turns** (channel-sdk 0.3.11, kernel
   byte5ai/omadia#2157, declared structurally until the SDK has it). A private turn names the
   message it replies to or quotes: the quoted reply's `itemid`, a `quotedReply` entity, or
   `replyToId`, read by the same `readQuoteInfo` as the message events. It is the activity id

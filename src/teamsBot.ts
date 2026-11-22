@@ -406,7 +406,7 @@ export function teamsTurnOrigin(
   // Both callers pass the ORIGINAL inbound activity; a detached turn captures
   // the origin before it continues proactively, where the activity has no id.
   const messageId = inboundMessageId(activity);
-  // channel-sdk 0.3.10 — `replyToMessageId` on a PRIVATE turn: the message the
+  // channel-sdk 0.3.11 — `replyToMessageId` on a PRIVATE turn: the message the
   // person answers (a quoted reply's `itemid`, a `quotedReply` entity, or
   // `replyToId`), read by `readQuoteInfo` like the message events. It is the
   // activity id Teams gave that message, the same id this plugin reports as

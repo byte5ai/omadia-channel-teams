@@ -115,7 +115,7 @@ describe('#2043 teamsTurnOrigin — who spoke', () => {
   });
 });
 
-describe('channel-sdk 0.3.10 teamsTurnOrigin — replyToMessageId on private turns', () => {
+describe('channel-sdk 0.3.11 teamsTurnOrigin — replyToMessageId on private turns', () => {
   const PERSONAL = { id: 'a:1dRsHCobZ1AxURzY05Dc_personal', conversationType: 'personal' };
   const replyTo = (origin: unknown): unknown => (origin as { replyToMessageId?: unknown }).replyToMessageId;
   const quote = (itemId: string) => ({
