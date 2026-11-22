@@ -114,3 +114,48 @@ describe('#2043 teamsTurnOrigin — who spoke', () => {
     assert.equal(Object.hasOwn(none, 'speaker'), false);
   });
 });
+
+describe('channel-sdk 0.3.10 teamsTurnOrigin — replyToMessageId on private turns', () => {
+  const PERSONAL = { id: 'a:1dRsHCobZ1AxURzY05Dc_personal', conversationType: 'personal' };
+  const replyTo = (origin: unknown): unknown => (origin as { replyToMessageId?: unknown }).replyToMessageId;
+  const quote = (itemId: string) => ({
+    contentType: 'text/html',
+    content: `<blockquote itemscope="" itemtype="http://schema.skype.com/Reply" itemid="${itemId}"><p>Erinnerung</p></blockquote><p>erledigt</p>`,
+  });
+
+  it('a quoted reply in a 1:1 names the quoted message id (the id a send reports)', () => {
+    const origin = teamsTurnOrigin(
+      { conversation: PERSONAL, id: '1700000000999', attachments: [quote('1700000000123')] },
+      'teams-x',
+      'aad-oid-1',
+    );
+    assert.equal(replyTo(origin), '1700000000123');
+  });
+
+  it('a 1:1 activity with replyToId names it', () => {
+    const origin = teamsTurnOrigin({ conversation: PERSONAL, id: '2', replyToId: '1700000000123' }, 'teams-x', 'aad-oid-1');
+    assert.equal(replyTo(origin), '1700000000123');
+  });
+
+  it('a quotedReply entity in a 1:1 names its message id', () => {
+    const origin = teamsTurnOrigin(
+      { conversation: PERSONAL, id: '2', entities: [{ type: 'quotedReply', quotedReply: { messageId: '1700000000123' } } as never] },
+      'teams-x',
+      'aad-oid-1',
+    );
+    assert.equal(replyTo(origin), '1700000000123');
+  });
+
+  it('a plain 1:1 message has none', () => {
+    assert.equal(replyTo(teamsTurnOrigin({ conversation: PERSONAL, id: '2' }, 'teams-x', 'aad-oid-1')), undefined);
+  });
+
+  it('is not set on group turns', () => {
+    const origin = teamsTurnOrigin(
+      { conversation: { id: THREAD, conversationType: 'channel' }, id: '2', attachments: [quote('1700000000123')] },
+      'teams-x',
+      'aad-oid-1',
+    );
+    assert.equal(replyTo(origin), undefined);
+  });
+});
