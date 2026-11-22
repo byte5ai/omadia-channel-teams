@@ -26,6 +26,13 @@
   Teams gave that message, the id this plugin reports as `messageId` of its own sends, so a
   reply to a reminder DM matches the reminder. Group turns do not carry it.
 
+- **Multiple-answer polls are posted as text** (kernel byte5ai/omadia#2155, approval votes;
+  `multipleAnswers` read structurally, it is newer than the plugin-api 1.82 type). The poll
+  card has one button per option and is single-answer: a click would replace a written
+  multi-option ballot. A poll with `multipleAnswers: true` goes out as one text message
+  (question, hint, numbered options, `buildPollText`) that people answer in writing; its id is
+  still reported as `cardMessageId`. Other polls keep the card.
+
 ## 0.42.0
 
 - **Requires plugin-api 1.82.0** (`compat.core: ">=1.82.0 <2.0"`): the reaction contract

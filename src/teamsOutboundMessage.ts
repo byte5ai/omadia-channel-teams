@@ -7,7 +7,7 @@ import type { Activity } from 'botbuilder';
 import type { FacilitatorDeliveryOutcome, TargetedMention, TargetedPoll } from './kernel-types.js';
 import { aiLabelEntity } from './teamsCard.js';
 import type { MentionEntity } from './teamsMentions.js';
-import { buildPollCard, validatePollInput, type BuildPollCardInput } from './teamsPollCard.js';
+import { buildPollCard, buildPollText, validatePollInput, type BuildPollCardInput } from './teamsPollCard.js';
 
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
@@ -136,6 +136,8 @@ export function readPollRequest(
       label: typeof option?.label === 'string' ? option.label : '',
     })),
     ...(typeof poll.hint === 'string' ? { hint: poll.hint } : {}),
+    // omadia#2155: read structurally, the field is newer than the 1.82 type.
+    ...((poll as { multipleAnswers?: unknown }).multipleAnswers === true ? { multipleAnswers: true } : {}),
   };
   const problem = validatePollInput(candidate);
   return problem ? { problem } : { poll: candidate };
@@ -172,7 +174,10 @@ export function buildOutgoingActivity(input: { text: string; entities?: readonly
   };
 }
 
+/** A single-answer poll is the card; a multiple-answer poll is text (see
+ *  `BuildPollCardInput.multipleAnswers`). */
 export function buildPollActivity(poll: BuildPollCardInput): Partial<Activity> {
+  if (poll.multipleAnswers === true) return buildOutgoingActivity({ text: buildPollText(poll) });
   return { type: 'message', attachments: [buildPollCard(poll)], entities: [aiLabelEntity()] };
 }
 
