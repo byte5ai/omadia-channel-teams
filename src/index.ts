@@ -57,6 +57,7 @@ export {
 } from './teamsBot.js';
 export {
   TeamsAttachmentStore,
+  graphMessageLookup,
   type TeamsAttachmentStoreOptions,
   type PersistedAttachment,
   type PersistTurnInput,
@@ -85,6 +86,7 @@ export {
 } from './teamsConversationMessages.js';
 export {
   buildPollCard,
+  buildPollText,
   cardActionData,
   parsePollAnswerValue,
   POLL_ANSWER_VALUE_TYPE,

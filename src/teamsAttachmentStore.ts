@@ -4,6 +4,7 @@ import type { Attachment } from 'botbuilder';
 import type { TigrisStore } from '@omadia/diagrams';
 import { signAttachmentUrl } from './attachmentSigning.js';
 import type { GraphClient } from '@omadia/integration-microsoft365';
+import { bareConversationId, isChannelConversationId, threadRootMessageId } from './teamsConversationIds.js';
 
 /**
  * Persists Teams message attachments to Tigris and indexes them in Neon
@@ -59,7 +60,12 @@ export interface TeamsAttachmentStoreOptions {
     publicBaseUrl: string;
     ttlSec: number;
   };
+  /** Clock for the "not permitted" memory of channel lookups (tests). */
+  now?: () => number;
 }
+
+/** How long a Graph 403 on a team's channel messages is remembered. */
+export const CHANNEL_LOOKUP_DENIAL_TTL_MS = 60 * 60 * 1000;
 
 export interface PersistTurnInput {
   conversationId: string;
@@ -109,6 +115,9 @@ export class TeamsAttachmentStore {
     ttlSec: number;
   };
   private readonly graphClient?: GraphClient;
+  private readonly now: () => number;
+  /** team AAD group id → epoch ms until which its channel lookups are skipped. */
+  private readonly channelDenials = new Map<string, number>();
 
   constructor(opts: TeamsAttachmentStoreOptions) {
     this.tigris = opts.tigris;
@@ -125,6 +134,7 @@ export class TeamsAttachmentStore {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     if (opts.signing) this.signing = opts.signing;
     if (opts.graphClient) this.graphClient = opts.graphClient;
+    this.now = opts.now ?? Date.now;
   }
 
   /**
@@ -138,8 +148,9 @@ export class TeamsAttachmentStore {
    * untouched.
    */
   async discoverFromGraphMessage(
-    chatId: string,
+    conversationId: string,
     messageId: string,
+    teamAadGroupId?: string,
   ): Promise<Array<{ contentType: string; contentUrl: string; name: string }>> {
     if (!this.graphClient) return [];
     // Adaptive-card submits and some invoke activities carry synthetic IDs
@@ -147,11 +158,17 @@ export class TeamsAttachmentStore {
     // with HTTP 400. Skip them silently — these activities never have
     // uploadable attachments anyway (they are button clicks).
     if (/^[a-z]:/i.test(messageId)) return [];
-    try {
-      const { attachments } = await this.graphClient.fetchChatMessage(
-        chatId,
-        messageId,
+    const lookup = graphMessageLookup(this.graphClient, conversationId, messageId, teamAadGroupId);
+    if (lookup.kind === 'skip') {
+      this.log(
+        `[teams-attachments] graph-discover skip conv=${conversationId.slice(0, 40)} reason=${lookup.reason}`,
       );
+      return [];
+    }
+    const chatId = lookup.label;
+    if (lookup.teamId !== undefined && this.isChannelLookupDenied(lookup.teamId)) return [];
+    try {
+      const { attachments } = await lookup.fetch();
       const out: Array<{ contentType: string; contentUrl: string; name: string }> =
         [];
       for (const att of attachments) {
@@ -170,11 +187,29 @@ export class TeamsAttachmentStore {
       );
       return out;
     } catch (err) {
+      if (lookup.teamId !== undefined && isGraphNotPermitted(err)) {
+        // The app token lacks ChannelMessage.Read.Group in this team (e.g. a
+        // facilitator with its own bot app). Not a failure to retry: log once
+        // and skip this team's channel lookups for a while.
+        this.channelDenials.set(lookup.teamId, this.now() + CHANNEL_LOOKUP_DENIAL_TTL_MS);
+        this.log(
+          `[teams-attachments] graph-discover not permitted team=${lookup.teamId.slice(0, 40)} channel=${chatId.slice(0, 40)} (no ChannelMessage.Read.Group for this app in the team; skipping this team's channel lookups for ${String(CHANNEL_LOOKUP_DENIAL_TTL_MS / 60_000)} min)`,
+        );
+        return [];
+      }
       this.log(
         `[teams-attachments] graph-discover FAIL chat=${chatId.slice(0, 40)} err=${errMsg(err)}`,
       );
       return [];
     }
+  }
+
+  private isChannelLookupDenied(teamId: string): boolean {
+    const until = this.channelDenials.get(teamId);
+    if (until === undefined) return false;
+    if (this.now() < until) return true;
+    this.channelDenials.delete(teamId);
+    return false;
   }
 
   /**
@@ -556,4 +591,66 @@ function contentPreview(content: unknown): string {
     }
   }
   return '-';
+}
+
+/** The Microsoft 365 connector's channel route (since its `fetchChannelMessage`);
+ *  structural, so this plugin runs against older connector versions too. */
+interface ChannelMessageReader {
+  fetchChannelMessage?: (input: {
+    teamId: string;
+    channelId: string;
+    rootMessageId: string;
+    messageId: string;
+  }) => Promise<{ attachments: Array<{ contentType: string; contentUrl?: string; name: string }> }>;
+}
+
+/** The connector's `GraphRequestError` for a 403 (`status: 403`, `code:
+ *  'not_permitted'`), read structurally. */
+function isGraphNotPermitted(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { status?: unknown; code?: unknown };
+  return e.status === 403 || e.code === 'not_permitted';
+}
+
+type GraphMessageLookup =
+  | {
+      kind: 'fetch';
+      label: string;
+      /** Set on the channel route: the team the lookup reads under. */
+      teamId?: string;
+      fetch: () => Promise<{ attachments: Array<{ contentType: string; contentUrl?: string; name: string }> }>;
+    }
+  | { kind: 'skip'; reason: string };
+
+/**
+ * Which Graph route reads this message. A chat is `/chats/{id}/messages/{id}`;
+ * a team channel thread (`19:…@thread.tacv2;messageid=<root>`) is not a chat
+ * — that route answers 404 "Invalid ThreadId" (live 2026-11-21) — and is read
+ * under its team: `/teams/{aadGroupId}/channels/{channel}/messages/{root}`
+ * (replies below it). A channel message without a team id, or a connector
+ * without the channel route, is skipped instead of asking Graph a wrong path.
+ */
+export function graphMessageLookup(
+  client: GraphClient,
+  conversationId: string,
+  messageId: string,
+  teamAadGroupId: string | undefined,
+): GraphMessageLookup {
+  if (!isChannelConversationId(conversationId)) {
+    return { kind: 'fetch', label: conversationId, fetch: () => client.fetchChatMessage(conversationId, messageId) };
+  }
+  const channelId = bareConversationId(conversationId);
+  const rootMessageId = threadRootMessageId(conversationId) ?? messageId;
+  const team = teamAadGroupId?.trim();
+  if (!team) return { kind: 'skip', reason: 'channel message without team id' };
+  const channelLookup = (client as ChannelMessageReader).fetchChannelMessage;
+  if (typeof channelLookup !== 'function') {
+    return { kind: 'skip', reason: 'connector has no channel message lookup (update the Microsoft 365 connector)' };
+  }
+  return {
+    kind: 'fetch',
+    label: channelId,
+    teamId: team,
+    fetch: () => channelLookup.call(client, { teamId: team, channelId, rootMessageId, messageId }),
+  };
 }

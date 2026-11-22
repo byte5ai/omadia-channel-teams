@@ -36,6 +36,13 @@ export interface BuildPollCardInput {
   options: readonly PollOption[];
   /** Optional line under the question (e.g. the rule or the deadline). */
   hint?: string;
+  /**
+   * Kernel omadia#2155 (approval votes; not in the plugin-api 1.82 type): a
+   * person may choose several options. The card's one-click-per-option
+   * actions are single-answer (a click would replace a written multi-option
+   * ballot), so such a poll is posted as text: {@link buildPollText}.
+   */
+  multipleAnswers?: boolean;
 }
 
 export interface PollAnswerValue {
@@ -89,6 +96,21 @@ export function buildPollCard(input: BuildPollCardInput): Attachment {
       } satisfies PollAnswerValue,
     })),
   });
+}
+
+/**
+ * A multiple-answer poll as plain text: the question, the hint and the
+ * options labelled with their ids (the letters a written ballot names),
+ * answered in writing. No buttons, so no click can stand
+ * for a whole ballot.
+ */
+export function buildPollText(input: BuildPollCardInput): string {
+  const problem = validatePollInput(input);
+  if (problem) throw new Error(`invalid poll: ${problem}`);
+  const parts = [`**${input.question.trim()}**`];
+  if (input.hint && input.hint.trim().length > 0) parts.push(input.hint.trim());
+  parts.push(input.options.map((option) => `${option.id}. ${option.label.trim()}`).join('\n'));
+  return parts.join('\n\n');
 }
 
 /** The card payload of an activity: `value.action.data` of an

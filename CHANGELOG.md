@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **Attachments in channel threads (live finding 2026-11-21).** The Graph fallback that
+  finds a message's files asked `/chats/{id}/messages/{id}` also for a channel thread
+  (`19:…@thread.tacv2;messageid=<root>`) and got 404 "Invalid ThreadId", for example at a
+  facilitation start in a channel. A channel message is now read under its team
+  (`channelData.team.aadGroupId`) through the Microsoft 365 connector's
+  `fetchChannelMessage` (connector release after 0.11.0); with an older connector or without
+  a team id the lookup is skipped and logged, Graph is not asked a wrong path. RSC
+  `ChannelMessage.Read.Group` is already in the app package.
+
+- **Channel attachment lookup: a Graph 403 is "not permitted", not a failure.** The
+  connector reads channel messages with the deployment app's token; an app without
+  `ChannelMessage.Read.Group` in that team (for example a facilitator with its own bot app)
+  gets 403. That answer (`status: 403` / `code: 'not_permitted'`, the connector's
+  `GraphRequestError`) is now logged once with team and channel id, and that team's channel
+  lookups are skipped for an hour (`CHANNEL_LOOKUP_DENIAL_TTL_MS`), so each message does not
+  ask Graph and log again. Other errors are logged as before.
+
+- **`TurnOrigin.replyToMessageId` on 1:1 turns** (channel-sdk 0.3.11, kernel
+  byte5ai/omadia#2157, declared structurally until the SDK has it). A private turn names the
+  message it replies to or quotes: the quoted reply's `itemid`, a `quotedReply` entity, or
+  `replyToId`, read by the same `readQuoteInfo` as the message events. It is the activity id
+  Teams gave that message, the id this plugin reports as `messageId` of its own sends, so a
+  reply to a reminder DM matches the reminder. Group turns do not carry it.
+
+- **Multiple-answer polls are posted as text** (kernel byte5ai/omadia#2155, approval votes;
+  `multipleAnswers` read structurally, it is newer than the plugin-api 1.82 type). The poll
+  card has one button per option and is single-answer: a click would replace a written
+  multi-option ballot. A poll with `multipleAnswers: true` goes out as one text message
+  (question, hint, options labelled with their ids such as `A. Thai`, `buildPollText`) that people answer in writing; its id is
+  still reported as `cardMessageId`. Other polls keep the card.
+
 ## 0.42.0
 
 - **Requires plugin-api 1.82.0** (`compat.core: ">=1.82.0 <2.0"`): the reaction contract

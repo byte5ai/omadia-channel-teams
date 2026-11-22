@@ -196,6 +196,38 @@ describe('#43 sendToConversation as the own bot', () => {
     assert.deepEqual(outcome, { outcome: 'delivered', messageId: connector.sent[0]?.id, cardMessageId: connector.sent[0]?.id });
   });
 
+  it('a multiple-answer poll (omadia#2155) is posted as text, never as the single-answer card', async () => {
+    const { connector, send } = groupHarness();
+    const poll = {
+      pollId: 'approval-1',
+      question: 'Welche Punkte gebt ihr frei?',
+      hint: 'Mehrere Antworten möglich.',
+      options: [{ id: 'A', label: 'Budget' }, { id: 'B', label: 'Zeitplan' }, { id: 'C', label: 'Team' }],
+      multipleAnswers: true,
+    };
+
+    const outcome = await send(GROUP_CHAT_ID, { text: '', poll }, { asChannelKey: MIRA.key });
+
+    assert.equal(connector.sent.length, 1);
+    const activity = connector.sent[0]?.activity ?? {};
+    assert.equal('attachments' in activity, false, 'no card, so no click can replace a written ballot');
+    assert.equal(
+      activity['text'],
+      '**Welche Punkte gebt ihr frei?**\n\nMehrere Antworten möglich.\n\nA. Budget\nB. Zeitplan\nC. Team',
+    );
+    assert.deepEqual(outcome, { outcome: 'delivered', messageId: connector.sent[0]?.id, cardMessageId: connector.sent[0]?.id });
+  });
+
+  it('multipleAnswers false keeps the poll card', async () => {
+    const { connector, send } = groupHarness();
+    await send(
+      GROUP_CHAT_ID,
+      { text: '', poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], multipleAnswers: false } },
+      { asChannelKey: MIRA.key },
+    );
+    assert.equal((connector.sent[0]?.activity['attachments'] as unknown[] | undefined)?.length, 1);
+  });
+
   it('resolves a mention by Entra object id only', async () => {
     const { connector, send } = groupHarness();
 

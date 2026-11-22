@@ -30,7 +30,7 @@ import type {
   TurnOrigin,
 } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
-import { inboundMessageId, isBotMentioned, type TeamsConversationMessages } from './teamsConversationMessages.js';
+import { inboundMessageId, isBotMentioned, readQuoteInfo, type TeamsConversationMessages } from './teamsConversationMessages.js';
 import type { TeamsMeetingSessions } from './teamsMeetingSessions.js';
 import type { TeamsQuestionCards } from './teamsQuestionCards.js';
 import { parsePollAnswerValue } from './teamsPollCard.js';
@@ -348,6 +348,8 @@ export function teamsTurnOrigin(
     readonly id?: string | undefined;
     readonly replyToId?: string | undefined;
     readonly value?: unknown;
+    readonly attachments?: ReadonlyArray<{ readonly contentType?: string; readonly content?: unknown }> | undefined;
+    readonly entities?: ReadonlyArray<{ readonly type?: string }> | undefined;
   },
   sessionScope: string,
   userId: string | undefined,
@@ -404,12 +406,21 @@ export function teamsTurnOrigin(
   // Both callers pass the ORIGINAL inbound activity; a detached turn captures
   // the origin before it continues proactively, where the activity has no id.
   const messageId = inboundMessageId(activity);
+  // channel-sdk 0.3.11 — `replyToMessageId` on a PRIVATE turn: the message the
+  // person answers (a quoted reply's `itemid`, a `quotedReply` entity, or
+  // `replyToId`), read by `readQuoteInfo` like the message events. It is the
+  // activity id Teams gave that message, the same id this plugin reports as
+  // `messageId` of its own sends, so a reply to a reminder DM matches it.
+  const replyToMessageId = isPersonal
+    ? readQuoteInfo(activity as Parameters<typeof readQuoteInfo>[0]).replyToMessageId
+    : undefined;
   return {
     channelType: 'teams',
     scope,
     ...(conversationType ? { conversationType } : {}),
     ...(channelConversationId ? { channelConversationId } : {}),
     ...(messageId ? { messageId } : {}),
+    ...(replyToMessageId ? { replyToMessageId } : {}),
     ...(speaker ? { speaker } : {}),
     ...(teamId ? { container: { kind: 'team' as const, id: teamId } } : {}),
     ...(principal ? { principal } : {}),
@@ -1734,9 +1745,13 @@ export class TeamsBot extends TeamsActivityHandler {
       name: string;
     }> = [];
     if (this.attachmentStore && messageId && conversationId !== 'unknown') {
+      // A channel thread is read under its team (`channelData.team.aadGroupId`).
+      const teamAadGroupId = (activity.channelData as { team?: { aadGroupId?: unknown } } | undefined)?.team
+        ?.aadGroupId;
       graphSynthesised = await this.attachmentStore.discoverFromGraphMessage(
         conversationId,
         messageId,
+        typeof teamAadGroupId === 'string' ? teamAadGroupId : undefined,
       );
     }
 

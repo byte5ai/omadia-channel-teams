@@ -269,6 +269,12 @@ export type TeamsTurnOrigin = TurnOrigin & {
    * event.
    */
   readonly messageId?: string;
+  /**
+   * since channel-sdk 0.3.11 (kernel omadia#2157) — on a PRIVATE (1:1) turn:
+   * the platform id of the message this one replies to or quotes, in the
+   * format of the `messageId` the plugin reports for its own sends.
+   */
+  readonly replyToMessageId?: string;
 };
 
 /**
