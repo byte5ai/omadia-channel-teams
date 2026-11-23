@@ -123,7 +123,7 @@ import type {
   TeamsAgentInstallResult,
 } from './teamsAgentInstaller.js';
 import { buildRecalledContextCard } from './teamsRecall.js';
-import { contributionsAsText, contributionsLength, systemNoticeAsText } from './teamsAnswerParts.js';
+import { consultedByOf, contributionsAsText, contributionsLength, systemNoticeAsText } from './teamsAnswerParts.js';
 import { TEAMS_PACE_PROFILE, TEAMS_REPLY_WINDOW_MS, teamsPaceHooks } from './teamsPace.js';
 import { readSideChannelData, sideChannelLength, type SideChannelTable } from './teamsSideChannelData.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
@@ -2715,11 +2715,13 @@ async function sendAnswer(
   }
 
   const disclosure = delivery.plainTextDisclosure?.trim();
-  const body = isSystemNotice
-    ? systemNoticeAsText(resolvedText)
-    : [delivery.fullText ?? resolvedText, contributionsAsText(contributions, answer.speaker)]
-        .filter((part) => part.length > 0)
-        .join('\n\n');
+  const body = [
+    isSystemNotice ? systemNoticeAsText(resolvedText) : (delivery.fullText ?? resolvedText),
+    // INV-5: also under a system notice (a withheld answer keeps them).
+    contributionsAsText(contributions, consultedByOf(answer.speaker, answer.systemNotice)),
+  ]
+    .filter((part) => part.length > 0)
+    .join('\n\n');
   const withDisclosure =
     disclosure && !body.endsWith(disclosure) ? `${body}\n\n${disclosure}` : body;
   const plainText =

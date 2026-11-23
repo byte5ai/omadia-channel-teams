@@ -88,6 +88,34 @@ describe('system notice posted into Teams', () => {
   });
 });
 
+describe('a withheld answer with colleagues\' contributions (INV-5, E2E 2026-11-23)', () => {
+  const notice = {
+    code: 'identity_guard_blocked',
+    agent: { slug: 'mira', displayName: 'Mira', agentId: 'a-mira' },
+    text: 'Miras Antwort wurde zurückgehalten.',
+    locale: 'de',
+  };
+  const contribution = { id: 'c1', speaker: JONAS, text: 'Q3 ist stabil, laut Forecast.', status: 'delivered' };
+
+  it('the card shows the notice and the contribution', async () => {
+    const { posted } = await deliverAnswer({ text: notice.text, speaker: { kind: 'system' }, systemNotice: notice, contributions: [contribution] });
+    assert.equal(posted.length, 1);
+    const json = JSON.stringify(posted[0]);
+    assert.ok(json.includes(notice.text));
+    assert.ok(json.includes(contribution.text));
+    assert.ok(json.includes('Jonas (konsultiert von Mira)'));
+  });
+
+  it('as plain text (too long for a card) too', async () => {
+    const long = { ...contribution, text: `Q3 ist stabil. ${'Detail. '.repeat(4000)}` };
+    const { posted } = await deliverAnswer({ text: notice.text, speaker: { kind: 'system' }, systemNotice: notice, contributions: [long] });
+    assert.ok(posted.length > 1);
+    assert.ok(String(posted[0]?.['text']).startsWith(`${SYSTEM_NOTICE_LABEL}: Miras Antwort`));
+    assert.ok(posted.map((p) => String(p['text'] ?? '')).join('\n').includes('Jonas (konsultiert von Mira):'));
+    assert.equal(labelCount(posted[0]), 0);
+  });
+});
+
 describe('contributions posted into Teams', () => {
   const contributions = [
     { id: 'c1', speaker: JONAS, text: 'Jonas sagt: Q3 ist stabil.', status: 'delivered' },

@@ -228,6 +228,27 @@ describe('system notice (INV-3, INV-7): never an agent speaking', () => {
     assert.equal(contentOf(card).actions, undefined);
     assert.ok(!JSON.stringify(card.content).includes(AI_MARKER_CHIP), 'a template of the management layer is not AI output');
   });
+
+  it('a withheld answer keeps its colleagues\' contributions, attributed (INV-5, E2E 2026-11-23)', () => {
+    const card = buildAnswerCard({
+      answer: 'Minervas Antwort wurde zurückgehalten.',
+      aiMarker: true,
+      speaker: { kind: 'system' },
+      systemNotice: {
+        code: 'identity_guard_blocked',
+        agent: { slug: 'strategy', displayName: 'Minerva', agentId: 'a-minerva' },
+        text: 'Minervas Antwort wurde zurückgehalten.',
+        locale: 'de',
+      },
+      contributions: [delivered],
+    });
+    const body = contentOf(card).body;
+    assert.equal((body[0] as { id?: string }).id, 'system-notice', 'the notice first');
+    const json = JSON.stringify(card.content);
+    assert.ok(json.includes(JSON.stringify(BRIEFING).slice(1, -1)), 'the colleague\'s text, unchanged');
+    assert.ok(json.includes('(konsultiert von Minerva)'), 'attributed, consulted by the withheld agent');
+    assert.ok(!json.includes(AI_MARKER_CHIP));
+  });
 });
 
 describe('decision card stays where the agent lets the user choose', () => {
