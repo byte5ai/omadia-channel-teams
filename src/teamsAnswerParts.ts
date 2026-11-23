@@ -16,7 +16,7 @@
  *    words of the bot it is posted through.
  */
 
-import type { Contribution, Speaker } from './kernel-types.js';
+import type { Contribution, Speaker, SystemNotice } from './kernel-types.js';
 
 /** Heading of a management-layer notice. */
 export const SYSTEM_NOTICE_LABEL = 'System';
@@ -82,6 +82,17 @@ export function contributionsAsText(
   return (contributions ?? [])
     .map((contribution) => `${contributionLabel(contribution, consultedBy)}:\n${contribution.text}`)
     .join('\n\n');
+}
+
+/**
+ * Who consulted the colleagues of an answer the management layer replaced:
+ * the agent the notice is about. A withheld answer keeps its colleagues'
+ * delivered contributions (INV-5): they are theirs, not the withheld prose.
+ */
+export function consultedByOf(speaker: Speaker | undefined, notice: SystemNotice | undefined): Speaker | undefined {
+  if (speaker?.kind !== 'system') return speaker;
+  const agent = notice?.agent;
+  return agent ? { kind: 'agent', agentId: agent.agentId ?? agent.slug, slug: agent.slug, displayName: agent.displayName } : undefined;
 }
 
 /** The card body of a `system` notice: its own heading, then the notice text. */

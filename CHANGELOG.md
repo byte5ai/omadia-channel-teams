@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.44.1
+
+- **A withheld answer keeps its colleagues' contributions (live E2E 2026-11-23).** When the
+  kernel's identity guard withheld an agent's answer after a consultation, the card showed
+  only the "System" notice: the consulted colleague's delivered contribution, which the
+  kernel still carries on the answer (INV-5), was dropped by the system-notice branch of the
+  card and of the plain-text path. Both now render the notice first, then each contribution
+  attributed to the colleague ("Karen (konsultiert von Minerva)"), text unchanged. Tests:
+  `tests/teamsCard.test.ts`, `tests/teamsAnswerDelivery.test.ts`.
+
 ## 0.44.0
 
 - **Reply window (spec 2042 criterion 10, #42, decided).** A message turn that outlives the

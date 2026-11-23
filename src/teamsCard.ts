@@ -10,7 +10,7 @@ import type {
 } from './kernel-types.js';
 import type { MentionEntity } from './teamsMentions.js';
 import type { AgentAppInstallOutcome } from './teamsAgentInstaller.js';
-import { contributionBlocks, systemNoticeBody } from './teamsAnswerParts.js';
+import { consultedByOf, contributionBlocks, systemNoticeBody } from './teamsAnswerParts.js';
 import {
   SIDE_CHANNEL_MAX_ROWS,
   sideChannelCellText,
@@ -446,7 +446,13 @@ const MAX_ATTACHMENTS_PER_CARD = 3;
 export function buildAnswerCard(input: BuildAnswerCardInput): Attachment {
   const cardBody =
     input.speaker?.kind === 'system'
-      ? { body: systemNoticeBody(input.systemNotice?.text ?? input.answer) }
+      ? {
+          body: [
+            ...systemNoticeBody(input.systemNotice?.text ?? input.answer),
+            // INV-5: a withheld answer keeps its colleagues' contributions.
+            ...contributionBlocks(input.contributions, consultedByOf(input.speaker, input.systemNotice)),
+          ],
+        }
       : buildCardBody(input);
   const mentions = input.mentions ?? [];
   // Teams requires mention entities on `msteams.entities` of the card itself
