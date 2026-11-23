@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.44.0
+
+- **Reply window (spec 2042 criterion 10, #42, decided).** A message turn that outlives the
+  Bot Framework reply window (15 s, `TEAMS_REPLY_WINDOW_MS`) now delivers its answer as a
+  follow-up on a proactive continuation of the same conversation, never through a turn
+  context that may be gone; the acknowledgement (8 s) has already told the person the agent
+  is on it. If the follow-up cannot be posted the live turn is tried as the last way. Card
+  clicks were already detached. Tests: `tests/teamsReplyWindow.test.ts` (window, no window,
+  failing follow-up, failing turn ends in a notice) and `tests/teamsEmitterPaths.test.ts`
+  (every post path of the plugin is listed; a new one fails it).
+
 ## 0.43.0
 
 - **Attachments in channel threads (live finding 2026-11-21).** The Graph fallback that

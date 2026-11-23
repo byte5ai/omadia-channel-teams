@@ -124,7 +124,7 @@ import type {
 } from './teamsAgentInstaller.js';
 import { buildRecalledContextCard } from './teamsRecall.js';
 import { contributionsAsText, contributionsLength, systemNoticeAsText } from './teamsAnswerParts.js';
-import { TEAMS_PACE_PROFILE, teamsPaceHooks } from './teamsPace.js';
+import { TEAMS_PACE_PROFILE, TEAMS_REPLY_WINDOW_MS, teamsPaceHooks } from './teamsPace.js';
 import { readSideChannelData, sideChannelLength, type SideChannelTable } from './teamsSideChannelData.js';
 import type { TeamsRosterProvider } from './teamsRoster.js';
 import type { TeamsConversationObserver } from './teamsConversationObserver.js';
@@ -2411,15 +2411,6 @@ export class TeamsBot extends TeamsActivityHandler {
           );
           return;
         }
-        // Cross-session KG-recall — surface what the per-turn probe pulled
-        // from PRIOR sessions as a read-only card ABOVE the answer (context
-        // first), mirroring the web-ui RecalledContextCard. No-op when empty.
-        if (result.recalled) {
-          const recallCard = buildRecalledContextCard(result.recalled);
-          if (recallCard) {
-            await context.sendActivity(MessageFactory.attachment(recallCard));
-          }
-        }
         // AI marking (#643/#644, #2087): the kernel folds the disclosure
         // sentence into `text` for wire-only channels. Teams marks the answer
         // itself (✨ AI-generated card chip + activity-level AI label entity)
@@ -2442,32 +2433,66 @@ export class TeamsBot extends TeamsActivityHandler {
         const nameLine = isSystemNotice
           ? undefined
           : this.nameLineFor(input.sessionScope, result.speaker, isNativeIdentity);
-        await sendAnswer(context, result, answerText, {
-          rosterProvider,
-          ...(nameLine ? { speakerLine: nameLine } : {}),
-          ...(side ? { dataTables: side.tables, fullText: withoutDisclosure(result.text) } : {}),
-          pendingChoice,
-          pendingSlots,
-          consentConnectionName: result.oauthConsentPending ? this.ssoConnectionName : undefined,
-          chipDue,
-          // D24 — an answer too long for a card goes out as plain text,
-          // where no chip of ours is shown. Unless the platform label was
-          // confirmed, the disclosure sentence goes back onto that text.
-          ...(chipDue && !this.nativeAiLabel && result.aiDisclosure?.text
-            ? { plainTextDisclosure: result.aiDisclosure.text }
-            : {}),
-        });
-
-        // Routine-list smart card (sidecar). Rendered AFTER the agent's
-        // prose answer so the user sees the narration first ("Hier sind
-        // deine 3 Routinen") and the actionable card right below.
-        if (pendingRoutineList && this.buildRoutineListSmartCardAttachment) {
-          const att = this.buildRoutineListSmartCardAttachment({
-            filter: pendingRoutineList.filter,
-            totals: pendingRoutineList.totals,
-            routines: pendingRoutineList.routines,
+        // Delivery of the answer: through the live turn, or, when the work
+        // outlived the reply window, as a follow-up on a proactive
+        // continuation of the same conversation (spec 2042 §6 criterion 10,
+        // byte5ai/omadia-channel-teams#42).
+        const deliver = async (target: TurnContext): Promise<void> => {
+          // Cross-session KG-recall — surface what the per-turn probe pulled
+          // from PRIOR sessions as a read-only card ABOVE the answer (context
+          // first), mirroring the web-ui RecalledContextCard. No-op when empty.
+          if (result.recalled) {
+            const recallCard = buildRecalledContextCard(result.recalled);
+            if (recallCard) {
+              await target.sendActivity(MessageFactory.attachment(recallCard));
+            }
+          }
+          await sendAnswer(target, result, answerText, {
+            rosterProvider,
+            ...(nameLine ? { speakerLine: nameLine } : {}),
+            ...(side ? { dataTables: side.tables, fullText: withoutDisclosure(result.text) } : {}),
+            pendingChoice,
+            pendingSlots,
+            consentConnectionName: result.oauthConsentPending ? this.ssoConnectionName : undefined,
+            chipDue,
+            // D24 — an answer too long for a card goes out as plain text,
+            // where no chip of ours is shown. Unless the platform label was
+            // confirmed, the disclosure sentence goes back onto that text.
+            ...(chipDue && !this.nativeAiLabel && result.aiDisclosure?.text
+              ? { plainTextDisclosure: result.aiDisclosure.text }
+              : {}),
           });
-          await context.sendActivity(MessageFactory.attachment(att));
+
+          // Routine-list smart card (sidecar). Rendered AFTER the agent's
+          // prose answer so the user sees the narration first ("Hier sind
+          // deine 3 Routinen") and the actionable card right below.
+          if (pendingRoutineList && this.buildRoutineListSmartCardAttachment) {
+            const att = this.buildRoutineListSmartCardAttachment({
+              filter: pendingRoutineList.filter,
+              totals: pendingRoutineList.totals,
+              routines: pendingRoutineList.routines,
+            });
+            await target.sendActivity(MessageFactory.attachment(att));
+          }
+
+        };
+        if (paced.deliverAsFollowUp && this.proactiveSend) {
+          console.log(
+            `[teams] turn outlived the ${String(TEAMS_REPLY_WINDOW_MS)} ms reply window after ${String(paced.elapsedMs)} ms: answering as a follow-up conv=${input.conversationId}`,
+          );
+          try {
+            await this.proactiveSend(TurnContext.getConversationReference(context.activity), deliver);
+          } catch (followUpErr) {
+            // The follow-up did not go out: the live turn is the last way to
+            // reach the person; its own failure is the turn's catch below.
+            console.error(
+              '[teams] follow-up delivery failed, answering through the live turn:',
+              followUpErr instanceof Error ? followUpErr.message : followUpErr,
+            );
+            await deliver(context);
+          }
+        } else {
+          await deliver(context);
         }
 
         if (result.speaker?.kind === 'agent') {
