@@ -32,7 +32,12 @@ import { registerTeamsSendProviders, stampChannel } from './teamsKernelRegistrat
 import { createTeamsMeetingSource } from './teamsMeetingSource.js';
 import { TeamsMeetingSessions, type TeamsSessionEvent } from './teamsMeetingSessions.js';
 import type { TurnAgentDecision } from './agentForTurn.js';
-import type { ConversationMessageEvent, NativeFacilitatorCoreApi } from './kernel-types.js';
+import type {
+  ConversationMessageEvent,
+  DefaultChannelKeyCoreApi,
+  NativeFacilitatorCoreApi,
+} from './kernel-types.js';
+import { createTeamsDefaultChannelKeyProvider } from './teamsDefaultChannelKey.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
 /**
@@ -830,6 +835,21 @@ export async function activate(
     ...(appTemplate ? { template: appTemplate } : {}),
   });
   facilitatorCore.registerReadinessProvider?.(ctx.agentId, readinessProvider);
+  // The deployment's default Teams bot, for the kernel's Conductor (the only
+  // unknown bot key it routes to a binding or the fallback agent). A kernel
+  // without the seam still derives it from the Microsoft 365 config itself.
+  const defaultKeyCore: typeof core & DefaultChannelKeyCoreApi = core;
+  defaultKeyCore.registerDefaultChannelKeyProvider?.(
+    ctx.agentId,
+    createTeamsDefaultChannelKeyProvider(
+      () => [ctx.config.get<string>('microsoft_app_id'), process.env['MICROSOFT_APP_ID']],
+      teamsBots,
+    ),
+  );
+  core.log(
+    'info',
+    `default bot key: ${typeof defaultKeyCore.registerDefaultChannelKeyProvider === 'function' ? 'provided by plugin' : 'kernel-derived (older kernel)'}`,
+  );
   if (!instanceCredentials) {
     core.log(
       'warn',

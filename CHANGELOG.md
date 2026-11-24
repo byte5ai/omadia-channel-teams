@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.45.0
+
+- **The plugin names its own default bot to the kernel.** The kernel's Conductor routes
+  exactly one unknown Teams bot key to a binding or the fallback agent: the deployment's
+  own bot. The kernel used to derive it from the retired `de.byte5.integration.microsoft365`
+  registry entry (or `MICROSOFT_APP_ID`). The plugin now registers a small provider through
+  `registerDefaultChannelKeyProvider` (feature-detected; an older kernel keeps deriving it
+  itself) that answers `28:<appId>` of the Microsoft 365 app registration
+  (`microsoft_app_id`, else env `MICROSOFT_APP_ID`, the kernel's order) and only when the
+  plugin serves that bot; otherwise no default bot, never an operator-listed agent bot. Teams still registers no
+  `agentIdentities@1` provider: its agent bots stay kernel-provisioned in
+  `agent_teams_identities`. Test: `tests/teamsDefaultChannelKey.test.ts`.
+
 ## 0.44.1
 
 - **A withheld answer keeps its colleagues' contributions (live E2E 2026-11-23).** When the
