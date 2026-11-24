@@ -731,6 +731,24 @@ export interface NativeFacilitatorCoreApi {
 }
 
 // ---------------------------------------------------------------------------
+// Default bot key — mirror of the kernel's `DefaultChannelKeyProvider`
+// (`@omadia/channel-sdk` agentIdentity.ts). The channel's own default bot is
+// the only unknown bot key the Conductor routes to a binding or the fallback
+// agent. Mirrored because this plugin ships before the SDK that has it.
+// ---------------------------------------------------------------------------
+
+export interface DefaultChannelKeyProvider {
+  readonly channelType: string;
+  /** The default bot's routing key (`28:<appId>`), read per call. */
+  defaultChannelKey(): string | undefined;
+}
+
+export interface DefaultChannelKeyCoreApi {
+  /** Absent on a kernel that still derives the Teams default bot itself. */
+  registerDefaultChannelKeyProvider?(channelId: string, provider: DefaultChannelKeyProvider): void;
+}
+
+// ---------------------------------------------------------------------------
 // Question cards (byte5ai/omadia#2043 §6.1, #2089) — mirror of the kernel's
 // `@omadia/plugin-api` `questionCard.ts` (same names: QuestionCard,
 // CardQuestion, CardOption, CardAnswerValue, CardSupport, CardUpdate,
