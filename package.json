@@ -22,7 +22,7 @@
     "clean": "rm -rf dist out *.tsbuildinfo"
   },
   "peerDependencies": {
-    "@anthropic-ai/sdk": "^0.88.0",
+    "@anthropic-ai/sdk": "^1.12.0",
     "@omadia/channel-sdk": "*",
     "@omadia/diagrams": "*",
     "@omadia/integration-microsoft365": "*",
@@ -38,7 +38,7 @@
     "@types/node": "^25.6.0",
     "@types/express": "^5.0.6",
     "@types/pg": "^8.11.10",
-    "@anthropic-ai/sdk": "^0.88.0",
+    "@anthropic-ai/sdk": "^1.12.0",
     "botbuilder": "^4.23.3",
     "express": "^5.0.0",
     "pg": "^8.13.0",
