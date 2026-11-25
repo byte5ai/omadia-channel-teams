@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **`@anthropic-ai/sdk` peer and dev dependency raised to `^1.12.0`.** The kernel moved to
+  SDK 1.12 (omadia #2167, API version 2026-10-21); the old `^0.88.0` peer range no longer
+  matched the SDK the host provides. The plugin makes no direct SDK calls (no `messages.create`,
+  no sampling parameters, no auth headers), so no code changes; the dist output does not
+  import the SDK.
+
 ## 0.45.0
 
 - **The plugin names its own default bot to the kernel.** The kernel's Conductor routes
