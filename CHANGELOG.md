@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.45.1
 
 - **`@anthropic-ai/sdk` peer and dev dependency raised to `^1.12.0`.** The kernel moved to
   SDK 1.12 (omadia #2167, API version 2026-10-21); the old `^0.88.0` peer range no longer
