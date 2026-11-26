@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Uploads reach the kernel as structured data (omadia #1962, ADR-0178).** Each file the bot
+  persisted from the activity is passed as `storedAttachments` (`StoredTurnAttachment`,
+  `@omadia/channel-sdk` 0.3.16) on the turn input. The kernel ingests and binds storage keys
+  only from that field; it no longer parses the `[attachments-info]` block, which stays in the
+  message as information for the model (storage keys for `read_attachment` and the brand-asset
+  convention). Needs a kernel with omadia #1960/#1962; on an older kernel the extra field is
+  ignored and the text block still works as before.
+- Not carried: uploads of a message that first triggers the topic-change card. The card's
+  continue/reset click re-sends only the text, so those files are not auto-ingested; resend them
+  after the click.
+
 ## 0.45.1
 
 - **`@anthropic-ai/sdk` peer and dev dependency raised to `^1.12.0`.** The kernel moved to

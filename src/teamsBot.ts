@@ -27,6 +27,7 @@ import type {
   ChannelUserRef,
   ConversationMembershipEvent,
   ScopeId,
+  StoredTurnAttachment,
   TurnOrigin,
 } from '@omadia/channel-sdk';
 import { attributeGroupMessage, toSdkConversationType } from './teamsGroupPrimitives.js';
@@ -1699,6 +1700,7 @@ export class TeamsBot extends TeamsActivityHandler {
       userMessage,
       priorTurns: effectiveHistory,
       resolution: turnAgent,
+      storedAttachments: toStoredTurnAttachments(persistedAttachments),
     });
   }
 
@@ -2228,6 +2230,12 @@ export class TeamsBot extends TeamsActivityHandler {
        *  Set only by `runOrchestratorTurnDetached`; the inline path derives it
        *  from the live activity below. */
       origin?: TurnOrigin;
+      /**
+       * omadia#1962 (ADR-0178) — the files persisted from THIS activity, as
+       * structured data. The kernel ingests and binds storage keys only from
+       * here; the `[attachments-info]` text in the message is for the model.
+       */
+      storedAttachments?: readonly StoredTurnAttachment[];
     },
   ): Promise<void> {
     // byte5ai/omadia#1598 — card clicks and detached turns resolve here, not
@@ -2347,6 +2355,9 @@ export class TeamsBot extends TeamsActivityHandler {
           () =>
             chatAgent.chat({
             userMessage: attributedMessage,
+            ...(input.storedAttachments && input.storedAttachments.length > 0
+              ? { storedAttachments: [...input.storedAttachments] }
+              : {}),
             sessionScope: input.sessionScope,
             ...(input.userId ? { userId: input.userId } : {}),
             ...(input.priorTurns.length > 0 ? { priorTurns: input.priorTurns } : {}),
@@ -2544,6 +2555,23 @@ export class TeamsBot extends TeamsActivityHandler {
       await run();
     }
   }
+}
+
+/**
+ * omadia#1962 — the structured form of what `persistAttachmentsIfAny` stored
+ * for this activity. Only these keys are ingested (and bound to the
+ * conversation) by the kernel.
+ */
+export function toStoredTurnAttachments(
+  persisted: readonly PersistedAttachment[],
+): StoredTurnAttachment[] {
+  return persisted.map((a) => ({
+    fileName: a.fileName,
+    contentType: a.contentType,
+    storageKey: a.storageKey,
+    sizeBytes: a.sizeBytes,
+    ...(a.signedUrl ? { signedUrl: a.signedUrl } : {}),
+  }));
 }
 
 async function sendTopicAsk(
