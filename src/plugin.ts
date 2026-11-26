@@ -22,6 +22,7 @@ import {
   type CoreApi,
 } from '@omadia/channel-sdk';
 
+import { resolveGraphPool } from './graphPoolAccess.js';
 import { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 import { TeamsConversationObserver } from './teamsConversationObserver.js';
 import { TeamsGraphResolver } from './teamsGraphResolver.js';
@@ -350,7 +351,12 @@ export async function activate(
   }
   const embeddingClient = ctx.services.get<EmbeddingClient>('embeddingClient');
   const diagramStore = ctx.services.get<TigrisStore>('tigrisStore');
-  const graphPool = ctx.services.get<Pool>('graphPool');
+  // omadia#838 — the pool needs the operator's `permissions.sql` grant (C7,
+  // ADR-0050). Without it the kernel refuses the pool with a
+  // SqlPermissionError; the channel then runs without a database (cards,
+  // meeting state and conversation references in memory) instead of failing
+  // to activate.
+  const graphPool = resolveGraphPool(ctx.services, (m) => core.log('warn', m));
   const graphTenantId =
     ctx.services.get<string>('graphTenantId') ?? 'default';
   const topicDetector = ctx.services.get<TopicDetector>('topicDetector');
