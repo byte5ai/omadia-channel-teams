@@ -49,7 +49,7 @@ const REQUIRED_FILES = ['manifest.yaml'];
 // artifact this unit retires.
 const REQUIRED_DIRS = ['dist', 'appPackage'];
 const OPTIONAL_FILES = ['README.md', 'LICENSE', 'NOTICE', 'INTEGRATION.md'];
-const OPTIONAL_DIRS = ['assets', 'skills'];
+const OPTIONAL_DIRS = ['assets', 'skills', 'migrations'];
 
 /** The manifest's `lifecycle.entry`. Its absence means `tsc` did not finish. */
 const REQUIRED_IN_DIST = ['plugin.js'];

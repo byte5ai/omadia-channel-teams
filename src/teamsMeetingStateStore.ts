@@ -42,7 +42,13 @@ export const RUNNING_EVIDENCE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 const PURGE_INTERVAL_MS = 60 * 60 * 1000;
 
-/** Exported for the kernel session, should the DDL move into a migration. */
+/**
+ * The table, as `migrations/0002_meeting_states.sql` creates it. The kernel applies that
+ * file before activate() when the operator granted `permissions.sql`
+ * (omadia#838). The statements also run at first use, as a no-op after the
+ * migration, so a kernel that runs no channel migrations keeps working.
+ * `tests/sqlMigrations.test.ts` keeps both equal.
+ */
 export const MEETING_STATES_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS ${MEETING_STATES_TABLE} (
      bot_key         TEXT        NOT NULL,

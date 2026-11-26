@@ -344,6 +344,13 @@ playbook:
     Roster-Resolution bleiben im Kanal.
 
 permissions:
+  # omadia#838 / ADR-0050 (C7) — the channel's own tables (question cards,
+  # meeting state) come from `migrations/`, applied by the kernel before
+  # activate(), and `graphPool` needs the operator's grant of this block.
+  # Without the grant the channel runs without a database (see plugin.ts).
+  sql:
+    migrations: "migrations"
+    ledger: "plg_omadia_channel_teams_migrations"
   # US4 (Conductor Surface) — provisions `ctx.events`; a plugin may only emit an
   # event id it declared via an `event_emit` capability (see `capabilities` above).
   events:

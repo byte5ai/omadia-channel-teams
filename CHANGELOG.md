@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Database access is declared and granted** (byte5ai/omadia#838, ADR-0050). The channel resolved the kernel's `graphPool` only through a grandfather row in the kernel and created its two tables (`teams_question_cards`, `teams_meeting_states`) at runtime. The manifest now declares `permissions.sql` (ledger `plg_omadia_channel_teams_migrations`), the two tables come from `migrations/0001_question_cards.sql` and `0002_meeting_states.sql`, and the zip ships the directory. The operator grants it on the plugin page (`PUT /installed/@omadia/channel-teams/grants`); a kernel that runs channel migrations then applies them before `activate()`. The migrations use `IF NOT EXISTS`, so tables created at runtime by earlier versions are kept. The stores still run the same statements at first use (a no-op after the migration) for kernels that run no channel migrations; a test keeps them identical.
+- **No grant, no crash.** When the kernel refuses `graphPool` because the grant is missing, the channel logs the remedy and runs without a database (question cards, meeting state and conversation references in memory) instead of failing to activate. That covers an instance where the kernel's grandfather row is gone before the operator granted the permission.
+
 ## 0.45.1
 
 - **`@anthropic-ai/sdk` peer and dev dependency raised to `^1.12.0`.** The kernel moved to

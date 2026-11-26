@@ -8,10 +8,11 @@
 // which bot.
 //
 // THE TABLE is `teams_question_cards`, next to `teams_conversation_refs` on
-// the same pool. Unlike that one (a kernel migration), this plugin creates
-// its table itself, idempotently, on first use: this repository has no
-// migration mechanism of its own. If the kernel ships the same DDL as a
-// migration later, the statement here is a no-op.
+// the same pool. Unlike that one (a kernel migration), this table is the
+// plugin's own: `migrations/0001_question_cards.sql`, applied by the kernel
+// under the granted `permissions.sql` (omadia#838). The same DDL also runs
+// idempotently on first use, a no-op after the migration, for kernels that
+// run no channel migrations.
 //
 // POOLER-SAFE. The pool is the Neon transaction-mode pooler on Fly: nothing
 // here keeps session state. Every statement is a single autocommit query
@@ -56,7 +57,13 @@ export const KEEP_AFTER_CLOSE_MS = 14 * DAY_MS;
 export const KEEP_WITHOUT_CLOSE_MS = 60 * DAY_MS;
 const PURGE_INTERVAL_MS = 60 * 60 * 1000;
 
-/** Exported for the kernel session, should the DDL move into a migration. */
+/**
+ * The table, as `migrations/0001_question_cards.sql` creates it. The kernel applies that
+ * file before activate() when the operator granted `permissions.sql`
+ * (omadia#838). The statements also run at first use, as a no-op after the
+ * migration, so a kernel that runs no channel migrations keeps working.
+ * `tests/sqlMigrations.test.ts` keeps both equal.
+ */
 export const QUESTION_CARDS_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS ${QUESTION_CARDS_TABLE} (
      bot_app_id       TEXT        NOT NULL,
