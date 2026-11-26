@@ -4,6 +4,16 @@
 
 - **Database access is declared and granted** (byte5ai/omadia#838, ADR-0050). The channel resolved the kernel's `graphPool` only through a grandfather row in the kernel and created its two tables (`teams_question_cards`, `teams_meeting_states`) at runtime. The manifest now declares `permissions.sql` (ledger `plg_omadia_channel_teams_migrations`), the two tables come from `migrations/0001_question_cards.sql` and `0002_meeting_states.sql`, and the zip ships the directory. The operator grants it on the plugin page (`PUT /installed/@omadia/channel-teams/grants`); a kernel that runs channel migrations then applies them before `activate()`. The migrations use `IF NOT EXISTS`, so tables created at runtime by earlier versions are kept. The stores still run the same statements at first use (a no-op after the migration) for kernels that run no channel migrations; a test keeps them identical.
 - **No grant, no crash.** When the kernel refuses `graphPool` because the grant is missing, the channel logs the remedy and runs without a database (question cards, meeting state and conversation references in memory) instead of failing to activate. That covers an instance where the kernel's grandfather row is gone before the operator granted the permission.
+- **Uploads reach the kernel as structured data (omadia #1962, ADR-0178).** Each file the bot
+  persisted from the activity is passed as `storedAttachments` (`StoredTurnAttachment`,
+  `@omadia/channel-sdk` 0.3.16) on the turn input. The kernel ingests and binds storage keys
+  only from that field; it no longer parses the `[attachments-info]` block, which stays in the
+  message as information for the model (storage keys for `read_attachment` and the brand-asset
+  convention). Needs a kernel with omadia #1960/#1962; on an older kernel the extra field is
+  ignored and the text block still works as before.
+- Not carried: uploads of a message that first triggers the topic-change card. The card's
+  continue/reset click re-sends only the text, so those files are not auto-ingested; resend them
+  after the click.
 
 ## 0.45.1
 
