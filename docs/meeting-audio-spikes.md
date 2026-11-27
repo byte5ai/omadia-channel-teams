@@ -100,7 +100,7 @@ The prototype is `spikes/meeting-audio/src/teamsUserToken.ts` and is **Simulated
 - the refresh-token grant, including the rolled refresh token;
 - the HMAC-SHA256 request signature;
 - error mapping without echoing secrets;
-- the `TEAMS_MEETING_AUDIO_SPIKE=1` gate.
+- the `TEAMS_MEETING_AUDIO_SPIKE=1` gate, which both calls check before any request.
 
 How to get the Entra token without a person present:
 

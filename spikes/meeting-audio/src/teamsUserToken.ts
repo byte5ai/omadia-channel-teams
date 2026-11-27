@@ -1,8 +1,8 @@
 // Spike A-S1 (byte5ai/omadia#584, omadia ADR-0287): an ACS token for the
 // agent's own tenant user, without an interactive login at run time.
 //
-// SPIKE CODE, not wired, and gated: nothing here runs unless
-// TEAMS_MEETING_AUDIO_SPIKE=1 (see `assertMeetingAudioSpikeEnabled`).
+// SPIKE CODE, not wired, and gated: both calls to Microsoft refuse to run
+// unless TEAMS_MEETING_AUDIO_SPIKE=1 (`assertMeetingAudioSpikeEnabled`).
 //
 // Two steps:
 //   1. An Entra token of the tenant user for the ACS scopes
@@ -105,6 +105,7 @@ export interface EntraTokens {
 
 /** Step 1: refresh-token grant against the tenant's v2 token endpoint. */
 export async function refreshEntraToken(input: EntraRefreshInput, fetchImpl: FetchLike): Promise<EntraTokens> {
+  assertMeetingAudioSpikeEnabled(process.env);
   const body = new URLSearchParams({
     client_id: input.clientId,
     grant_type: 'refresh_token',
@@ -165,6 +166,7 @@ export function signAcsRequest(args: {
 
 /** Step 2: exchange the Entra token for an ACS token of the Teams user. */
 export async function exchangeForAcsToken(input: AcsExchangeInput, fetchImpl: FetchLike): Promise<AcsToken> {
+  assertMeetingAudioSpikeEnabled(process.env);
   const url = new URL(`/teamsUser/:exchangeAccessToken?api-version=${ACS_EXCHANGE_API_VERSION}`, input.endpoint);
   if (url.protocol !== 'https:') throw new MeetingAudioSpikeError('ACS endpoint must be https');
   const body = JSON.stringify({ token: input.entraAccessToken, appId: input.clientId, userId: input.userObjectId });

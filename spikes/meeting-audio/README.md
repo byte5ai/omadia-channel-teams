@@ -15,8 +15,9 @@ lands in `dist/` or in the plugin zip. The unit tests run with the plugin's suit
 | `sidecar/` | S1': headless Chromium with the ACS Calling SDK (Playwright) |
 | `webrtc-egress/probe.mjs` | S4': UDP STUN and TLS 443 reachability of the Teams relays |
 
-Everything that can reach Microsoft requires `TEAMS_MEETING_AUDIO_SPIKE=1`. Secrets come
-only from the environment. Audio is never written to disk.
+The token calls and the sidecar refuse to run without `TEAMS_MEETING_AUDIO_SPIKE=1`. The
+egress probe is not gated: it sends only an unauthenticated STUN request and a TLS handshake,
+and touches no tenant. Secrets come only from the environment. Audio is never written to disk.
 
 ## Run
 

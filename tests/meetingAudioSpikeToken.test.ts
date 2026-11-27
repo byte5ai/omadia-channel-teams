@@ -1,6 +1,6 @@
 // Spike A-S1 (byte5ai/omadia#584): token path for the agent's tenant user,
 // against a simulated Entra token endpoint and ACS identity service.
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createHash, createHmac } from 'node:crypto';
 
@@ -30,11 +30,44 @@ function fakeFetch(status: number, body: unknown, calls: Call[] = []): FetchLike
 const ACCESS_KEY = Buffer.from('not-a-real-acs-key-for-tests').toString('base64');
 const FIXED_DATE = new Date('2026-11-27T12:00:00Z');
 
+const previousFlag = process.env.TEAMS_MEETING_AUDIO_SPIKE;
+before(() => {
+  process.env.TEAMS_MEETING_AUDIO_SPIKE = '1';
+});
+after(() => {
+  if (previousFlag === undefined) delete process.env.TEAMS_MEETING_AUDIO_SPIKE;
+  else process.env.TEAMS_MEETING_AUDIO_SPIKE = previousFlag;
+});
+
 describe('A-S1 feature flag', () => {
   it('refuses to run without TEAMS_MEETING_AUDIO_SPIKE=1', () => {
     assert.throws(() => assertMeetingAudioSpikeEnabled({}), MeetingAudioSpikeError);
     assert.throws(() => assertMeetingAudioSpikeEnabled({ TEAMS_MEETING_AUDIO_SPIKE: 'true' }), MeetingAudioSpikeError);
     assert.doesNotThrow(() => assertMeetingAudioSpikeEnabled({ TEAMS_MEETING_AUDIO_SPIKE: '1' }));
+  });
+});
+
+describe('A-S1 calls to Microsoft are gated', () => {
+  it('refuses both calls without the flag and never reaches fetch', async () => {
+    const saved = process.env.TEAMS_MEETING_AUDIO_SPIKE;
+    delete process.env.TEAMS_MEETING_AUDIO_SPIKE;
+    try {
+      const calls: Call[] = [];
+      await assert.rejects(
+        refreshEntraToken({ tenantId: 't', clientId: 'c', refreshToken: 'r' }, fakeFetch(200, {}, calls)),
+        MeetingAudioSpikeError,
+      );
+      await assert.rejects(
+        exchangeForAcsToken(
+          { endpoint: 'https://acs-test.communication.azure.com', accessKey: ACCESS_KEY, entraAccessToken: 'x', clientId: 'c', userObjectId: 'u' },
+          fakeFetch(200, {}, calls),
+        ),
+        MeetingAudioSpikeError,
+      );
+      assert.equal(calls.length, 0);
+    } finally {
+      if (saved !== undefined) process.env.TEAMS_MEETING_AUDIO_SPIKE = saved;
+    }
   });
 });
 

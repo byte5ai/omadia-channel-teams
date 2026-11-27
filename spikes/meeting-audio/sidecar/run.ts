@@ -40,6 +40,7 @@ const DEFAULT_SELF_TEST_SECONDS = 3;
 const DEFAULT_MEETING_SECONDS = 300;
 const MAX_SECONDS = 3600;
 const PAGE_READY_TIMEOUT_MS = 20_000;
+const WALL_CLOCK_GRACE_SECONDS = 30;
 const CHROMIUM_ARGS = [
   '--use-fake-ui-for-media-stream',
   '--use-fake-device-for-media-stream',
@@ -155,10 +156,14 @@ async function main(): Promise<void> {
       (config) => window.omadiaStart(config),
       { selfTest: args.selfTest, maxSeconds: args.seconds, ...(acsToken ? { acsToken } : {}), ...(meetingLink ? { meetingLink } : {}) },
     );
+    let capTimer: NodeJS.Timeout | undefined;
     const reason = await Promise.race([
       left,
-      new Promise<string>((resolve) => setTimeout(() => resolve('wall_clock_cap'), (args.seconds + 30) * 1000)),
+      new Promise<string>((resolve) => {
+        capTimer = setTimeout(() => resolve('wall_clock_cap'), (args.seconds + WALL_CLOCK_GRACE_SECONDS) * 1000);
+      }),
     ]);
+    clearTimeout(capTimer);
     const summary = {
       mode: args.selfTest ? 'self-test' : 'meeting',
       leftReason: reason,
