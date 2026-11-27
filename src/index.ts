@@ -188,6 +188,13 @@ export { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 export { GraphRequestError, type GraphDeltaUser, type GraphUser } from './teamsGraphResolver.js';
 export { createTeamsDirectorySource } from './teamsDirectorySource.js';
 export {
+  buildMcpConnectCard,
+  connectBaseUrl,
+  mcpConnectTaskModule,
+  readMcpConnectValue,
+  MCP_CONNECT_VALUE_TYPE,
+} from './teamsMcpConnect.js';
+export {
   TeamsConversationObserver,
   type TeamsConversation,
 } from './teamsConversationObserver.js';

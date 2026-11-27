@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Connect a per-user MCP server from Teams** (byte5ai/omadia#2312, omadia ADR-0301). When an
+  answer reports `mcpConnectRequired` (channel-sdk 0.3.23), the bot posts a Connect card per
+  server. Its button opens a Teams dialog (`task/fetch`) on `/p/channel-teams/connect`. That
+  page gets the person's Teams SSO token, starts the flow at the kernel and opens the provider
+  in Teams' authentication window. It then completes the flow with the same token. No link is
+  posted. The card appears only when the deployment has an https public origin
+  (`TEAMS_PUBLIC_BASE_URL`, `PUBLIC_BASE_URL` or `ATTACHMENT_PUBLIC_BASE_URL`).
 - **Directory source for the kernel** (byte5ai/omadia#2335, omadia ADR-0300). On kernels with
   `CoreApi.registerDirectorySource` (channel-sdk 0.3.22) the plugin contributes the tenant's
   directory of people: Graph `GET /users/delta` under the default bot's registration

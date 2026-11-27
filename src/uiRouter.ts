@@ -249,6 +249,86 @@ export function createTeamsUiShellRouter(
     }),
   );
 
+  // byte5ai/omadia#2312 (omadia ADR-0301) — the Teams dialog behind the
+  // "Connect" button of an answer that needed a per-user MCP connection. It
+  // holds no data and no secret: the kernel starts and completes the flow
+  // only with this person's Teams SSO token, so the page is a public shell.
+  router.get(
+    '/connect',
+    renderRoute(() => {
+      const connectJs = `
+        (function () {
+          var de = (navigator.language || '').toLowerCase().indexOf('de') === 0;
+          var T = de ? {
+            working: 'Verbindung wird vorbereitet…', popup: 'Melde dich im geöffneten Fenster beim Anbieter an.',
+            done: 'Verbunden. Du kannst dieses Fenster schließen und deine Frage wiederholen.',
+            notPerson: 'Dein Konto ist nicht im Verzeichnis dieser Instanz. Bitte wende dich an den Betrieb.',
+            failed: 'Die Verbindung ist fehlgeschlagen: ', outside: 'Öffne diese Seite in Microsoft Teams.'
+          } : {
+            working: 'Preparing the connection…', popup: 'Sign in to the provider in the window that opened.',
+            done: 'Connected. You can close this window and ask again.',
+            notPerson: 'Your account is not in this instance\'s directory. Please contact your operator.',
+            failed: 'The connection failed: ', outside: 'Open this page inside Microsoft Teams.'
+          };
+          var status = function (m) { document.getElementById('omadia-status').textContent = m; };
+          var q = new URLSearchParams(location.search);
+          var server = q.get('server') || '';
+          var name = q.get('name') || server;
+          document.getElementById('omadia-server').textContent = name;
+          var api = '/api/v1/directory/connect/mcp/';
+          var post = function (t, path, body) {
+            return t.authentication.getAuthToken().then(function (token) {
+              return fetch(api + path, {
+                method: 'POST', credentials: 'omit', cache: 'no-store',
+                headers: { Authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+                body: JSON.stringify(body || {})
+              });
+            }).then(function (res) {
+              return res.json().catch(function () { return {}; }).then(function (b) {
+                if (!res.ok) { var e = new Error((b && b.code) || String(res.status)); e.code = b && b.code; throw e; }
+                return b;
+              });
+            });
+          };
+          var sdk = new Promise(function (resolve, reject) {
+            var s = document.createElement('script');
+            s.src = ${JSON.stringify(TEAMS_JS_URL)};
+            s.onload = function () { resolve(window.microsoftTeams); };
+            s.onerror = function () { reject(new Error(T.outside)); };
+            document.head.appendChild(s);
+          });
+          status(T.working);
+          sdk.then(function (t) { return t.app.initialize().then(function () { return t; }); })
+            .then(function (t) {
+              if (!server) throw new Error('server');
+              return post(t, encodeURIComponent(server) + '/start').then(function (b) {
+                status(T.popup);
+                return t.authentication.authenticate({ url: location.origin + b.startUrl, width: 600, height: 700 });
+              }).then(function (result) {
+                var r = JSON.parse(result);
+                return post(t, 'complete', { state: r.state, code: r.code, iss: r.iss });
+              });
+            })
+            .then(function () { status(T.done); }, function (err) {
+              status(err && err.code === 'directory.not_a_person' ? T.notPerson : T.failed + ((err && err.message) || err));
+            });
+        })();
+      `;
+      return htmlDoc({
+        title: 'Omadia — Connect',
+        body: html`
+          <main class="max-w-md mx-auto p-6 space-y-4">
+            <h1 class="text-xl font-semibold tracking-tight" id="omadia-server"></h1>
+            <p id="omadia-status" class="text-sm text-slate-600"></p>
+            <script>
+              ${safe(connectJs)}
+            </script>
+          </main>
+        `,
+      });
+    }),
+  );
+
   router.get(
     '/tab-config',
     renderRoute(() => {
