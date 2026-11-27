@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.47.0
 
 - **Uploads of a message that triggers the topic-change card reach the click's turn** (byte5ai/omadia#2304,
   ADR-0178). The bot keeps the files it stored with that message on the pending topic decision
