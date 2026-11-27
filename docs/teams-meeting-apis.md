@@ -471,7 +471,7 @@ carries `messageId` (the text, or the card when there is no text) and `cardMessa
 | In-meeting and targeted notification | possible, **not built** | Needs a web page of the app in `validDomains`; targeted needs RSC `OnlineMeetingNotification.Send.Chat`, at most 50 recipients, `29:` ids only. Docs [D20] |
 | Side panel, stage | yes, with condition | A tab with meeting context; stage needs delegated RSC. Docs [D21] |
 | Hand raise | **not possible for a bot** | No bot event. Only delegated client-side RSC in a tab. Docs [D2] |
-| Real-time audio and video | **not possible on this stack** | Application-hosted media needs C#/.NET on Windows Server in Azure with a public IP per VM; "C++ and Node.js APIs don't support access to real-time media"; developer preview. Docs [D22][D23] |
+| Real-time audio and video | **not possible on this stack** | Application-hosted media needs C#/.NET on Windows Server in Azure with a public IP per VM; "C++ and Node.js APIs don't support access to real-time media"; developer preview. Docs [D22][D23]. The Linux route (ACS Calling SDK in a headless browser, joining as a tenant user) is being spiked: [`meeting-audio-spikes.md`](./meeting-audio-spikes.md) |
 | Transcript after the meeting | yes, with condition | RSC `OnlineMeetingTranscript.Read.Chat`. Docs [D2] |
 
 **Scheduled meeting versus ad-hoc call.** Apps are supported in scheduled meetings,
