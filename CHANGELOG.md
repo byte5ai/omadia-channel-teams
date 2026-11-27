@@ -4,11 +4,11 @@
 
 - **Uploads of a message that triggers the topic-change card reach the click's turn** (byte5ai/omadia#2304,
   ADR-0178). The bot keeps the files it stored with that message on the pending topic decision
-  (`PendingTopicDecision.storedAttachments`, `@omadia/channel-sdk` 0.3.20) and passes them as
+  (`PendingTopicDecision.storedAttachments`, `@omadia/channel-sdk` 0.3.21) and passes them as
   `storedAttachments` on the turn the continue/reset click starts, so the kernel binds and ingests
   them then. They come only from the server-side entry and only when the card names that very
   message; the card payload states no keys. After a bot restart the pending entry is gone and the
-  click runs without the files, as before. Needs `@omadia/channel-sdk` 0.3.20 for the type; an older
+  click runs without the files, as before. Needs `@omadia/channel-sdk` 0.3.21 for the type; an older
   kernel keeps the extra field on its in-memory entry as well.
 
 ## 0.46.0
