@@ -8,7 +8,16 @@ import {
   type AdaptiveCardInvokeResponse,
   type AdaptiveCardInvokeValue,
   type SigninStateVerificationQuery,
+  type TaskModuleRequest,
+  type TaskModuleResponse,
 } from 'botbuilder';
+import {
+  buildMcpConnectCard,
+  connectBaseUrl,
+  mcpConnectTaskModule,
+  readMcpConnectValue,
+  type McpConnectRequest,
+} from './teamsMcpConnect.js';
 import {
   channelUserPrincipal,
   formatSessionScope,
@@ -2052,6 +2061,19 @@ export class TeamsBot extends TeamsActivityHandler {
    * original turn can be retried; the next message will find the token
    * silently via `extractSsoAssertion`.
    */
+  /** omadia#2312 — the Connect button of an MCP connect card opens the connect dialog. */
+  protected override async handleTeamsTaskModuleFetch(
+    _context: TurnContext,
+    taskModuleRequest: TaskModuleRequest,
+  ): Promise<TaskModuleResponse> {
+    const value = readMcpConnectValue(taskModuleRequest.data);
+    const baseUrl = connectBaseUrl();
+    if (!value || !baseUrl) {
+      return { task: { type: 'message', value: 'Diese Aktion ist nicht verfügbar.' } } as TaskModuleResponse;
+    }
+    return mcpConnectTaskModule(value, baseUrl) as TaskModuleResponse;
+  }
+
   protected override async handleTeamsSigninTokenExchange(
     context: TurnContext,
     _query: SigninStateVerificationQuery,
@@ -2476,6 +2498,7 @@ export class TeamsBot extends TeamsActivityHandler {
             pendingChoice,
             pendingSlots,
             consentConnectionName: result.oauthConsentPending ? this.ssoConnectionName : undefined,
+            ...(mcpConnectsOf(result) ? { mcpConnects: mcpConnectsOf(result)! } : {}),
             chipDue,
             // D24 — an answer too long for a card goes out as plain text,
             // where no chip of ours is shown. Unless the platform label was
@@ -2657,6 +2680,8 @@ interface AnswerDelivery {
   readonly pendingChoice: OutgoingChoiceCard | undefined;
   readonly pendingSlots: OutgoingSlotPicker | undefined;
   readonly consentConnectionName: string | undefined;
+  /** omadia#2312 — MCP servers this turn could not use until the person connects them. */
+  readonly mcpConnects?: readonly McpConnectRequest[];
   /** The kernel's disclosure settings ask for a visible marker on this answer. */
   readonly chipDue: boolean;
   /** The disclosure sentence, appended when the answer goes out as plain text. */
@@ -2764,7 +2789,7 @@ async function sendAnswer(
       ...aiLabelEntities(chipDue),
     ];
     await context.sendActivity(activity);
-    await sendSidecarCards(context, pendingSlots, consentConnectionName);
+    await sendSidecarCards(context, pendingSlots, consentConnectionName, delivery.mcpConnects);
     return;
   }
 
@@ -2803,7 +2828,7 @@ async function sendAnswer(
     const card = buildFollowUpsOnlyCard(followUpOptions);
     if (card) await context.sendActivity(MessageFactory.attachment(card));
   }
-  await sendSidecarCards(context, pendingSlots, consentConnectionName);
+  await sendSidecarCards(context, pendingSlots, consentConnectionName, delivery.mcpConnects);
 }
 
 /** The slot picker and the consent sign-in card that follow an answer. */
@@ -2811,7 +2836,14 @@ async function sendSidecarCards(
   context: TurnContext,
   pendingSlotCard: OutgoingSlotPicker | undefined,
   consentConnectionName: string | undefined,
+  mcpConnects?: readonly McpConnectRequest[],
 ): Promise<void> {
+  // omadia#2312 — one Connect card per server, only where the connect page can be reached.
+  if (mcpConnects && mcpConnects.length > 0 && connectBaseUrl()) {
+    for (const request of mcpConnects) {
+      await context.sendActivity(MessageFactory.attachment(buildMcpConnectCard(request)));
+    }
+  }
   if (pendingSlotCard && pendingSlotCard.slots.length > 0) {
     const slotCard = buildSlotPickerCard({
       question: pendingSlotCard.question,
@@ -3259,3 +3291,15 @@ export async function handleTeamsAgentAppsRecheck(
   });
   return 'posted-card';
 }
+
+/** omadia#2312 — `SemanticAnswer.mcpConnectRequired` on kernels that send it (channel-sdk >= 0.3.23). */
+function mcpConnectsOf(answer: SemanticAnswer): readonly McpConnectRequest[] | undefined {
+  const raw = (answer as { mcpConnectRequired?: unknown }).mcpConnectRequired;
+  if (!Array.isArray(raw)) return undefined;
+  const out = raw.filter(
+    (r): r is McpConnectRequest =>
+      r !== null && typeof r === 'object' && typeof (r as McpConnectRequest).serverId === 'string' && typeof (r as McpConnectRequest).serverName === 'string',
+  );
+  return out.length > 0 ? out : undefined;
+}
+

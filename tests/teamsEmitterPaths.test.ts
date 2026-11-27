@@ -20,7 +20,8 @@ const EXPECTED_SITES: Readonly<Record<string, number>> = {
   // list card; the pace acknowledgement and typing live in teamsPace.ts.
   // The rest are the channel's own notices (no agent, retired button,
   // approval acknowledgement, failure line): speaker `system` by origin.
-  'teamsBot.ts': 31,
+  // omadia#2312: the MCP Connect card is a sidecar of the answer, in the same reply as the slot and consent cards.
+  'teamsBot.ts': 32,
   'teamsPace.ts': 2,
   // The kernel's seams: posts as an agent's own bot or the shared bot,
   // stamped by the kernel (`TargetedMessage.speaker`).
