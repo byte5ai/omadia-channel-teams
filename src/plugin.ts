@@ -39,6 +39,7 @@ import type {
   NativeFacilitatorCoreApi,
 } from './kernel-types.js';
 import { createTeamsDefaultChannelKeyProvider } from './teamsDefaultChannelKey.js';
+import { createTeamsDirectorySource } from './teamsDirectorySource.js';
 import { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
 
 /**
@@ -811,6 +812,22 @@ export async function activate(
     ctx.agentId,
     createTeamsPeopleDirectoryProvider({ resolver: graphResolver, log: (m: string) => core.log('warn', m) }),
   );
+  // ADR-0300 (omadia#2335) — the tenant's directory of people for the kernel (Graph
+  // `/users/delta`, same grant). Colleagues without a web login become the anchor for
+  // their channel identities and per-person MCP tokens; the kernel deprovisions leavers.
+  // A refused registration (no GUID tenant, a tenant another plugin reads) must not stop the channel.
+  try {
+    core.registerDirectorySource?.(
+      ctx.agentId,
+      createTeamsDirectorySource({
+        tenantId: defaultBotCredentials.identity.tenantId,
+        resolver: graphResolver,
+        log: (m: string) => core.log('warn', m),
+      }),
+    );
+  } catch (err) {
+    core.log('warn', `[teams] directory source not registered: ${err instanceof Error ? err.message : String(err)}`);
+  }
   // #2043 — readiness check: installation row, RSC grant, can post. Graph is
   // asked with the INSTANCE's registration (the Microsoft 365 integration's
   // app, `microsoft_app_id`): the per-agent bot registrations hold no Graph

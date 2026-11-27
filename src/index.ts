@@ -185,7 +185,8 @@ export {
 export { buildTeamsChannelKeyDirectory } from './channelKeyDirectory.js';
 // People directory (Conductor human-step principal resolution via Graph /users)
 export { createTeamsPeopleDirectoryProvider } from './teamsPeopleDirectory.js';
-export { GraphRequestError, type GraphUser } from './teamsGraphResolver.js';
+export { GraphRequestError, type GraphDeltaUser, type GraphUser } from './teamsGraphResolver.js';
+export { createTeamsDirectorySource } from './teamsDirectorySource.js';
 export {
   TeamsConversationObserver,
   type TeamsConversation,

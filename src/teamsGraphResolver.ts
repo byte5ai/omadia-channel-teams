@@ -89,6 +89,19 @@ function assertGraphUrl(url: string): string {
 
 /** Error from a Graph call, carrying the HTTP status so callers can tell
  *  "permission not granted" (401/403) from a transient failure. */
+/** One user of a Graph `/users/delta` page. */
+export interface GraphDeltaUser {
+  readonly id: string;
+  /** `@removed` was set: the user left the directory (deleted, or out of scope). */
+  readonly removed?: boolean;
+  readonly displayName?: string;
+  readonly mail?: string;
+  readonly userPrincipalName?: string;
+  readonly accountEnabled?: boolean;
+  /** `Member` or `Guest`. */
+  readonly userType?: string;
+}
+
 export class GraphRequestError extends Error {
   constructor(
     readonly status: number,
@@ -337,6 +350,51 @@ export class TeamsGraphResolver {
     }
     // A next-page link means more matched than we show — the kernel treats that as partial.
     return { users, truncated: typeof json['@odata.nextLink'] === 'string' };
+  }
+
+  /**
+   * ADR-0300 (omadia#2335) — one page of Graph `GET /users/delta` for the
+   * kernel's directory of people (needs `User.Read.All`). Without `link` the
+   * read starts in full; otherwise `link` is a `@odata.nextLink` /
+   * `@odata.deltaLink` Graph handed out earlier. Only links on the Graph host
+   * are followed: a stored link must never send the app token elsewhere.
+   * Throws `GraphRequestError` (410 = the delta token expired, read in full).
+   */
+  async usersDelta(link?: string): Promise<{
+    users: GraphDeltaUser[];
+    nextLink?: string;
+    deltaLink?: string;
+  }> {
+    const url =
+      link ??
+      `${GRAPH_BASE}/users/delta?$select=${encodeURIComponent('id,displayName,mail,userPrincipalName,accountEnabled,userType')}`;
+    if (!url.startsWith(`${GRAPH_BASE}/users/delta`)) {
+      throw new GraphRequestError(0, 'refusing a delta link outside graph.microsoft.com/v1.0/users/delta');
+    }
+    const json = await this.fetchJson(url);
+    const value = json['value'];
+    if (!Array.isArray(value)) throw new GraphRequestError(0, 'graph /users/delta returned no value array');
+    const users: GraphDeltaUser[] = [];
+    for (const raw of value) {
+      const u = raw as Record<string, unknown>;
+      if (typeof u['id'] !== 'string') continue;
+      users.push({
+        id: u['id'],
+        ...(u['@removed'] !== undefined ? { removed: true } : {}),
+        ...(typeof u['displayName'] === 'string' ? { displayName: u['displayName'] } : {}),
+        ...(typeof u['mail'] === 'string' ? { mail: u['mail'] } : {}),
+        ...(typeof u['userPrincipalName'] === 'string' ? { userPrincipalName: u['userPrincipalName'] } : {}),
+        ...(typeof u['accountEnabled'] === 'boolean' ? { accountEnabled: u['accountEnabled'] } : {}),
+        ...(typeof u['userType'] === 'string' ? { userType: u['userType'] } : {}),
+      });
+    }
+    const nextLink = json['@odata.nextLink'];
+    const deltaLink = json['@odata.deltaLink'];
+    return {
+      users,
+      ...(typeof nextLink === 'string' ? { nextLink } : {}),
+      ...(typeof deltaLink === 'string' ? { deltaLink } : {}),
+    };
   }
 
   private async fetchJson(url: string, extraHeaders: Record<string, string> = {}): Promise<Record<string, unknown>> {

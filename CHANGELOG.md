@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Directory source for the kernel** (byte5ai/omadia#2335, omadia ADR-0300). On kernels with
+  `CoreApi.registerDirectorySource` (channel-sdk 0.3.22) the plugin contributes the tenant's
+  directory of people: Graph `GET /users/delta` under the default bot's registration
+  (`User.Read.All`, the grant the people directory already asks for). Members only; guests and
+  `@removed` users are reported as removed, Graph 410 asks the kernel for a full read, and a
+  stored delta link is followed only on `graph.microsoft.com/v1.0/users/delta`. The kernel
+  stores the people, syncs every 6 hours and deprovisions leavers. A refused registration is
+  logged and does not stop the channel.
 - **Meeting-audio spikes S1', S4', A-S1, S3'** (byte5ai/omadia#584, omadia ADR-0287, Proposed).
   Prototype code under `spikes/meeting-audio/` with results in `docs/meeting-audio-spikes.md`.
   None of it is compiled into `dist/` or the plugin zip, and the plugin's behaviour is unchanged.
