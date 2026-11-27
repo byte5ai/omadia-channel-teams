@@ -84,6 +84,7 @@ import type {
   AgentSpeaker,
   ChatAgent,
   ConversationHistoryStore,
+  PendingTopicDecision,
   FollowUpOption,
   OutgoingAttachment,
   OutgoingChoiceCard,
@@ -1628,9 +1629,12 @@ export class TeamsBot extends TeamsActivityHandler {
             ? `Deine letzte Frage: "${truncate(lastTurn.userMessage, 180)}"`
             : 'Der vorherige Chat-Kontext liegt vor.';
           await sendTopicAsk(context, summary, userMessage);
+          const pendingUploads = toStoredTurnAttachments(persistedAttachments);
           this.history.markPending(sessionScope, {
             userMessage,
             askedAt: Date.now(),
+            // omadia#2304 — the click starts the turn these files belong to.
+            ...(pendingUploads.length > 0 ? { storedAttachments: pendingUploads } : {}),
           });
           console.error(
             `[topic] asked user conv=${conversationId} msg="${truncate(userMessage, 60)}"`,
@@ -1973,12 +1977,17 @@ export class TeamsBot extends TeamsActivityHandler {
     }
     const priorTurns =
       decision.choice === 'reset' ? [] : this.history.get(sessionScope);
+    // omadia#2304 (ADR-0178) — the uploads of the asked message come from the
+    // server-side pending entry, and only when the card names that very
+    // message: the card payload is client-controlled and never states keys.
+    const storedAttachments = topicDecisionUploads(pending, decision.originalMessage);
     await this.runOrchestratorTurnDetached(context, {
       conversationId,
       sessionScope,
       userId,
       userMessage: decision.originalMessage,
       priorTurns,
+      ...(storedAttachments ? { storedAttachments } : {}),
     });
   }
 
@@ -2172,6 +2181,8 @@ export class TeamsBot extends TeamsActivityHandler {
       userId: string | undefined;
       userMessage: string;
       priorTurns: ReturnType<ConversationHistoryStore['get']>;
+      /** omadia#2304 — uploads of a message a topic card held back. */
+      storedAttachments?: readonly StoredTurnAttachment[];
     },
   ): Promise<void> {
     if (!this.proactiveSend) {
@@ -2562,6 +2573,21 @@ export class TeamsBot extends TeamsActivityHandler {
  * for this activity. Only these keys are ingested (and bound to the
  * conversation) by the kernel.
  */
+/**
+ * omadia#2304 (ADR-0178) — the uploads a topic-decision click hands to its
+ * turn: those of the server-side pending entry, and only when the card names
+ * the message that entry holds. The card payload is client-controlled; a
+ * mismatching or missing entry hands over nothing.
+ */
+export function topicDecisionUploads(
+  pending: PendingTopicDecision | undefined,
+  originalMessage: string,
+): readonly StoredTurnAttachment[] | undefined {
+  if (pending === undefined || pending.userMessage !== originalMessage) return undefined;
+  const uploads = pending.storedAttachments ?? [];
+  return uploads.length > 0 ? uploads : undefined;
+}
+
 export function toStoredTurnAttachments(
   persisted: readonly PersistedAttachment[],
 ): StoredTurnAttachment[] {

@@ -16,6 +16,7 @@ export {
   teamsSessionScope,
   teamsTurnOrigin,
   toStoredTurnAttachments,
+  topicDecisionUploads,
 } from './teamsBot.js';
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Uploads of a message that triggers the topic-change card reach the click's turn** (byte5ai/omadia#2304,
+  ADR-0178). The bot keeps the files it stored with that message on the pending topic decision
+  (`PendingTopicDecision.storedAttachments`, `@omadia/channel-sdk` 0.3.20) and passes them as
+  `storedAttachments` on the turn the continue/reset click starts, so the kernel binds and ingests
+  them then. They come only from the server-side entry and only when the card names that very
+  message; the card payload states no keys. After a bot restart the pending entry is gone and the
+  click runs without the files, as before. Needs `@omadia/channel-sdk` 0.3.20 for the type; an older
+  kernel keeps the extra field on its in-memory entry as well.
+
 ## 0.46.0
 
 - **Database access is declared and granted** (byte5ai/omadia#838, ADR-0050). The channel resolved the kernel's `graphPool` only through a grandfather row in the kernel and created its two tables (`teams_question_cards`, `teams_meeting_states`) at runtime. The manifest now declares `permissions.sql` (ledger `plg_omadia_channel_teams_migrations`), the two tables come from `migrations/0001_question_cards.sql` and `0002_meeting_states.sql`, and the zip ships the directory. The operator grants it on the plugin page (`PUT /installed/@omadia/channel-teams/grants`); a kernel that runs channel migrations then applies them before `activate()`. The migrations use `IF NOT EXISTS`, so tables created at runtime by earlier versions are kept. The stores still run the same statements at first use (a no-op after the migration) for kernels that run no channel migrations; a test keeps them identical.
