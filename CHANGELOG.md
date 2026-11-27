@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Meeting-audio spikes S1', S4', A-S1, S3'** (byte5ai/omadia#584, omadia ADR-0287, Proposed).
+  Prototype code under `spikes/meeting-audio/` with results in `docs/meeting-audio-spikes.md`.
+  None of it is compiled into `dist/` or the plugin zip, and the plugin's behaviour is unchanged.
+  - S3': participant id to roster by Entra object id only, plus T1 attribution from
+    dominant-speaker changes.
+  - A-S1: the ACS `teamsUser/:exchangeAccessToken` with a refresh-token grant. ROPC is
+    deliberately absent.
+  - S1': a headless-Chromium sidecar with the ACS Calling SDK and a loopback PCM frame
+    format. The headless self-test passes.
+  - S4': a STUN/TLS probe of the Teams relays.
+  - Live runs against a real tenant user and meeting, and the probe on Fly and the Azure VM,
+    are open for the owner.
+
 ## 0.47.0
 
 - **Uploads of a message that triggers the topic-change card reach the click's turn** (byte5ai/omadia#2304,
