@@ -171,6 +171,34 @@ Not covered: the bot's own meeting-chat roster, because the test meeting had no 
 
 **Still open.** S4' on Fly and the Azure VM; a test with an Entra Agent ID agent user; the licence decision.
 
+## Next: test with an Entra Agent ID agent user (owner step)
+
+Not run. The agent's auto-mode classifier blocked creating the blueprint. Nothing needs to be bought: Agent ID objects are available to every Entra tenant, and Agent 365 is only needed for full Microsoft 365 provisioning [S15].
+
+**Open questions the test answers:**
+
+- Does `user_fic` issue a token for the ACS scopes?
+- Does ACS `exchangeAccessToken` accept it? The token's `appid` would be the agent identity, not an app registration.
+- Can a Graph-created agent user hold a Teams seat and join a meeting? Microsoft states that Graph-created agent users get no Teams presence; meeting join through ACS is not covered by that statement.
+
+**Steps.** Graph calls carry `OData-Version: 4.0`. Use retries, because new objects replicate slowly.
+
+1. **Blueprint.** `POST /v1.0/applications/` with `@odata.type: Microsoft.Graph.AgentIdentityBlueprint`, a sponsor and an owner. Then `addPassword` (a secret is acceptable for a test) and `POST /v1.0/serviceprincipals/microsoft.graph.agentIdentityBlueprintPrincipal`.
+2. **Agent identity.** Using a blueprint client-credentials token: `POST /beta/servicePrincipals/microsoft.graph.agentIdentity` with `agentIdentityBlueprintId`.
+3. **Agent user.** Grant the blueprint `AgentIdUser.ReadWrite.IdentityParentedBy` (admin consent). Then `POST /v1.0/users/microsoft.graph.agentUser` with `identityParentId` = the agent identity. Set `usageLocation` and assign one unused Teams seat (`TEAMS1`).
+4. **Consent.** `oauth2PermissionGrant`, with `clientId` = the agent identity's service principal, `consentType: Principal` for the agent user, and the ACS resource scopes `Teams.ManageCalls Teams.ManageChats`.
+5. **Token.** Three requests to `/oauth2/v2.0/token`:
+   1. T1: the blueprint with `fmi_path` = the agent identity, `scope=api://AzureADTokenExchange/.default`.
+   2. T2: the agent identity with `client_assertion` = T1.
+   3. The user token: `grant_type=user_fic`, `client_assertion` = T1, `user_federated_identity_credential` = T2, `username` = the agent user's UPN, `scope` = the two ACS scopes.
+   Microsoft recommends its own libraries for this; the raw protocol is described on the docs.azure.cn mirror of `agent-user-oauth-flow`.
+6. **ACS and meeting.** Call `exchangeForAcsToken` (`spikes/meeting-audio/src/teamsUserToken.ts`) with `clientId` = the agent identity and `userObjectId` = the agent user. Then run `sidecar/run.ts` against a test meeting.
+
+**Reading the result.**
+
+- **Steps 5 and 6 succeed:** the agent user becomes recommendation 2 below. There is no password, so a password reset cannot break it.
+- **Step 5 or 6 fails:** recommendation 3 (a member user per agent) stands, together with the rule never to reset its password.
+
 ## Recommendation on the licence question (input for the owner, not a decision)
 
 1. **Buy nothing per agent yet.** The live runs worked with an unused Teams seat. Before buying, test once more with an Entra Agent ID agent user.
