@@ -36,8 +36,17 @@ TEAMS_MEETING_AUDIO_SPIKE=1 ACS_TOKEN=… MEETING_LINK='https://teams.microsoft.
 node out/sink.mjs 7777   # in a second shell, stands in for the plugin end
 ```
 
-To get the `ACS_TOKEN` for the live run (A-S1), call `refreshEntraToken` and then
-`exchangeForAcsToken` from `src/teamsUserToken.ts`, with:
+To get the `ACS_TOKEN` for the live run (A-S1), use the helper (macOS, keychain). The first run
+does a device-code login; later runs use the stored refresh token with no person involved:
+
+```sh
+TEAMS_MEETING_AUDIO_SPIKE=1 TENANT_ID=… CLIENT_ID=… USER_OID=… \
+  ACS_ENDPOINT=https://….communication.azure.com node out/live-token.mjs
+ACS_TOKEN="$(security find-generic-password -s omadia-w44-acs-token -w)" SPIKE_EVENTS=1 … node out/run.mjs
+```
+
+The helper calls `refreshEntraToken` and then `exchangeForAcsToken` from `src/teamsUserToken.ts`,
+with:
 
 - the test user's refresh token from a one-time device-code login;
 - the public-client app id;

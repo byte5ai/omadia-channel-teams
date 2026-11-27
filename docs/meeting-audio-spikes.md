@@ -1,14 +1,16 @@
 # Meeting audio: spike results S1', S4', A-S1, S3'
 
 Spikes for byte5ai/omadia#584, gating omadia ADR-0287 (Proposed). The owner approved
-these four spikes on 2026-11-27 and nothing else. No production code, no licence
-decision, and no tenant users were created. Code: [`spikes/meeting-audio/`](../spikes/meeting-audio/README.md).
+these four spikes on 2026-11-27 and nothing else. No production code and no licence
+decision. For the live runs the owner approved one test user in the byte5 tenant (see
+"Live runs" below). Code: [`spikes/meeting-audio/`](../spikes/meeting-audio/README.md).
 The plugin's `src/` and the shipped `dist/` are unchanged.
 
 Labels as in [`teams-meeting-apis.md`](./teams-meeting-apis.md):
 
 - **Docs:** a Microsoft Learn page, fetched 2026-11-27. Sources are listed at the end.
 - **Measured:** run on a dev Mac on 2026-11-27.
+- **Live:** run against the byte5 tenant on 2026-11-27, with a test user, a test app, an ACS resource and a real Teams meeting.
 - **Simulated:** covered by tests.
 - **Open:** needs Marcel. These are the steps that need real Microsoft resources or production hosts.
 
@@ -16,10 +18,10 @@ Labels as in [`teams-meeting-apis.md`](./teams-meeting-apis.md):
 
 | Spike | Question | Result | Still open (needs Marcel) |
 |---|---|---|---|
-| S1' | Can a headless Chromium join as a Teams user and capture the meeting audio? | The capture path works headless. Measured: 2.98 s of 24 kHz PCM in 3 s, level correct, about 476 MB RSS. The SDK (`@azure/communication-calling` 2.0.0) loads headless and rejects a bad token cleanly. The join API is documented without a preview label. **Raw remote audio is preview.** | Join a real test meeting with a test user's token. |
-| S4' | Is WebRTC egress available from Fly and the Azure VM? | Measured from the Mac: UDP STUN on 3478 and TLS on 443 to the Teams relays both answer. Azure's default NSG allows outbound UDP (Docs). Fly documents nothing about outbound UDP. | Run `probe.mjs` on a Fly machine and on the Azure VM. The auto-mode classifier blocked `fly ssh` to production for this session. |
-| A-S1 | Can we get a delegated token for the agent's tenant user without an interactive login? | The ACS exchange is implemented and simulated, with an HMAC-signed `teamsUser/:exchangeAccessToken`. Refresh token from a one-time device-code login: **feasible**. ROPC: **rejected**. Entra Agent ID agent user: **preferred, unproven**. | Create a test user (or an agent user), consent the app, and run the exchange once for real. |
-| S3' | Can a participant id be mapped to the roster? | Yes, by Entra object id only (`8:orgid:<oid>`). The match returns the roster's own `userRef`, so speech gets the same principal as that person's chat. The SDK sets no `displayName` for Teams users. Simulated. | Check on the real participant list during the S1' live run. |
+| S1' | Can a headless Chromium join as a Teams user and capture the meeting audio? | **Yes (Live).** The test user joined a real meeting headless and muted, in about 2 s and without a lobby. It captured 178.6 s of audio in 181.7 s at −19.4 dBFS (real speech) and saw 7 dominant-speaker changes. It left cleanly at the cap. About 517 MB RSS during the call. **Raw remote audio is still preview.** | — |
+| S4' | Is WebRTC egress available from Fly and the Azure VM? | Measured from the Mac: UDP STUN on 3478 and TLS on 443 to the Teams relays both answer. The live S1' run used the same path. Azure's default NSG allows outbound UDP (Docs). Fly documents nothing about outbound UDP. | Run `probe.mjs` on a Fly machine and on the Azure VM. The auto-mode classifier blocked `fly ssh` to production and an ephemeral Fly machine, even after the owner approved it. |
+| A-S1 | Can we get a delegated token for the agent's tenant user without an interactive login? | **Yes, with one human login (Live).** After one device-code login with MFA, the stored refresh token gave a new Entra token and an ACS token for `orgid:<oid>` with no person involved. **An admin password reset revokes the refresh token at once** (`invalid_grant`, Live). ROPC: **rejected**. Entra Agent ID agent user: **preferred, unproven**. | Test with an Entra Agent ID agent user. |
+| S3' | Can a participant id be mapped to the roster? | **Yes (Live).** All three people in the meeting came as `8:orgid:<oid>`. That oid is their Entra object id: each resolved to exactly one roster entry built from Entra. A segment went to the floor holder. Against the docs, the SDK **did** send `displayName`; it still never binds. | Compare with the bot's own meeting-chat roster once the meeting chat has an agent bot. |
 
 ## S1': headless join and audio capture
 
@@ -133,9 +135,45 @@ The prototype is `spikes/meeting-audio/src/participantIdentity.ts` and `speakerA
   - A tenant user who is not on the roster resolves to `tenant_user_unlisted` with its oid. This happens when someone joined the call but not the chat, or when the roster is partial.
 - **T1 attribution.** A segment goes to the participant who held the dominant-speaker floor for at least 60 % of it. Otherwise it gets no speaker. Under ADR-0026 an unattributed segment is better than a wrong name.
 
+## Live runs (2026-11-27, byte5 tenant)
+
+**Set up**, all marked as spike and to be removed afterwards:
+
+- **Cloud-only test user**, with one unused Teams (EEA) seat (service plan `TEAMS1`). Nothing was bought.
+- **App registration** "omadia meeting-audio spike (#584)": a single-tenant public client with `Teams.ManageCalls` and `Teams.ManageChats`. Consent is per user (`consentType: Principal`) for the test user only, not tenant-wide.
+- **ACS resource** with data location Europe, in its own resource group.
+- **Secrets** (password, ACS key, refresh token, ACS token) live only in the operator's macOS keychain. `sidecar/live-token.ts` reads and writes them there.
+
+**A-S1.**
+
+1. The first device-code login needed a person, with MFA. The Entra access token for the ACS scope is **encrypted** (JWE, 5 parts), so its claims cannot be read by the client.
+2. A second run with the stored refresh token produced an Entra token and an ACS token (`skypeid: orgid:<oid>`, about one hour) **without any person**.
+3. After an admin reset of the test user's password, the same refresh token failed with `invalid_grant`. A person had to log in again.
+
+The operating rule that follows: an agent's tenant user must never have its password reset or its sessions revoked, or a person has to sign in again. Entra Agent ID agent users have no password, which is one more reason to prefer them.
+
+**S1'.** The organiser started a Teams meeting with the short link format `https://teams.microsoft.com/meet/<id>?p=<passcode>`, which `TeamsMeetingLinkLocator` accepted. The sidecar ran headless on the dev Mac (Chromium 159 headless shell, ACS Calling SDK 2.0.0):
+
+| Run | Wall time | Audio captured | Level | Floor changes | Participant updates | RSS |
+|---|---|---|---|---|---|---|
+| 1 (cap 180 s) | 181.7 s | 178.6 s | −19.4 dBFS | 7 | 5 | — |
+| 2 (cap 60 s) | 61.5 s | 58.5 s | −19.5 dBFS | 1 | 5 | 517 MB (7 processes) |
+
+- Joined about 2 s after start, as a tenant member, without a lobby.
+- Both runs ended with `callEndReason 0/0` at the cap (the sidecar's own hang-up).
+- No audio was written anywhere; the run printed counts only.
+- The **participant list** arrived before `Connected`. Each entry carried `8:orgid:<oid>` and the person's display name.
+- The agent's own user was not in `remoteParticipants`.
+
+**S3'.** The three participants' oids were read from Entra. A roster built the way the Bot Connector delivers it (`userRef.id` = Entra object id) resolved each participant to exactly one entry. A 7-second segment went to the participant holding the floor.
+
+Not covered: the bot's own meeting-chat roster, because the test meeting had no agent bot in its chat. The ids were the same oids the plugin already uses (`teams-aad`), so no difference is expected.
+
+**Still open.** S4' on Fly and the Azure VM; a test with an Entra Agent ID agent user; the licence decision.
+
 ## Recommendation on the licence question (input for the owner, not a decision)
 
-1. **Buy nothing per agent yet.** One test identity is enough for the live S1' and A-S1 runs. The licence decision follows their result.
+1. **Buy nothing per agent yet.** The live runs worked with an unused Teams seat. Before buying, test once more with an Entra Agent ID agent user.
 2. **If CTE works with an Entra Agent ID agent user, use that** for I1. It has no password to rotate or leak, matches ADR-0012/0134, and can be licensed. Microsoft lists Agent 365 at $15 per user per month, also included in M365 E7. Whether an agent user also needs a separate Teams plan for meeting join is **open**.
 3. **Otherwise use a regular cloud-only member user per meeting-enabled agent:**
    - the cheapest plan that contains the Teams service plan (CTE needs any Teams plan; Teams Phone only for PSTN or 1:1 calls to Teams users [S17]);

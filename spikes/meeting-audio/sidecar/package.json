@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Spike S1' (byte5ai/omadia#584, ADR-0287): headless Chromium + ACS Calling SDK joins a Teams meeting as the agent's tenant user and streams mixed remote audio as PCM frames. Not part of the plugin build or package.",
   "scripts": {
-    "build": "esbuild page.ts --bundle --format=esm --platform=browser --outfile=out/page.js --log-level=warning && esbuild run.ts --bundle --format=esm --platform=node --packages=external --outfile=out/run.mjs --log-level=warning && esbuild sink.ts --bundle --format=esm --platform=node --outfile=out/sink.mjs --log-level=warning",
+    "build": "esbuild page.ts --bundle --format=esm --platform=browser --outfile=out/page.js --log-level=warning && esbuild run.ts --bundle --format=esm --platform=node --packages=external --outfile=out/run.mjs --log-level=warning && esbuild sink.ts --bundle --format=esm --platform=node --outfile=out/sink.mjs --log-level=warning && esbuild live-token.ts --bundle --format=esm --platform=node --outfile=out/live-token.mjs --log-level=warning",
     "typecheck": "tsc --noEmit -p .",
     "self-test": "npm run build && TEAMS_MEETING_AUDIO_SPIKE=1 node out/run.mjs --self-test --seconds 3"
   },
