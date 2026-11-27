@@ -146,6 +146,7 @@ async function main(): Promise<void> {
       const bytes = encodeFrame(frame);
       if (socket) socket.write(bytes);
       for (const decoded of decoder.push(bytes)) account(stats, decoded);
+      if (frame.type === 'event' && process.env.SPIKE_EVENTS === '1') console.error(JSON.stringify({ atMs, event: frame.event }));
       if (frame.type === 'event' && frame.event.kind === 'left') leftResolve(frame.event.reason);
     });
     page.on('pageerror', (err) => console.error(`[page] ${err.message}`));

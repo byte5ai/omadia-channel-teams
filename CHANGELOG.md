@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Meeting-audio spikes, live results** (byte5ai/omadia#584, omadia ADR-0287).
+  - The headless sidecar joined a real Teams meeting as a test tenant user and captured
+    about 179 s of audio in 182 s.
+  - The stored refresh token produced ACS tokens with no person involved. An admin
+    password reset revokes it.
+  - Live participant ids bound to the roster by oid.
+  - New: `spikes/meeting-audio/sidecar/live-token.ts` (keychain-backed token helper) and
+    `SPIKE_EVENTS=1` event output in `run.ts`. Still not compiled into `dist/`.
+
 - **Meeting-audio spikes S1', S4', A-S1, S3'** (byte5ai/omadia#584, omadia ADR-0287, Proposed).
   Prototype code under `spikes/meeting-audio/` with results in `docs/meeting-audio-spikes.md`.
   None of it is compiled into `dist/` or the plugin zip, and the plugin's behaviour is unchanged.
