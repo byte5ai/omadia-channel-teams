@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { toStoredTurnAttachments } from '@omadia/channel-teams';
+import { toStoredTurnAttachments, topicDecisionUploads } from '@omadia/channel-teams';
 
 // omadia#1962 (ADR-0178): the kernel ingests storage keys only from the
 // structured `storedAttachments` field, never from the `[attachments-info]`
@@ -47,5 +47,33 @@ describe('toStoredTurnAttachments', () => {
 
   it('states nothing when nothing was persisted', () => {
     assert.deepEqual(toStoredTurnAttachments([]), []);
+  });
+});
+
+// omadia#2304: a message that triggered the topic card keeps its uploads on the
+// server-side pending entry; the click's turn gets them, never from the card.
+describe('topicDecisionUploads', () => {
+  const upload = {
+    fileName: 'notiz.wav',
+    contentType: 'audio/wav',
+    storageKey: 'teams-attachments/t/c/1-notiz.wav',
+    sizeBytes: 1024,
+  };
+  const pending = { userMessage: 'Transkribiere das', askedAt: 1, storedAttachments: [upload] };
+
+  it('hands the pending uploads to the turn the click starts', () => {
+    assert.deepEqual(topicDecisionUploads(pending, 'Transkribiere das'), [upload]);
+  });
+
+  it('hands nothing when the card names another message', () => {
+    assert.equal(topicDecisionUploads(pending, 'etwas anderes'), undefined);
+  });
+
+  it('hands nothing without a pending entry or without uploads', () => {
+    assert.equal(topicDecisionUploads(undefined, 'Transkribiere das'), undefined);
+    assert.equal(
+      topicDecisionUploads({ userMessage: 'x', askedAt: 1 }, 'x'),
+      undefined,
+    );
   });
 });

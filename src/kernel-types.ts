@@ -16,6 +16,7 @@
  * bridge (see teamsCard.ts); it is not channel-contract territory.
  */
 import type {
+  StoredTurnAttachment,
   CaptureDisclosure,
   FollowUpOption as SdkFollowUpOption,
   OutgoingAttachment,
@@ -118,6 +119,9 @@ export interface ConversationTurn {
 export interface PendingTopicDecision {
   userMessage: string;
   askedAt: number;
+  /** omadia#2304 — the uploads stored with that message (ADR-0178), handed to
+   *  the turn the decision click starts. Server-side only, never from the card. */
+  storedAttachments?: readonly StoredTurnAttachment[];
 }
 
 /**
